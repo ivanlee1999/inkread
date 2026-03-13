@@ -12,6 +12,7 @@ import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
@@ -52,6 +53,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -63,6 +65,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -677,6 +680,35 @@ fun FlowPage(
                         }
                     }
 
+                    // E-Ink: mark previous page as read when navigating forward
+                    if (einkMode) {
+                        var prevEinkPage by remember { mutableIntStateOf(einkCurrentPage) }
+                        LaunchedEffect(einkCurrentPage) {
+                            if (markAsReadOnScroll && filterState.filter.isUnread()) {
+                                val prev = prevEinkPage
+                                if (einkCurrentPage > prev) {
+                                    val prevStart = prev * einkItemsPerPage
+                                    val prevEnd = (prev + 1) * einkItemsPerPage
+                                    val items = mutableListOf<ArticleWithFeed>()
+                                    for (index in prevStart until minOf(prevEnd, pagingItems.itemCount)) {
+                                        pagingItems.peek(index)?.let { item ->
+                                            if (item is ArticleFlowItem.Article) {
+                                                items.add(item.articleWithFeed)
+                                            }
+                                        }
+                                    }
+                                    if (items.isNotEmpty()) {
+                                        viewModel.diffMapHolder.updateDiff(
+                                            articleWithFeed = items.toTypedArray(),
+                                            isUnread = false,
+                                        )
+                                    }
+                                }
+                            }
+                            prevEinkPage = einkCurrentPage
+                        }
+                    }
+
                     if (settings.flowArticleListDateStickyHeader.value) {
                         LaunchedEffect(lastVisibleIndex) {
                             lastVisibleIndex.collect {
@@ -761,6 +793,8 @@ fun FlowPage(
                             )
                             .also { currentPullToLoadState = it }
 
+                    var dragAccumulator by remember { mutableFloatStateOf(0f) }
+
                     LazyColumn(
                             userScrollEnabled = !einkMode,
                             contentPadding = if (einkMode) PaddingValues(bottom = 56.dp + navBarBottom) else PaddingValues(),
@@ -788,6 +822,25 @@ fun FlowPage(
                                     .let { if (!einkMode) it.nestedScroll(scrollBehavior.nestedScrollConnection) else it }
                                     .fillMaxSize()
                                     .let { if (einkMode) it.onSizeChanged { size -> einkAvailableHeightPx = size.height } else it }
+                                    .let {
+                                        if (einkMode) it.pointerInput(einkMode) {
+                                            detectVerticalDragGestures(
+                                                onDragEnd = {
+                                                    if (dragAccumulator < -150f && einkCurrentPage < einkTotalPagesState - 1) {
+                                                        einkCurrentPage++
+                                                        scope.launch { listState.scrollToItem(0) }
+                                                    } else if (dragAccumulator > 150f && einkCurrentPage > 0) {
+                                                        einkCurrentPage--
+                                                        scope.launch { listState.scrollToItem(0) }
+                                                    }
+                                                    dragAccumulator = 0f
+                                                },
+                                                onVerticalDrag = { _, dragAmount ->
+                                                    dragAccumulator += dragAmount
+                                                },
+                                            )
+                                        } else it
+                                    }
                                     .drawVerticalScrollIndicator(listState),
                             state = listState,
                         ) {
