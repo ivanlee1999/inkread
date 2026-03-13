@@ -314,10 +314,14 @@ img {
     display: block;
     margin: 8px auto;
 }
-p, h1, h2, h3, h4, h5, h6, li, blockquote {
+h1, h2, h3, h4, h5, h6 {
     break-inside: avoid-column;
-    orphans: 2;
-    widows: 2;
+    break-after: avoid;
+}
+p, li, blockquote {
+    
+    orphans: 3;
+    widows: 3;
 }
 .eink-metadata {
     margin-bottom: 1.2em;
