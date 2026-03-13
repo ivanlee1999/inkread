@@ -2,6 +2,7 @@ package me.ash.reader.ui.page.home.reading
 
 import android.annotation.SuppressLint
 import android.os.Handler
+import android.util.Log
 import android.os.Looper
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
@@ -129,6 +130,7 @@ fun EInkPaginatedContent(
     fun nextPage() {
         if (currentPage < totalPages - 1) {
             currentPage++
+            Log.d("InkRead", "nextPage -> currentPage=$currentPage totalPages=$totalPages")
             webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
             onPageChanged?.invoke(currentPage + 1, totalPages)
         }
@@ -137,6 +139,7 @@ fun EInkPaginatedContent(
     fun prevPage() {
         if (currentPage > 0) {
             currentPage--
+            Log.d("InkRead", "prevPage -> currentPage=$currentPage totalPages=$totalPages")
             webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
             onPageChanged?.invoke(currentPage + 1, totalPages)
         }
