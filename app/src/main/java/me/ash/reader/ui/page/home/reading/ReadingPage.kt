@@ -103,7 +103,7 @@ fun ReadingPage(
         containerColor = MaterialTheme.colorScheme.surface,
         content = { paddings ->
             Box(modifier = Modifier.fillMaxSize()) {
-                if (readerState.articleId != null) {
+                if (readerState.articleId != null && !isEInkMode) {
                     TopBar(
                         isShow = isShowToolBar,
                         isScrolled = showTopDivider,

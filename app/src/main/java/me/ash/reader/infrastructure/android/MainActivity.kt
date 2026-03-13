@@ -212,9 +212,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (settingsProvider.settings.einkMode.isEInkMode()) {
-            when (keyCode) {
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN && settingsProvider.settings.einkMode.isEInkMode()) {
+            when (event.keyCode) {
                 KeyEvent.KEYCODE_VOLUME_DOWN -> {
                     VolumeKeyEventBus.emit(VolumeKeyEvent.VOLUME_DOWN)
                     return true
@@ -225,7 +225,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-        return super.onKeyDown(keyCode, event)
+        return super.dispatchKeyEvent(event)
     }
 
     override fun onResume() {
