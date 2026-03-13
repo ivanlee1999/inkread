@@ -203,6 +203,7 @@ sealed interface PreferencesKey {
 
         // E-Ink
         const val einkMode = "einkMode"
+        const val einkFontSize = "einkFontSize"
 
         private val keyList =
             listOf(
@@ -280,6 +281,7 @@ sealed interface PreferencesKey {
                 IntKey(languages),
                 // E-Ink
                 IntKey(einkMode),
+                IntKey(einkFontSize),
             )
 
         val keys = keyList.associateBy { it.name }
@@ -370,6 +372,7 @@ data class DataStoreKey<T>(val key: Preferences.Key<T>, val type: Class<T>) {
 
         // E-Ink
         const val einkMode = "einkMode"
+        const val einkFontSize = "einkFontSize"
 
         val keys: MutableMap<String, DataStoreKey<*>> =
             mutableMapOf(
@@ -523,6 +526,7 @@ data class DataStoreKey<T>(val key: Preferences.Key<T>, val type: Class<T>) {
                 languages to DataStoreKey(intPreferencesKey(languages), Int::class.java),
                 // E-Ink
                 einkMode to DataStoreKey(intPreferencesKey(einkMode), Int::class.java),
+                einkFontSize to DataStoreKey(intPreferencesKey(einkFontSize), Int::class.java),
             )
     }
 }

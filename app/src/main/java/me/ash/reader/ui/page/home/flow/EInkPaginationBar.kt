@@ -27,6 +27,11 @@ fun EInkPaginationBar(
     onPrev: () -> Unit,
     onNext: () -> Unit,
     modifier: Modifier = Modifier,
+    fontSize: Int = 18,
+    canDecreaseFontSize: Boolean = false,
+    canIncreaseFontSize: Boolean = false,
+    onDecreaseFontSize: () -> Unit = {},
+    onIncreaseFontSize: () -> Unit = {},
 ) {
     Row(
         modifier = modifier
@@ -36,6 +41,24 @@ fun EInkPaginationBar(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // Font size decrease
+        IconButton(
+            onClick = onDecreaseFontSize,
+            enabled = canDecreaseFontSize,
+            modifier = Modifier.size(56.dp),
+        ) {
+            Text(
+                text = "A-",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (canDecreaseFontSize) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                },
+            )
+        }
+
         IconButton(
             onClick = onPrev,
             enabled = currentPage > 1,
@@ -70,6 +93,24 @@ fun EInkPaginationBar(
                 imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
                 contentDescription = "Next page",
                 tint = if (currentPage < totalPages) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                },
+            )
+        }
+
+        // Font size increase
+        IconButton(
+            onClick = onIncreaseFontSize,
+            enabled = canIncreaseFontSize,
+            modifier = Modifier.size(56.dp),
+        ) {
+            Text(
+                text = "A+",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (canIncreaseFontSize) {
                     MaterialTheme.colorScheme.onSurface
                 } else {
                     MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)

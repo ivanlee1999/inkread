@@ -85,5 +85,6 @@ data class Settings(
 
     // E-Ink
     val einkMode: EInkModePreference = EInkModePreference.default,
+    val einkFontSize: Int = EInkFontSizePreference.default,
 )
 

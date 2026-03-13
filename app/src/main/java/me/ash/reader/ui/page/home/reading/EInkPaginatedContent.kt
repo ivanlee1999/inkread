@@ -23,6 +23,7 @@ import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -48,7 +49,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import me.ash.reader.infrastructure.android.VolumeKeyEvent
 import me.ash.reader.infrastructure.android.VolumeKeyEventBus
+import me.ash.reader.infrastructure.preference.EInkFontSizePreference
+import me.ash.reader.infrastructure.preference.LocalEInkFontSize
 import me.ash.reader.infrastructure.preference.LocalReadingSubheadUpperCase
+import me.ash.reader.infrastructure.preference.LocalReadingTextFontSize
 import me.ash.reader.ui.component.reader.LocalTextContentWidth
 import me.ash.reader.ui.component.reader.Reader
 import me.ash.reader.ui.ext.roundClick
@@ -74,12 +78,16 @@ fun EInkPaginatedContent(
     val uriHandler = LocalUriHandler.current
     val coroutineScope = rememberCoroutineScope()
 
-    var currentPage by rememberSaveable { mutableIntStateOf(1) }
-    var totalPages by remember { mutableIntStateOf(1) }
+    val einkFontSize = LocalEInkFontSize.current
+    val fontSizeIndex = EInkFontSizePreference.values.indexOf(einkFontSize)
+        .takeIf { it >= 0 } ?: EInkFontSizePreference.values.indexOf(EInkFontSizePreference.default)
+
+    var currentPage by rememberSaveable(content, einkFontSize) { mutableIntStateOf(1) }
+    var totalPages by rememberSaveable(content, einkFontSize) { mutableIntStateOf(1) }
     var viewportHeight by remember { mutableIntStateOf(0) }
     var showTapHints by remember { mutableStateOf(true) }
 
-    val listState = rememberSaveable(content, saver = LazyListState.Saver) {
+    val listState = rememberSaveable(content, einkFontSize, saver = LazyListState.Saver) {
         LazyListState()
     }
 
@@ -153,135 +161,154 @@ fun EInkPaginatedContent(
         }
     }
 
-    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            // Main content area
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .clipToBounds()
-            ) {
-                SelectionContainer {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        state = listState,
-                        userScrollEnabled = false,
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        item {
-                            Spacer(modifier = Modifier.height(64.dp))
-                            Spacer(modifier = Modifier.height(contentPadding.calculateTopPadding()))
-                            Column(
-                                modifier = Modifier.then(maxWidthModifier)
-                                    .padding(horizontal = 12.dp)
+    fun decreaseFontSize() {
+        if (fontSizeIndex > 0) {
+            EInkFontSizePreference.put(context, coroutineScope, EInkFontSizePreference.values[fontSizeIndex - 1])
+        }
+    }
+
+    fun increaseFontSize() {
+        if (fontSizeIndex < EInkFontSizePreference.values.lastIndex) {
+            EInkFontSizePreference.put(context, coroutineScope, EInkFontSizePreference.values[fontSizeIndex + 1])
+        }
+    }
+
+    CompositionLocalProvider(LocalReadingTextFontSize provides einkFontSize) {
+        BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Main content area
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .clipToBounds()
+                ) {
+                    SelectionContainer {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            state = listState,
+                            userScrollEnabled = false,
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            item {
+                                Spacer(modifier = Modifier.height(64.dp))
+                                Spacer(modifier = Modifier.height(contentPadding.calculateTopPadding()))
+                                Column(
+                                    modifier = Modifier.then(maxWidthModifier)
+                                        .padding(horizontal = 12.dp)
+                                ) {
+                                    DisableSelection {
+                                        Metadata(
+                                            feedName = feedName,
+                                            title = title,
+                                            author = author,
+                                            publishedDate = publishedDate,
+                                            modifier = Modifier.roundClick {
+                                                link?.let { uriHandler.openUri(it) }
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+
+                            Reader(
+                                context = context,
+                                subheadUpperCase = subheadUpperCase.value,
+                                link = link ?: "",
+                                content = content,
+                                onImageClick = onImageClick,
+                                onLinkClick = { uriHandler.openUri(it) },
+                            )
+
+                            item {
+                                Spacer(modifier = Modifier.height(128.dp))
+                                Spacer(
+                                    modifier = Modifier.height(contentPadding.calculateBottomPadding())
+                                )
+                            }
+                        }
+                    }
+
+                    // Tap zones overlay
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        // Left 40% - previous page
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .weight(0.4f)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                ) { prevPage() },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            // Tap zone hint
+                            AnimatedVisibility(
+                                visible = showTapHints,
+                                exit = fadeOut(),
                             ) {
-                                DisableSelection {
-                                    Metadata(
-                                        feedName = feedName,
-                                        title = title,
-                                        author = author,
-                                        publishedDate = publishedDate,
-                                        modifier = Modifier.roundClick {
-                                            link?.let { uriHandler.openUri(it) }
-                                        },
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(Color.Black.copy(alpha = 0.08f)),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        text = "< Prev",
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = Color.Black.copy(alpha = 0.5f),
                                     )
                                 }
                             }
                         }
-
-                        Reader(
-                            context = context,
-                            subheadUpperCase = subheadUpperCase.value,
-                            link = link ?: "",
-                            content = content,
-                            onImageClick = onImageClick,
-                            onLinkClick = { uriHandler.openUri(it) },
-                        )
-
-                        item {
-                            Spacer(modifier = Modifier.height(128.dp))
-                            Spacer(
-                                modifier = Modifier.height(contentPadding.calculateBottomPadding())
-                            )
-                        }
-                    }
-                }
-
-                // Tap zones overlay
-                Row(modifier = Modifier.fillMaxSize()) {
-                    // Left 40% - previous page
-                    Box(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .weight(0.4f)
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                            ) { prevPage() },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        // Tap zone hint
-                        AnimatedVisibility(
-                            visible = showTapHints,
-                            exit = fadeOut(),
+                        // Right 60% - next page
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .weight(0.6f)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                ) { nextPage() },
+                            contentAlignment = Alignment.Center,
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(Color.Black.copy(alpha = 0.08f)),
-                                contentAlignment = Alignment.Center,
+                            // Tap zone hint
+                            AnimatedVisibility(
+                                visible = showTapHints,
+                                exit = fadeOut(),
                             ) {
-                                Text(
-                                    text = "< Prev",
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = Color.Black.copy(alpha = 0.5f),
-                                )
-                            }
-                        }
-                    }
-                    // Right 60% - next page
-                    Box(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .weight(0.6f)
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                            ) { nextPage() },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        // Tap zone hint
-                        AnimatedVisibility(
-                            visible = showTapHints,
-                            exit = fadeOut(),
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(Color.Black.copy(alpha = 0.05f)),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Text(
-                                    text = "Next >",
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = Color.Black.copy(alpha = 0.5f),
-                                )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(Color.Black.copy(alpha = 0.05f)),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        text = "Next >",
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = Color.Black.copy(alpha = 0.5f),
+                                    )
+                                }
                             }
                         }
                     }
                 }
+
+                // Page indicator bar at bottom with font size controls
+                EInkPaginationBar(
+                    currentPage = currentPage,
+                    totalPages = totalPages,
+                    onPrev = { prevPage() },
+                    onNext = { nextPage() },
+                    fontSize = einkFontSize,
+                    canDecreaseFontSize = fontSizeIndex > 0,
+                    canIncreaseFontSize = fontSizeIndex < EInkFontSizePreference.values.lastIndex,
+                    onDecreaseFontSize = { decreaseFontSize() },
+                    onIncreaseFontSize = { increaseFontSize() },
+                )
             }
-
-            // Page indicator bar at bottom
-            EInkPaginationBar(
-                currentPage = currentPage,
-                totalPages = totalPages,
-                onPrev = { prevPage() },
-                onNext = { nextPage() },
-            )
         }
     }
 }
