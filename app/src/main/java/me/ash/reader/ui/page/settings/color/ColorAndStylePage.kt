@@ -53,9 +53,11 @@ import androidx.compose.ui.unit.dp
 import me.ash.reader.R
 import me.ash.reader.infrastructure.preference.BasicFontsPreference
 import me.ash.reader.infrastructure.preference.CustomPrimaryColorPreference
+import me.ash.reader.infrastructure.preference.EInkModePreference
 import me.ash.reader.infrastructure.preference.LocalBasicFonts
 import me.ash.reader.infrastructure.preference.LocalCustomPrimaryColor
 import me.ash.reader.infrastructure.preference.LocalDarkTheme
+import me.ash.reader.infrastructure.preference.LocalEInkMode
 import me.ash.reader.infrastructure.preference.LocalThemeIndex
 import me.ash.reader.infrastructure.preference.ThemeIndexPreference
 import me.ash.reader.infrastructure.preference.not
@@ -98,6 +100,7 @@ fun ColorAndStylePage(
     val themeIndex = LocalThemeIndex.current
     val customPrimaryColor = LocalCustomPrimaryColor.current
     val fonts = LocalBasicFonts.current
+    val einkMode = LocalEInkMode.current
     val scope = rememberCoroutineScope()
 
     val wallpaperTonalPalettes = extractTonalPalettesFromUserWallpaper()
@@ -201,6 +204,27 @@ fun ColorAndStylePage(
                             activated = darkTheme.isDarkTheme()
                         ) {
                             darkThemeNot.put(context, scope)
+                        }
+                    }
+                    SettingItem(
+                        title = "E-Ink Mode",
+                        desc = when (einkMode) {
+                            EInkModePreference.Auto -> "Auto (detected: ${if (einkMode.isEInkMode()) "on" else "off"})"
+                            EInkModePreference.ON -> "Always on"
+                            EInkModePreference.OFF -> "Off"
+                        },
+                        onClick = {
+                            when (einkMode) {
+                                EInkModePreference.ON -> EInkModePreference.OFF.put(context, scope)
+                                else -> EInkModePreference.ON.put(context, scope)
+                            }
+                        },
+                    ) {
+                        RYSwitch(activated = einkMode.isEInkMode()) {
+                            when (einkMode) {
+                                EInkModePreference.ON -> EInkModePreference.OFF.put(context, scope)
+                                else -> EInkModePreference.ON.put(context, scope)
+                            }
                         }
                     }
                     SettingItem(
