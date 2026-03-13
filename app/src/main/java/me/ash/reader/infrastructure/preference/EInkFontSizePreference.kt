@@ -13,7 +13,7 @@ import me.ash.reader.ui.ext.put
 val LocalEInkFontSize = compositionLocalOf { EInkFontSizePreference.default }
 
 object EInkFontSizePreference {
-    val values = listOf(14, 16, 18, 20, 22)
+    val values = listOf(14, 16, 18, 20, 22, 24, 28, 32, 36)
     const val default = 18
 
     fun put(context: Context, scope: CoroutineScope, value: Int) {

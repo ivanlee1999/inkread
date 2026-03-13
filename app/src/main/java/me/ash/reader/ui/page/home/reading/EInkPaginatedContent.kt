@@ -76,7 +76,11 @@ fun EInkPaginatedContent(
     }
 
     LaunchedEffect(Unit) {
+        var lastEventMs = 0L
         VolumeKeyEventBus.events.collect { event ->
+            val now = System.currentTimeMillis()
+            if (now - lastEventMs < 300) return@collect
+            lastEventMs = now
             when (event) {
                 VolumeKeyEvent.VOLUME_DOWN -> {
                     if (currentPage < totalPages - 1) {
@@ -289,14 +293,15 @@ body {
     text-size-adjust: none;
 }
 img {
-    max-width: calc(100vw - 32px);
+    max-width: 100% !important;
+    width: auto !important;
+    height: auto !important;
     max-height: calc(100vh - 32px);
-    width: auto;
-    height: auto;
+    object-fit: contain;
     break-inside: avoid;
     page-break-inside: avoid;
     display: block;
-    margin: 0.5em auto;
+    margin: 8px auto;
 }
 p, h1, h2, h3, h4, h5, h6, li, blockquote {
     break-inside: avoid-column;
