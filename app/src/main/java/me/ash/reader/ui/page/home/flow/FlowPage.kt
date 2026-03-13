@@ -45,6 +45,7 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
@@ -63,6 +64,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -146,6 +148,9 @@ fun FlowPage(
     val settings = LocalSettings.current
     val pullToSwitchFeed = settings.pullToSwitchFeed
     val einkMode = LocalEInkMode.current.isEInkMode()
+
+    val navBarBottomPx = WindowInsets.navigationBars.getBottom(LocalDensity.current)
+    val navBarBottom = with(LocalDensity.current) { navBarBottomPx.toDp() }
 
     val einkItemsPerPage = 15
     var einkCurrentPage by rememberSaveable { mutableStateOf(0) }
@@ -242,6 +247,7 @@ fun FlowPage(
     val topAppBarState = rememberTopAppBarState()
 
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(topAppBarState)
+    val einkPinnedScrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
     val scrollAppBarToCollapsed =
         remember(topAppBarState) {
@@ -345,6 +351,75 @@ fun FlowPage(
                                 ),
                         ),
                 ) {
+                    if (einkMode) {
+                        TopAppBar(
+                            title = {
+                                Text(
+                                    text = titleText,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            },
+                            scrollBehavior = einkPinnedScrollBehavior,
+                            navigationIcon = {
+                                FeedbackIconButton(
+                                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                    contentDescription = stringResource(R.string.back),
+                                    tint = MaterialTheme.colorScheme.onSurface,
+                                ) {
+                                    onSearch = false
+                                    onNavigateUp()
+                                }
+                            },
+                            actions = {
+                                RYExtensibleVisibility(visible = !filterUiState.filter.isStarred()) {
+                                    FeedbackIconButton(
+                                        imageVector = Icons.Rounded.DoneAll,
+                                        contentDescription = stringResource(R.string.mark_all_as_read),
+                                        tint =
+                                            if (markAsRead) MaterialTheme.colorScheme.primary
+                                            else MaterialTheme.colorScheme.onSurface,
+                                    ) {
+                                        if (markAsRead) {
+                                            markAsRead = false
+                                        } else {
+                                            scope.launch {
+                                                if (listState.firstVisibleItemIndex != 0) listState.animateScrollToItem(0)
+                                            }.invokeOnCompletion {
+                                                markAsRead = true
+                                                onSearch = false
+                                            }
+                                        }
+                                    }
+                                }
+                                FeedbackIconButton(
+                                    imageVector = Icons.Rounded.Search,
+                                    contentDescription = stringResource(R.string.search),
+                                    tint =
+                                        if (onSearch) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurface,
+                                ) {
+                                    if (onSearch) {
+                                        onSearch = false
+                                    } else {
+                                        scope.launch {
+                                            if (listState.firstVisibleItemIndex != 0) listState.animateScrollToItem(0)
+                                        }.invokeOnCompletion {
+                                            scope.launch {
+                                                onSearch = true
+                                                markAsRead = false
+                                                delay(100)
+                                                focusRequester.requestFocus()
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            colors = TopAppBarDefaults.topAppBarColors(
+                                scrolledContainerColor = scrolledTopBarContainerColor
+                            ),
+                        )
+                    } else {
                     LargeTopAppBar(
                         modifier =
                             Modifier.clickable(
@@ -462,6 +537,7 @@ fun FlowPage(
                                 scrolledContainerColor = scrolledTopBarContainerColor
                             ),
                     )
+                    } // end else (non-eink LargeTopAppBar)
                 }
             },
             content = {
@@ -682,7 +758,7 @@ fun FlowPage(
 
                     LazyColumn(
                             userScrollEnabled = !einkMode,
-                            contentPadding = if (einkMode) PaddingValues(bottom = 64.dp) else PaddingValues(),
+                            contentPadding = if (einkMode) PaddingValues(bottom = 56.dp + navBarBottom) else PaddingValues(),
                             modifier =
                                 Modifier.pullToLoad(
                                         state = pullToLoadState,
@@ -704,7 +780,7 @@ fun FlowPage(
                                             }
                                         },
                                     )
-                                    .nestedScroll(scrollBehavior.nestedScrollConnection)
+                                    .let { if (!einkMode) it.nestedScroll(scrollBehavior.nestedScrollConnection) else it }
                                     .fillMaxSize()
                                     .drawVerticalScrollIndicator(listState),
                             state = listState,

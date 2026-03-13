@@ -53,10 +53,16 @@ import androidx.compose.ui.unit.dp
 import me.ash.reader.R
 import me.ash.reader.infrastructure.preference.BasicFontsPreference
 import me.ash.reader.infrastructure.preference.CustomPrimaryColorPreference
+import me.ash.reader.infrastructure.preference.EInkChineseFontPreference
+import me.ash.reader.infrastructure.preference.EInkEnglishFontPreference
+import me.ash.reader.infrastructure.preference.EInkFontSizePreference
 import me.ash.reader.infrastructure.preference.EInkModePreference
 import me.ash.reader.infrastructure.preference.LocalBasicFonts
 import me.ash.reader.infrastructure.preference.LocalCustomPrimaryColor
 import me.ash.reader.infrastructure.preference.LocalDarkTheme
+import me.ash.reader.infrastructure.preference.LocalEInkChineseFont
+import me.ash.reader.infrastructure.preference.LocalEInkEnglishFont
+import me.ash.reader.infrastructure.preference.LocalEInkFontSize
 import me.ash.reader.infrastructure.preference.LocalEInkMode
 import me.ash.reader.infrastructure.preference.LocalThemeIndex
 import me.ash.reader.infrastructure.preference.ThemeIndexPreference
@@ -101,6 +107,9 @@ fun ColorAndStylePage(
     val customPrimaryColor = LocalCustomPrimaryColor.current
     val fonts = LocalBasicFonts.current
     val einkMode = LocalEInkMode.current
+    val einkEnglishFont = LocalEInkEnglishFont.current
+    val einkChineseFont = LocalEInkChineseFont.current
+    val einkFontSize = LocalEInkFontSize.current
     val scope = rememberCoroutineScope()
 
     val wallpaperTonalPalettes = extractTonalPalettesFromUserWallpaper()
@@ -227,6 +236,30 @@ fun ColorAndStylePage(
                             }
                         }
                     }
+                    SettingItem(
+                        title = "E-Ink English Font",
+                        desc = EInkEnglishFontPreference.names[einkEnglishFont],
+                        onClick = {
+                            val nextIdx = (EInkEnglishFontPreference.values.indexOf(einkEnglishFont) + 1) % EInkEnglishFontPreference.values.size
+                            EInkEnglishFontPreference.put(context, scope, EInkEnglishFontPreference.values[nextIdx])
+                        },
+                    ) {}
+                    SettingItem(
+                        title = "E-Ink Chinese Font",
+                        desc = EInkChineseFontPreference.names[einkChineseFont],
+                        onClick = {
+                            val nextIdx = (EInkChineseFontPreference.values.indexOf(einkChineseFont) + 1) % EInkChineseFontPreference.values.size
+                            EInkChineseFontPreference.put(context, scope, EInkChineseFontPreference.values[nextIdx])
+                        },
+                    ) {}
+                    SettingItem(
+                        title = "E-Ink Font Size",
+                        desc = "${einkFontSize}sp",
+                        onClick = {
+                            val nextIdx = (EInkFontSizePreference.values.indexOf(einkFontSize) + 1) % EInkFontSizePreference.values.size
+                            EInkFontSizePreference.put(context, scope, EInkFontSizePreference.values[nextIdx])
+                        },
+                    ) {}
                     SettingItem(
                         title = stringResource(R.string.basic_fonts),
                         desc = fonts.toDesc(context),
