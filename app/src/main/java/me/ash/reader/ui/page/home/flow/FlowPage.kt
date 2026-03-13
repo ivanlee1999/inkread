@@ -71,6 +71,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.zIndex
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
@@ -152,7 +153,11 @@ fun FlowPage(
     val navBarBottomPx = WindowInsets.navigationBars.getBottom(LocalDensity.current)
     val navBarBottom = with(LocalDensity.current) { navBarBottomPx.toDp() }
 
-    val einkItemsPerPage = 15
+    val density = LocalDensity.current
+    var einkAvailableHeightPx by remember { mutableIntStateOf(0) }
+    val einkItemsPerPage = if (einkAvailableHeightPx > 0) {
+        maxOf(1, (with(density) { einkAvailableHeightPx.toDp() }.value / 120).toInt())
+    } else 5
     var einkCurrentPage by rememberSaveable { mutableStateOf(0) }
     // Hoisted so bottomBar can read them (updated via SideEffect inside AnimatedContent)
     var einkTotalPagesState by remember { mutableIntStateOf(1) }
@@ -782,6 +787,7 @@ fun FlowPage(
                                     )
                                     .let { if (!einkMode) it.nestedScroll(scrollBehavior.nestedScrollConnection) else it }
                                     .fillMaxSize()
+                                    .let { if (einkMode) it.onSizeChanged { size -> einkAvailableHeightPx = size.height } else it }
                                     .drawVerticalScrollIndicator(listState),
                             state = listState,
                         ) {

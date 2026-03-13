@@ -33,12 +33,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -50,7 +52,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import me.ash.reader.R
+import me.ash.reader.infrastructure.font.FontDownloader
 import me.ash.reader.infrastructure.preference.BasicFontsPreference
 import me.ash.reader.infrastructure.preference.CustomPrimaryColorPreference
 import me.ash.reader.infrastructure.preference.EInkChineseFontPreference
@@ -112,15 +116,56 @@ fun ColorAndStylePage(
     val einkFontSize = LocalEInkFontSize.current
     val scope = rememberCoroutineScope()
 
+    val fontDownloader = remember { FontDownloader(context) }
+    // Track which font files are already downloaded
+    val downloadedFonts = remember {
+        mutableStateMapOf<String, Boolean>().also { map ->
+            EInkEnglishFontPreference.fontFileNames.filterNotNull().forEach { name ->
+                map[name] = fontDownloader.getFontFile(name) != null
+            }
+            EInkChineseFontPreference.fontFileNames.filterNotNull().forEach { name ->
+                map[name] = fontDownloader.getFontFile(name) != null
+            }
+        }
+    }
+    // Font currently being downloaded (file name), or null
+    var downloadingFont by remember { mutableStateOf<String?>(null) }
+
     val wallpaperTonalPalettes = extractTonalPalettesFromUserWallpaper()
     var radioButtonSelected by remember { mutableStateOf(if (themeIndex > 4) 0 else 1) }
     var fontsDialogVisible by remember { mutableStateOf(false) }
+    var englishFontDialogVisible by remember { mutableStateOf(false) }
+    var chineseFontDialogVisible by remember { mutableStateOf(false) }
 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let {
             ExternalFonts(context, it, ExternalFonts.FontType.BasicFont).copyToInternalStorage()
             BasicFontsPreference.External.put(context, scope)
         } ?: context.showToast("Cannot get activity result with launcher")
+    }
+
+    fun downloadAndSelect(
+        fontIdx: Int,
+        fileName: String,
+        url: String,
+        putPref: (Int) -> Unit,
+    ) {
+        if (downloadedFonts[fileName] == true) {
+            putPref(fontIdx)
+            return
+        }
+        downloadingFont = fileName
+        scope.launch {
+            try {
+                fontDownloader.downloadFont(fileName, url)
+                downloadedFonts[fileName] = true
+                putPref(fontIdx)
+            } catch (e: Exception) {
+                context.showToast("Download failed: ${e.message}")
+            } finally {
+                downloadingFont = null
+            }
+        }
     }
 
     RYScaffold(
@@ -236,22 +281,42 @@ fun ColorAndStylePage(
                             }
                         }
                     }
+                    // English font — shows download status, opens dialog
+                    val englishFileName = EInkEnglishFontPreference.fontFileNames.getOrNull(einkEnglishFont)
+                    val englishDownloading = englishFileName != null && downloadingFont == englishFileName
+                    val englishDesc = when {
+                        englishDownloading -> "Downloading ${EInkEnglishFontPreference.names[einkEnglishFont]}…"
+                        englishFileName == null -> EInkEnglishFontPreference.names[einkEnglishFont]
+                        downloadedFonts[englishFileName] == true -> "${EInkEnglishFontPreference.names[einkEnglishFont]} • Downloaded"
+                        else -> "${EInkEnglishFontPreference.names[einkEnglishFont]} • Tap to download"
+                    }
                     SettingItem(
                         title = "E-Ink English Font",
-                        desc = EInkEnglishFontPreference.names[einkEnglishFont],
-                        onClick = {
-                            val nextIdx = (EInkEnglishFontPreference.values.indexOf(einkEnglishFont) + 1) % EInkEnglishFontPreference.values.size
-                            EInkEnglishFontPreference.put(context, scope, EInkEnglishFontPreference.values[nextIdx])
-                        },
-                    ) {}
+                        desc = englishDesc,
+                        onClick = { englishFontDialogVisible = true },
+                    ) {
+                        if (englishDownloading) {
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                        }
+                    }
+                    // Chinese font — shows download status, opens dialog
+                    val chineseFileName = EInkChineseFontPreference.fontFileNames.getOrNull(einkChineseFont)
+                    val chineseDownloading = chineseFileName != null && downloadingFont == chineseFileName
+                    val chineseDesc = when {
+                        chineseDownloading -> "Downloading ${EInkChineseFontPreference.names[einkChineseFont]}…"
+                        chineseFileName == null -> EInkChineseFontPreference.names[einkChineseFont]
+                        downloadedFonts[chineseFileName] == true -> "${EInkChineseFontPreference.names[einkChineseFont]} • Downloaded"
+                        else -> "${EInkChineseFontPreference.names[einkChineseFont]} • Tap to download"
+                    }
                     SettingItem(
                         title = "E-Ink Chinese Font",
-                        desc = EInkChineseFontPreference.names[einkChineseFont],
-                        onClick = {
-                            val nextIdx = (EInkChineseFontPreference.values.indexOf(einkChineseFont) + 1) % EInkChineseFontPreference.values.size
-                            EInkChineseFontPreference.put(context, scope, EInkChineseFontPreference.values[nextIdx])
-                        },
-                    ) {}
+                        desc = chineseDesc,
+                        onClick = { chineseFontDialogVisible = true },
+                    ) {
+                        if (chineseDownloading) {
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                        }
+                    }
                     SettingItem(
                         title = "E-Ink Font Size",
                         desc = "${einkFontSize}sp",
@@ -291,6 +356,64 @@ fun ColorAndStylePage(
                 }
             }
         }
+    )
+
+    // English font picker dialog
+    RadioDialog(
+        visible = englishFontDialogVisible,
+        title = "E-Ink English Font",
+        options = EInkEnglishFontPreference.values.map { idx ->
+            val fileName = EInkEnglishFontPreference.fontFileNames.getOrNull(idx)
+            val isDownloaded = fileName == null || downloadedFonts[fileName] == true
+            val statusSuffix = when {
+                fileName == null -> ""
+                isDownloaded -> " • Downloaded"
+                else -> " • Tap to download"
+            }
+            RadioDialogOption(
+                text = EInkEnglishFontPreference.names[idx] + statusSuffix,
+                selected = idx == einkEnglishFont,
+            ) {
+                if (fileName == null || isDownloaded) {
+                    EInkEnglishFontPreference.put(context, scope, idx)
+                } else {
+                    val url = EInkEnglishFontPreference.fontUrls.getOrNull(idx) ?: return@RadioDialogOption
+                    downloadAndSelect(idx, fileName, url) { i ->
+                        EInkEnglishFontPreference.put(context, scope, i)
+                    }
+                }
+            }
+        },
+        onDismissRequest = { englishFontDialogVisible = false },
+    )
+
+    // Chinese font picker dialog
+    RadioDialog(
+        visible = chineseFontDialogVisible,
+        title = "E-Ink Chinese Font",
+        options = EInkChineseFontPreference.values.map { idx ->
+            val fileName = EInkChineseFontPreference.fontFileNames.getOrNull(idx)
+            val isDownloaded = fileName == null || downloadedFonts[fileName] == true
+            val statusSuffix = when {
+                fileName == null -> ""
+                isDownloaded -> " • Downloaded"
+                else -> " • Tap to download"
+            }
+            RadioDialogOption(
+                text = EInkChineseFontPreference.names[idx] + statusSuffix,
+                selected = idx == einkChineseFont,
+            ) {
+                if (fileName == null || isDownloaded) {
+                    EInkChineseFontPreference.put(context, scope, idx)
+                } else {
+                    val url = EInkChineseFontPreference.fontUrls.getOrNull(idx) ?: return@RadioDialogOption
+                    downloadAndSelect(idx, fileName, url) { i ->
+                        EInkChineseFontPreference.put(context, scope, i)
+                    }
+                }
+            }
+        },
+        onDismissRequest = { chineseFontDialogVisible = false },
     )
 
     RadioDialog(

@@ -35,6 +35,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -75,6 +76,22 @@ fun EInkPaginatedContent(
     val einkChineseFont = LocalEInkChineseFont.current
     val fontSizeIndex = EInkFontSizePreference.values.indexOf(einkFontSize)
         .takeIf { it >= 0 } ?: EInkFontSizePreference.values.indexOf(EInkFontSizePreference.default)
+
+    val fontsDir = remember { File(context.filesDir, "fonts") }
+
+    // Resolve font file paths from local storage (null = system font or file not yet downloaded)
+    val englishFontFilePath = remember(einkEnglishFont) {
+        EInkEnglishFontPreference.fontFileNames.getOrNull(einkEnglishFont)
+            ?.let { File(fontsDir, it) }
+            ?.takeIf { it.exists() }
+            ?.absolutePath
+    }
+    val chineseFontFilePath = remember(einkChineseFont) {
+        EInkChineseFontPreference.fontFileNames.getOrNull(einkChineseFont)
+            ?.let { File(fontsDir, it) }
+            ?.takeIf { it.exists() }
+            ?.absolutePath
+    }
 
     var currentPage by rememberSaveable(content, einkFontSize) { mutableIntStateOf(0) }
     var totalPages by rememberSaveable(content, einkFontSize) { mutableIntStateOf(1) }
@@ -125,8 +142,8 @@ fun EInkPaginatedContent(
         }
     }
 
-    val htmlContent = remember(content, einkFontSize, einkEnglishFont, einkChineseFont, title, feedName, author, publishedDate) {
-        buildArticleHtml(content, einkFontSize, einkEnglishFont, einkChineseFont, title, feedName, author, publishedDate)
+    val htmlContent = remember(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate) {
+        buildArticleHtml(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate)
     }
 
     Column(
@@ -139,7 +156,7 @@ fun EInkPaginatedContent(
                 .weight(1f)
                 .fillMaxWidth(),
         ) {
-            key(content, einkFontSize, einkEnglishFont, einkChineseFont) {
+            key(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath) {
                 AndroidView(
                     factory = { ctx ->
                         WebView(ctx).apply {
@@ -148,6 +165,8 @@ fun EInkPaginatedContent(
                                 ViewGroup.LayoutParams.MATCH_PARENT,
                             )
                             settings.javaScriptEnabled = true
+                            @Suppress("DEPRECATION")
+                            settings.allowFileAccessFromFileURLs = true
                             setBackgroundColor(android.graphics.Color.WHITE)
                             isHorizontalScrollBarEnabled = false
                             isVerticalScrollBarEnabled = false
@@ -277,6 +296,8 @@ private fun buildArticleHtml(
     fontSize: Int,
     englishFont: Int,
     chineseFont: Int,
+    englishFontFilePath: String?,
+    chineseFontFilePath: String?,
     title: String,
     feedName: String,
     author: String?,
@@ -292,36 +313,30 @@ private fun buildArticleHtml(
     val escapedTitle = title.esc()
     val escapedMeta = metaLine.esc()
 
-    val englishFontFace = if (englishFont == 1) """
+    fun fontFaceBlock(cssName: String, filePath: String): String {
+        val format = if (filePath.endsWith(".otf")) "opentype" else "truetype"
+        val fileUrl = "file://$filePath"
+        return """
 @font-face {
-    font-family: 'SourceSerif4';
-    src: url('fonts/SourceSerif4-Regular.ttf') format('truetype');
+    font-family: '$cssName';
+    src: url('$fileUrl') format('$format');
     font-weight: normal;
     font-style: normal;
-}
-@font-face {
-    font-family: 'SourceSerif4';
-    src: url('fonts/SourceSerif4-Bold.ttf') format('truetype');
-    font-weight: bold;
-    font-style: normal;
-}""" else ""
+}"""
+    }
 
-    val chineseFontFace = if (chineseFont == 1) """
-@font-face {
-    font-family: 'NotoSerifSC';
-    src: url('fonts/NotoSerifSC-Regular.otf') format('opentype');
-    font-weight: normal;
-    font-style: normal;
-}
-@font-face {
-    font-family: 'NotoSerifSC';
-    src: url('fonts/NotoSerifSC-Bold.otf') format('opentype');
-    font-weight: bold;
-    font-style: normal;
-}""" else ""
+    val englishFontFace = if (englishFontFilePath != null) {
+        val cssName = EInkEnglishFontPreference.fontCssNames.getOrNull(englishFont)
+        if (cssName != null) fontFaceBlock(cssName, englishFontFilePath) else ""
+    } else ""
 
-    val englishFamilyCss = EInkEnglishFontPreference.fontFamilyCss[englishFont]
-    val chineseFamilyCss = EInkChineseFontPreference.fontFamilyCss[chineseFont]
+    val chineseFontFace = if (chineseFontFilePath != null) {
+        val cssName = EInkChineseFontPreference.fontCssNames.getOrNull(chineseFont)
+        if (cssName != null) fontFaceBlock(cssName, chineseFontFilePath) else ""
+    } else ""
+
+    val englishFamilyCss = EInkEnglishFontPreference.fontFamilyCss.getOrElse(englishFont) { "Georgia, serif" }
+    val chineseFamilyCss = EInkChineseFontPreference.fontFamilyCss.getOrElse(chineseFont) { "" }
     val fontFamilyCss = if (chineseFamilyCss.isNotEmpty()) {
         "$englishFamilyCss, $chineseFamilyCss"
     } else {
@@ -365,7 +380,7 @@ h1, h2, h3, h4, h5, h6 {
     break-after: avoid;
 }
 p, li, blockquote {
-    
+
     orphans: 3;
     widows: 3;
 }
