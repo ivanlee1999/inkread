@@ -6,6 +6,7 @@ import android.database.CursorWindow
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.view.KeyEvent
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -209,6 +210,22 @@ class MainActivity : AppCompatActivity() {
             addOnNewIntentListener(listener)
             onDispose { removeOnNewIntentListener(listener) }
         }
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (settingsProvider.settings.einkMode.isEInkMode()) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                    VolumeKeyEventBus.emit(VolumeKeyEvent.VOLUME_DOWN)
+                    return true
+                }
+                KeyEvent.KEYCODE_VOLUME_UP -> {
+                    VolumeKeyEventBus.emit(VolumeKeyEvent.VOLUME_UP)
+                    return true
+                }
+            }
+        }
+        return super.onKeyDown(keyCode, event)
     }
 
     override fun onResume() {

@@ -54,6 +54,7 @@ import me.ash.reader.ui.page.adaptive.ArticleListReaderViewModel
 import me.ash.reader.ui.page.adaptive.NavigationAction
 import me.ash.reader.ui.page.adaptive.ReaderState
 import me.ash.reader.ui.page.home.reading.tts.TtsButton
+import me.ash.reader.ui.theme.isEInkMode
 
 private const val UPWARD = 1
 private const val DOWNWARD = -1
@@ -119,6 +120,36 @@ fun ReadingPage(
                 val isPreviousArticleAvailable = readerState.previousArticle != null
 
                 if (readerState.articleId != null) {
+                    if (isEInkMode) {
+                        // E-Ink paginated content reader
+                        CompositionLocalProvider(
+                            LocalTextStyle provides
+                                LocalTextStyle.current.run {
+                                    merge(
+                                        lineHeight =
+                                            if (lineHeight.isSpecified)
+                                                (lineHeight.value *
+                                                        LocalReadingTextLineHeight.current)
+                                                    .sp
+                                            else TextUnit.Unspecified
+                                    )
+                                }
+                        ) {
+                            EInkPaginatedContent(
+                                contentPadding = paddings,
+                                content = readerState.content.text ?: "",
+                                feedName = readerState.feedName,
+                                title = readerState.title.toString(),
+                                author = readerState.author,
+                                link = readerState.link,
+                                publishedDate = readerState.publishedDate,
+                                onImageClick = { imgUrl, altText ->
+                                    currentImageData = ImageData(imgUrl, altText)
+                                    showFullScreenImageViewer = true
+                                },
+                            )
+                        }
+                    } else {
                     // Content
                     AnimatedContent(
                         targetState = readerState,
@@ -276,9 +307,10 @@ fun ReadingPage(
                                 }
                             }
                     }
+                    }
                 }
-                // Bottom Bar
-                if (readerState.articleId != null) {
+                // Bottom Bar (hidden in E-Ink mode, pagination bar is used instead)
+                if (readerState.articleId != null && !isEInkMode) {
                     BottomBar(
                         isShow = isShowToolBar,
                         isUnread = readingUiState.isUnread,
