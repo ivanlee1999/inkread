@@ -27,6 +27,7 @@ fun EInkPaginationBar(
     onPrev: () -> Unit,
     onNext: () -> Unit,
     modifier: Modifier = Modifier,
+    totalArticles: Int? = null,
     fontSize: Int = 18,
     canDecreaseFontSize: Boolean = false,
     canIncreaseFontSize: Boolean = false,
@@ -97,7 +98,7 @@ fun EInkPaginationBar(
         }
 
         Text(
-            text = "Page $currentPage of $totalPages",
+            text = if (totalArticles != null) "Page $currentPage/$totalPages ($totalArticles articles)" else "Page $currentPage/$totalPages",
             style = MaterialTheme.typography.bodyMedium.copy(
                 fontWeight = FontWeight.Medium,
                 fontSize = 14.sp,

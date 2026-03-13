@@ -15,7 +15,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
@@ -657,7 +659,7 @@ fun FlowPage(
                             )
                             .also { currentPullToLoadState = it }
 
-                    Box(modifier = Modifier.fillMaxSize()) {
+                    Column(modifier = Modifier.fillMaxSize()) {
                         LazyColumn(
                             modifier =
                                 Modifier.pullToLoad(
@@ -681,7 +683,8 @@ fun FlowPage(
                                         },
                                     )
                                     .nestedScroll(scrollBehavior.nestedScrollConnection)
-                                    .fillMaxSize()
+                                    .fillMaxWidth()
+                                    .weight(1f)
                                     .drawVerticalScrollIndicator(listState),
                             state = listState,
                         ) {
@@ -715,33 +718,36 @@ fun FlowPage(
                                 einkPageStart = einkStartIndex,
                                 einkPageEnd = einkEndIndex,
                             )
-                            item {
-                                if (einkMode) {
-                                    EInkPaginationBar(
-                                        currentPage = einkCurrentPage + 1,
-                                        totalPages = einkTotalPages,
-                                        onPrev = {
-                                            if (einkCurrentPage > 0) {
-                                                einkCurrentPage--
-                                                scope.launch { listState.scrollToItem(0) }
-                                            }
-                                        },
-                                        onNext = {
-                                            if (einkCurrentPage < einkTotalPages - 1) {
-                                                einkCurrentPage++
-                                                scope.launch { listState.scrollToItem(0) }
-                                            }
-                                        },
+                            if (!einkMode) {
+                                item {
+                                    Spacer(modifier = Modifier.height(128.dp))
+                                    Spacer(
+                                        modifier =
+                                            Modifier.windowInsetsBottomHeight(
+                                                WindowInsets.navigationBars
+                                            )
                                     )
                                 }
-                                Spacer(modifier = Modifier.height(128.dp))
-                                Spacer(
-                                    modifier =
-                                        Modifier.windowInsetsBottomHeight(
-                                            WindowInsets.navigationBars
-                                        )
-                                )
                             }
+                        }
+                        if (einkMode) {
+                            EInkPaginationBar(
+                                currentPage = einkCurrentPage + 1,
+                                totalPages = einkTotalPages,
+                                totalArticles = pagingItems.itemCount,
+                                onPrev = {
+                                    if (einkCurrentPage > 0) {
+                                        einkCurrentPage--
+                                        scope.launch { listState.scrollToItem(0) }
+                                    }
+                                },
+                                onNext = {
+                                    if (einkCurrentPage < einkTotalPages - 1) {
+                                        einkCurrentPage++
+                                        scope.launch { listState.scrollToItem(0) }
+                                    }
+                                },
+                            )
                         }
                     }
                 }
