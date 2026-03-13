@@ -48,7 +48,9 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -146,6 +148,9 @@ fun FlowPage(
 
     val einkItemsPerPage = 15
     var einkCurrentPage by rememberSaveable { mutableStateOf(0) }
+    // Hoisted so bottomBar can read them (updated via SideEffect inside AnimatedContent)
+    var einkTotalPagesState by remember { mutableIntStateOf(1) }
+    var einkArticleCountState by remember { mutableIntStateOf(0) }
 
     val flowUiState = viewModel.flowUiState.collectAsStateValue()
     if (flowUiState == null) return
@@ -304,8 +309,13 @@ fun FlowPage(
                     } ?: -1
 
                 if (index != -1) {
-                    snapAppBarToCollapsed()
-                    listState.requestScrollToItem(index, scrollOffset = -400)
+                    if (einkMode) {
+                        // Restore to the page containing this article
+                        einkCurrentPage = index / einkItemsPerPage
+                    } else {
+                        snapAppBarToCollapsed()
+                        listState.requestScrollToItem(index, scrollOffset = -400)
+                    }
                 }
             }
         }
@@ -543,6 +553,11 @@ fun FlowPage(
                     val einkTotalPages = maxOf(1, (pagingItems.itemCount + einkItemsPerPage - 1) / einkItemsPerPage)
                     val einkStartIndex = if (einkMode) einkCurrentPage * einkItemsPerPage else null
                     val einkEndIndex = if (einkMode) (einkCurrentPage + 1) * einkItemsPerPage else null
+                    // Hoist pagination state up so bottomBar can access it
+                    SideEffect {
+                        einkTotalPagesState = einkTotalPages
+                        einkArticleCountState = pagingItems.itemCount
+                    }
 
                     if (markAsReadOnScroll && filterState.filter.isUnread()) {
                         LaunchedEffect(listState.isScrollInProgress) {
@@ -659,8 +674,8 @@ fun FlowPage(
                             )
                             .also { currentPullToLoadState = it }
 
-                    Column(modifier = Modifier.fillMaxSize()) {
-                        LazyColumn(
+                    LazyColumn(
+                            userScrollEnabled = !einkMode,
                             modifier =
                                 Modifier.pullToLoad(
                                         state = pullToLoadState,
@@ -683,8 +698,7 @@ fun FlowPage(
                                         },
                                     )
                                     .nestedScroll(scrollBehavior.nestedScrollConnection)
-                                    .fillMaxWidth()
-                                    .weight(1f)
+                                    .fillMaxSize()
                                     .drawVerticalScrollIndicator(listState),
                             state = listState,
                         ) {
@@ -707,6 +721,8 @@ fun FlowPage(
                                             openLinkSpecificBrowser,
                                         )
                                     } else {
+                                        // Record which page this article is on before navigating
+                                        if (einkMode) einkCurrentPage = index / einkItemsPerPage
                                         navigateToArticle(articleWithFeed.article.id, index)
                                     }
                                 },
@@ -730,50 +746,50 @@ fun FlowPage(
                                 }
                             }
                         }
-                        if (einkMode) {
-                            EInkPaginationBar(
-                                currentPage = einkCurrentPage + 1,
-                                totalPages = einkTotalPages,
-                                totalArticles = pagingItems.itemCount,
-                                onPrev = {
-                                    if (einkCurrentPage > 0) {
-                                        einkCurrentPage--
-                                        scope.launch { listState.scrollToItem(0) }
-                                    }
-                                },
-                                onNext = {
-                                    if (einkCurrentPage < einkTotalPages - 1) {
-                                        einkCurrentPage++
-                                        scope.launch { listState.scrollToItem(0) }
-                                    }
-                                },
-                            )
-                        }
-                    }
                 }
             },
             floatingActionButtonPosition = FabPosition.Center,
             bottomBar = {
-                FilterBar(
-                    modifier =
-                        with(sharedTransitionScope) {
-                            Modifier.sharedElement(
-                                sharedContentState = rememberSharedContentState("filterBar"),
-                                animatedVisibilityScope = animatedVisibilityScope,
-                            )
+                if (einkMode) {
+                    EInkPaginationBar(
+                        currentPage = einkCurrentPage + 1,
+                        totalPages = einkTotalPagesState,
+                        totalArticles = einkArticleCountState,
+                        onPrev = {
+                            if (einkCurrentPage > 0) {
+                                einkCurrentPage--
+                                scope.launch { listState.scrollToItem(0) }
+                            }
                         },
-                    filter = filterUiState.filter,
-                    filterBarStyle = filterBarStyle.value,
-                    filterBarFilled = true,
-                    filterBarPadding = filterBarPadding.dp,
-                    filterBarTonalElevation = filterBarTonalElevation.value.dp,
-                ) {
-                    if (filterUiState.filter != it) {
-                        viewModel.changeFilter(filterUiState.copy(filter = it))
-                    } else {
-                        scope.launch {
-                            if (listState.firstVisibleItemIndex != 0) {
-                                listState.animateScrollToItem(0)
+                        onNext = {
+                            if (einkCurrentPage < einkTotalPagesState - 1) {
+                                einkCurrentPage++
+                                scope.launch { listState.scrollToItem(0) }
+                            }
+                        },
+                    )
+                } else {
+                    FilterBar(
+                        modifier =
+                            with(sharedTransitionScope) {
+                                Modifier.sharedElement(
+                                    sharedContentState = rememberSharedContentState("filterBar"),
+                                    animatedVisibilityScope = animatedVisibilityScope,
+                                )
+                            },
+                        filter = filterUiState.filter,
+                        filterBarStyle = filterBarStyle.value,
+                        filterBarFilled = true,
+                        filterBarPadding = filterBarPadding.dp,
+                        filterBarTonalElevation = filterBarTonalElevation.value.dp,
+                    ) {
+                        if (filterUiState.filter != it) {
+                            viewModel.changeFilter(filterUiState.copy(filter = it))
+                        } else {
+                            scope.launch {
+                                if (listState.firstVisibleItemIndex != 0) {
+                                    listState.animateScrollToItem(0)
+                                }
                             }
                         }
                     }
