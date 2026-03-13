@@ -105,7 +105,7 @@ fun EInkPaginatedContent(
 
     LaunchedEffect(Unit) {
         VolumeKeyEventBus.events
-            .debounce(150)
+            .debounce(300)
             .collect { event ->
                 when (event) {
                     VolumeKeyEvent.NEXT -> {

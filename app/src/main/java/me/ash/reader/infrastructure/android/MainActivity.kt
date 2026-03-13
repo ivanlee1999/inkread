@@ -213,20 +213,49 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        Log.d("InkRead", "dispatchKeyEvent: code=${event.keyCode} action=${event.action} repeat=${event.repeatCount}")
         if (settingsProvider.settings.einkMode.isEInkMode()) {
             when (event.keyCode) {
                 KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_UP -> {
                     if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
                         val direction = if (event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)
                             VolumeKeyEvent.NEXT else VolumeKeyEvent.PREV
+                        Log.d("InkRead", "Volume key: emitting $direction")
                         VolumeKeyEventBus.emit(direction)
                     }
-                    return true  // Always consume vol keys in e-ink mode
+                    return true
                 }
-                KeyEvent.KEYCODE_VOLUME_MUTE -> return true  // Consume mute too (KOReader pattern)
+                KeyEvent.KEYCODE_VOLUME_MUTE -> return true
             }
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        Log.d("InkRead", "onKeyDown: code=$keyCode action=${event.action} repeat=${event.repeatCount}")
+        if (settingsProvider.settings.einkMode.isEInkMode()) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_UP -> {
+                    if (event.repeatCount == 0) {
+                        val direction = if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)
+                            VolumeKeyEvent.NEXT else VolumeKeyEvent.PREV
+                        Log.d("InkRead", "onKeyDown volume: emitting $direction")
+                        VolumeKeyEventBus.emit(direction)
+                    }
+                    return true
+                }
+            }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        if (settingsProvider.settings.einkMode.isEInkMode()) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_UP -> return true
+            }
+        }
+        return super.onKeyUp(keyCode, event)
     }
 
     override fun onResume() {

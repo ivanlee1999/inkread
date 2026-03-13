@@ -78,9 +78,13 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.zIndex
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
+import me.ash.reader.infrastructure.android.VolumeKeyEvent
+import me.ash.reader.infrastructure.android.VolumeKeyEventBus
 import me.ash.reader.R
 import me.ash.reader.domain.data.PagerData
 import me.ash.reader.domain.model.article.ArticleFlowItem
@@ -124,6 +128,7 @@ import me.ash.reader.ui.page.home.reading.rememberPullToLoadState
     ExperimentalMaterial3Api::class,
     ExperimentalSharedTransitionApi::class,
     ExperimentalMaterialApi::class,
+    FlowPreview::class,
 )
 @Composable
 fun FlowPage(
@@ -292,6 +297,27 @@ fun FlowPage(
     // In E-Ink mode, immediately collapse the large top app bar to reclaim whitespace
     LaunchedEffect(einkMode) {
         if (einkMode) snapAppBarToCollapsed()
+    }
+
+    if (einkMode) {
+        LaunchedEffect(Unit) {
+            VolumeKeyEventBus.events
+                .debounce(300)
+                .collect { event ->
+                    when (event) {
+                        VolumeKeyEvent.NEXT -> {
+                            if (einkCurrentPage < einkTotalPagesState - 1) {
+                                einkCurrentPage++
+                            }
+                        }
+                        VolumeKeyEvent.PREV -> {
+                            if (einkCurrentPage > 0) {
+                                einkCurrentPage--
+                            }
+                        }
+                    }
+                }
+        }
     }
 
     val readerState = viewModel.readerStateStateFlow.collectAsStateValue()

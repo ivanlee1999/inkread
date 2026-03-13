@@ -12,7 +12,14 @@ object VolumeKeyEventBus {
     private val channel = Channel<VolumeKeyEvent>(Channel.CONFLATED)
     val events = channel.receiveAsFlow()
 
+    private var lastEmitTime = 0L
+    private const val COOLDOWN_MS = 400L
+
     fun emit(event: VolumeKeyEvent) {
-        channel.trySend(event)
+        val now = System.currentTimeMillis()
+        if (now - lastEmitTime >= COOLDOWN_MS) {
+            lastEmitTime = now
+            channel.trySend(event)
+        }
     }
 }
