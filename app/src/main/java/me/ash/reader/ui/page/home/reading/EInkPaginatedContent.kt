@@ -188,6 +188,11 @@ fun EInkPaginatedContent(
                                 EInkJsInterface { pages ->
                                     Handler(Looper.getMainLooper()).post {
                                         totalPages = maxOf(1, pages)
+                                        // Clamp currentPage if totalPages decreased (e.g. after image load recount)
+                                        if (currentPage >= totalPages) {
+                                            currentPage = totalPages - 1
+                                            webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
+                                        }
                                         onPageChanged?.invoke(currentPage + 1, totalPages)
                                     }
                                 },
@@ -403,18 +408,40 @@ p, li, blockquote {
 }
 </style>
 <script>
+var _vw, _totalPages = 1;
 function setupPagination() {
-    var vw = window.innerWidth;
+    _vw = window.innerWidth;
     var vh = window.innerHeight;
     document.body.style.height = vh + 'px';
-    document.body.style.columnWidth = (vw - 32) + 'px';
-    setTimeout(function() {
-        var n = Math.ceil(document.body.scrollWidth / vw);
-        Android.onTotalPages(Math.max(1, n));
-    }, 250);
+    document.body.style.columnWidth = (_vw - 32) + 'px';
+    // Recount after images load and a delay for layout
+    recountPages();
+    window.addEventListener('load', function() { recountPages(); });
+    // Also recount after longer delay for lazy-loaded content
+    setTimeout(recountPages, 500);
+    setTimeout(recountPages, 1500);
+}
+function recountPages() {
+    var sw = document.body.scrollWidth;
+    // scrollWidth can be slightly larger than content due to rounding
+    // Use floor + check if there's actual content on the last page
+    var n = Math.max(1, Math.round(sw / _vw));
+    // Verify last page has content by checking if scrolling there shows anything
+    if (n > 1) {
+        // Check if actual content extends to the last page
+        var lastPageStart = (n - 1) * _vw;
+        if (sw <= lastPageStart + 1) {
+            n = n - 1;  // Last page is empty
+        }
+    }
+    _totalPages = Math.max(1, n);
+    Android.onTotalPages(_totalPages);
 }
 function goToPage(n) {
-    document.body.style.transform = 'translateX(-' + (n * window.innerWidth) + 'px)';
+    // Clamp to valid range
+    if (n < 0) n = 0;
+    if (n >= _totalPages) n = _totalPages - 1;
+    document.body.style.transform = 'translateX(-' + (n * _vw) + 'px)';
 }
 document.addEventListener('keydown', function(e) {
     if (e.key === 'AudioVolumeUp' || e.key === 'AudioVolumeDown' || e.key === 'VolumeUp' || e.key === 'VolumeDown') {
