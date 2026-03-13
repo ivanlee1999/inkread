@@ -43,7 +43,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
 import me.ash.reader.infrastructure.android.VolumeKeyEvent
 import me.ash.reader.infrastructure.android.VolumeKeyEventBus
+import me.ash.reader.infrastructure.preference.EInkChineseFontPreference
+import me.ash.reader.infrastructure.preference.EInkEnglishFontPreference
 import me.ash.reader.infrastructure.preference.EInkFontSizePreference
+import me.ash.reader.infrastructure.preference.LocalEInkChineseFont
+import me.ash.reader.infrastructure.preference.LocalEInkEnglishFont
 import me.ash.reader.infrastructure.preference.LocalEInkFontSize
 import me.ash.reader.ui.page.home.flow.EInkPaginationBar
 
@@ -67,6 +71,8 @@ fun EInkPaginatedContent(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val einkFontSize = LocalEInkFontSize.current
+    val einkEnglishFont = LocalEInkEnglishFont.current
+    val einkChineseFont = LocalEInkChineseFont.current
     val fontSizeIndex = EInkFontSizePreference.values.indexOf(einkFontSize)
         .takeIf { it >= 0 } ?: EInkFontSizePreference.values.indexOf(EInkFontSizePreference.default)
 
@@ -119,8 +125,8 @@ fun EInkPaginatedContent(
         }
     }
 
-    val htmlContent = remember(content, einkFontSize, title, feedName, author, publishedDate) {
-        buildArticleHtml(content, einkFontSize, title, feedName, author, publishedDate)
+    val htmlContent = remember(content, einkFontSize, einkEnglishFont, einkChineseFont, title, feedName, author, publishedDate) {
+        buildArticleHtml(content, einkFontSize, einkEnglishFont, einkChineseFont, title, feedName, author, publishedDate)
     }
 
     Column(
@@ -133,7 +139,7 @@ fun EInkPaginatedContent(
                 .weight(1f)
                 .fillMaxWidth(),
         ) {
-            key(content, einkFontSize) {
+            key(content, einkFontSize, einkEnglishFont, einkChineseFont) {
                 AndroidView(
                     factory = { ctx ->
                         WebView(ctx).apply {
@@ -168,7 +174,7 @@ fun EInkPaginatedContent(
                                 "Android",
                             )
                             webViewRef.value = this
-                            loadDataWithBaseURL(null, htmlContent, "text/html", "UTF-8", null)
+                            loadDataWithBaseURL("file:///android_asset/", htmlContent, "text/html", "UTF-8", null)
                         }
                     },
                     modifier = Modifier.fillMaxSize(),
@@ -269,6 +275,8 @@ private class EInkJsInterface(private val onTotalPages: (Int) -> Unit) {
 private fun buildArticleHtml(
     content: String,
     fontSize: Int,
+    englishFont: Int,
+    chineseFont: Int,
     title: String,
     feedName: String,
     author: String?,
@@ -284,16 +292,54 @@ private fun buildArticleHtml(
     val escapedTitle = title.esc()
     val escapedMeta = metaLine.esc()
 
+    val englishFontFace = if (englishFont == 1) """
+@font-face {
+    font-family: 'SourceSerif4';
+    src: url('fonts/SourceSerif4-Regular.ttf') format('truetype');
+    font-weight: normal;
+    font-style: normal;
+}
+@font-face {
+    font-family: 'SourceSerif4';
+    src: url('fonts/SourceSerif4-Bold.ttf') format('truetype');
+    font-weight: bold;
+    font-style: normal;
+}""" else ""
+
+    val chineseFontFace = if (chineseFont == 1) """
+@font-face {
+    font-family: 'NotoSerifSC';
+    src: url('fonts/NotoSerifSC-Regular.otf') format('opentype');
+    font-weight: normal;
+    font-style: normal;
+}
+@font-face {
+    font-family: 'NotoSerifSC';
+    src: url('fonts/NotoSerifSC-Bold.otf') format('opentype');
+    font-weight: bold;
+    font-style: normal;
+}""" else ""
+
+    val englishFamilyCss = EInkEnglishFontPreference.fontFamilyCss[englishFont]
+    val chineseFamilyCss = EInkChineseFontPreference.fontFamilyCss[chineseFont]
+    val fontFamilyCss = if (chineseFamilyCss.isNotEmpty()) {
+        "$englishFamilyCss, $chineseFamilyCss"
+    } else {
+        englishFamilyCss
+    }
+
     return """<!DOCTYPE html>
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <style>
+$englishFontFace
+$chineseFontFace
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
 body {
     padding: 16px;
-    font-family: Georgia, serif;
+    font-family: $fontFamilyCss;
     font-size: ${fontSize}px;
     line-height: 1.6;
     color: #000;

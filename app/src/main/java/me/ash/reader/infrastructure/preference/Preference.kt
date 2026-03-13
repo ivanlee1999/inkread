@@ -93,5 +93,7 @@ fun Preferences.toSettings(): Settings {
         // E-Ink
         einkMode = EInkModePreference.fromPreferences(this),
         einkFontSize = EInkFontSizePreference.fromPreferences(this),
+        einkEnglishFont = EInkEnglishFontPreference.fromPreferences(this),
+        einkChineseFont = EInkChineseFontPreference.fromPreferences(this),
     )
 }

@@ -144,6 +144,8 @@ class SettingsProvider @Inject constructor(
             // E-Ink
             LocalEInkMode provides settings.einkMode,
             LocalEInkFontSize provides settings.einkFontSize,
+            LocalEInkEnglishFont provides settings.einkEnglishFont,
+            LocalEInkChineseFont provides settings.einkChineseFont,
         ) {
             content()
         }
