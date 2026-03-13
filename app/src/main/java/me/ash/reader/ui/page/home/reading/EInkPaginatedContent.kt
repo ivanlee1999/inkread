@@ -145,6 +145,13 @@ fun EInkPaginatedContent(
                             setBackgroundColor(android.graphics.Color.WHITE)
                             isHorizontalScrollBarEnabled = false
                             isVerticalScrollBarEnabled = false
+                            isFocusable = false
+                            isFocusableInTouchMode = false
+                            setOnKeyListener { _, _, _ ->
+                                // Return false so WebView never consumes key events;
+                                // volume keys are handled by Activity.dispatchKeyEvent
+                                false
+                            }
                             webViewClient = object : WebViewClient() {
                                 override fun shouldOverrideUrlLoading(
                                     view: WebView?,
@@ -343,6 +350,12 @@ function setupPagination() {
 function goToPage(n) {
     document.body.style.transform = 'translateX(-' + (n * window.innerWidth) + 'px)';
 }
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'AudioVolumeUp' || e.key === 'AudioVolumeDown' || e.key === 'VolumeUp' || e.key === 'VolumeDown') {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+});
 </script>
 </head>
 <body onload="setupPagination()">
