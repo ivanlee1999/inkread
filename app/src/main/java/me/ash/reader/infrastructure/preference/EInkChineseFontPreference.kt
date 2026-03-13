@@ -13,36 +13,46 @@ import me.ash.reader.ui.ext.put
 val LocalEInkChineseFont = compositionLocalOf { EInkChineseFontPreference.default }
 
 object EInkChineseFontPreference {
-    /** 0=System, 1=NotoSerifSC, 2=LXGWWenKai */
-    val values = listOf(0, 1, 2)
-    val names = listOf("System Default", "Noto Serif SC", "LXGW WenKai")
+    val values = (0..5).toList()
+    val names = listOf(
+        "System Default",
+        "Noto Serif SC (思源宋体)",
+        "Noto Sans SC (思源黑体)",
+        "LXGW WenKai (霞鹜文楷)",
+        "ZCOOL XiaoWei (站酷小薇体)",
+        "Ma Shan Zheng (马善政楷体)",
+    )
     const val default = 0
 
-    /**
-     * Additional CSS font-family entry to insert for Chinese text.
-     * Empty string means no override (system default).
-     */
     val fontFamilyCss = listOf(
-        "",               // System: no override
+        "",
         "'NotoSerifSC'",
+        "'NotoSansSC'",
         "'LXGWWenKai'",
+        "'ZCOOLXiaoWei'",
+        "'MaShanZheng'",
     )
 
-    /** CSS font-family name used in @font-face (null = system, no download needed). */
-    val fontCssNames = listOf<String?>(null, "NotoSerifSC", "LXGWWenKai")
+    val fontCssNames = listOf<String?>(
+        null, "NotoSerifSC", "NotoSansSC", "LXGWWenKai", "ZCOOLXiaoWei", "MaShanZheng",
+    )
 
-    /** Local filename to store in filesDir/fonts/ (null = system font). */
     val fontFileNames = listOf<String?>(
         null,
-        "NotoSerifSC-Regular.otf",
+        "NotoSerifSC-Regular.ttf",
+        "NotoSansSC-Regular.otf",
         "LXGWWenKai-Regular.ttf",
+        "ZCOOLXiaoWei-Regular.ttf",
+        "MaShanZheng-Regular.ttf",
     )
 
-    /** Download URL for each font (null = system font, no download needed). */
     val fontUrls = listOf<String?>(
         null,
-        "https://github.com/notofonts/noto-cjk/raw/main/Serif/SubsetOTF/SC/NotoSerifSC-Regular.otf",
+        "https://fonts.gstatic.com/s/notoserifsc/v35/H4cyBXePl9DZ0Xe7gG9cyOj7uK2-n-D2rd4FY7SCqyWv.ttf",
+        "https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf",
         "https://github.com/lxgw/LxgwWenKai/releases/download/v1.501/LXGWWenKai-Regular.ttf",
+        "https://fonts.gstatic.com/s/zcoolxiaowei/v15/i7dMIFFrTRywPpUVX9_RJyM1YFI.ttf",
+        "https://fonts.gstatic.com/s/mashanzheng/v17/NaPecZTRCLxvwo41b4gvzkXaRMQ.ttf",
     )
 
     fun put(context: Context, scope: CoroutineScope, value: Int) {
