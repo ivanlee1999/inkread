@@ -16,6 +16,7 @@ import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.WindowInsets
@@ -273,6 +274,11 @@ fun FlowPage(
                 }
             }
         }
+
+    // In E-Ink mode, immediately collapse the large top app bar to reclaim whitespace
+    LaunchedEffect(einkMode) {
+        if (einkMode) snapAppBarToCollapsed()
+    }
 
     val readerState = viewModel.readerStateStateFlow.collectAsStateValue()
 
@@ -676,6 +682,7 @@ fun FlowPage(
 
                     LazyColumn(
                             userScrollEnabled = !einkMode,
+                            contentPadding = if (einkMode) PaddingValues(bottom = 64.dp) else PaddingValues(),
                             modifier =
                                 Modifier.pullToLoad(
                                         state = pullToLoadState,
