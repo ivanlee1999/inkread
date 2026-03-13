@@ -12,6 +12,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import me.ash.reader.infrastructure.preference.LocalBasicFonts
+import me.ash.reader.infrastructure.preference.LocalEInkMode
 import me.ash.reader.infrastructure.preference.LocalThemeIndex
 import me.ash.reader.ui.theme.palette.LocalTonalPalettes
 import me.ash.reader.ui.theme.palette.TonalPalettes
@@ -28,10 +29,11 @@ fun AppTheme(
     content: @Composable () -> Unit,
 ) {
     val view = LocalView.current
+    val isEInkMode = LocalEInkMode.current.isEInkMode()
 
-    LaunchedEffect(useDarkTheme) {
+    LaunchedEffect(useDarkTheme, isEInkMode) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            if (useDarkTheme) {
+            if (useDarkTheme && !isEInkMode) {
                 view.windowInsetsController?.setSystemBarsAppearance(
                     0,
                     APPEARANCE_LIGHT_STATUS_BARS,
@@ -45,37 +47,46 @@ fun AppTheme(
         }
     }
 
-    val themeIndex = LocalThemeIndex.current
+    if (isEInkMode) {
+        MaterialTheme(
+            colorScheme = EInkColorScheme,
+            typography = EInkTypography.applyTextDirection(),
+            shapes = Shapes,
+            content = content,
+        )
+    } else {
+        val themeIndex = LocalThemeIndex.current
 
-    val tonalPalettes =
-        wallpaperPalettes[
-            if (themeIndex >= wallpaperPalettes.size) {
-                when {
-                    wallpaperPalettes.size == 5 -> 0
-                    wallpaperPalettes.size > 5 -> 5
-                    else -> 0
-                }
-            } else {
-                themeIndex
-            }]
+        val tonalPalettes =
+            wallpaperPalettes[
+                if (themeIndex >= wallpaperPalettes.size) {
+                    when {
+                        wallpaperPalettes.size == 5 -> 0
+                        wallpaperPalettes.size > 5 -> 5
+                        else -> 0
+                    }
+                } else {
+                    themeIndex
+                }]
 
-    ProvideZcamViewingConditions {
-        CompositionLocalProvider(
-            LocalTonalPalettes provides tonalPalettes.apply { Preparing() },
-            LocalTextStyle provides LocalTextStyle.current.applyTextDirection(),
-        ) {
-            val lightColors = dynamicLightColorScheme()
-            val darkColors = dynamicDarkColorScheme()
-            MaterialTheme(
-                motionScheme = MotionScheme.expressive(),
-                colorScheme = if (useDarkTheme) darkColors else lightColors,
-                typography =
-                    LocalBasicFonts.current
-                        .asTypography(LocalContext.current)
-                        .applyTextDirection(),
-                shapes = Shapes,
-                content = content,
-            )
+        ProvideZcamViewingConditions {
+            CompositionLocalProvider(
+                LocalTonalPalettes provides tonalPalettes.apply { Preparing() },
+                LocalTextStyle provides LocalTextStyle.current.applyTextDirection(),
+            ) {
+                val lightColors = dynamicLightColorScheme()
+                val darkColors = dynamicDarkColorScheme()
+                MaterialTheme(
+                    motionScheme = MotionScheme.expressive(),
+                    colorScheme = if (useDarkTheme) darkColors else lightColors,
+                    typography =
+                        LocalBasicFonts.current
+                            .asTypography(LocalContext.current)
+                            .applyTextDirection(),
+                    shapes = Shapes,
+                    content = content,
+                )
+            }
         }
     }
 }

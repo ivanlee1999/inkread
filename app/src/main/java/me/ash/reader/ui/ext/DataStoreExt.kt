@@ -201,6 +201,9 @@ sealed interface PreferencesKey {
         // Languages
         const val languages = "languages"
 
+        // E-Ink
+        const val einkMode = "einkMode"
+
         private val keyList =
             listOf(
                 // Version
@@ -275,6 +278,8 @@ sealed interface PreferencesKey {
                 IntKey(sharedContent),
                 // Languages
                 IntKey(languages),
+                // E-Ink
+                IntKey(einkMode),
             )
 
         val keys = keyList.associateBy { it.name }
@@ -362,6 +367,9 @@ data class DataStoreKey<T>(val key: Preferences.Key<T>, val type: Class<T>) {
 
         // Languages
         const val languages = "languages"
+
+        // E-Ink
+        const val einkMode = "einkMode"
 
         val keys: MutableMap<String, DataStoreKey<*>> =
             mutableMapOf(
@@ -513,6 +521,8 @@ data class DataStoreKey<T>(val key: Preferences.Key<T>, val type: Class<T>) {
                 sharedContent to DataStoreKey(intPreferencesKey(sharedContent), Int::class.java),
                 // Languages
                 languages to DataStoreKey(intPreferencesKey(languages), Int::class.java),
+                // E-Ink
+                einkMode to DataStoreKey(intPreferencesKey(einkMode), Int::class.java),
             )
     }
 }

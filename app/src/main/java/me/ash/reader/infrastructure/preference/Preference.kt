@@ -89,5 +89,8 @@ fun Preferences.toSettings(): Settings {
 
         // Languages
         languages = LanguagesPreference.fromPreferences(this),
+
+        // E-Ink
+        einkMode = EInkModePreference.fromPreferences(this),
     )
 }

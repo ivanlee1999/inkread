@@ -82,5 +82,8 @@ data class Settings(
 
     // Languages
     val languages: LanguagesPreference = LanguagesPreference.default,
+
+    // E-Ink
+    val einkMode: EInkModePreference = EInkModePreference.default,
 )
 

@@ -140,6 +140,9 @@ class SettingsProvider @Inject constructor(
 
             // Languages
             LocalLanguages provides settings.languages,
+
+            // E-Ink
+            LocalEInkMode provides settings.einkMode,
         ) {
             content()
         }
