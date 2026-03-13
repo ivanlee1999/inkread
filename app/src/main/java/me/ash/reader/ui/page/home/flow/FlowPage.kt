@@ -142,6 +142,9 @@ fun FlowPage(
     val pullToSwitchFeed = settings.pullToSwitchFeed
     val einkMode = LocalEInkMode.current.isEInkMode()
 
+    val einkItemsPerPage = 15
+    var einkCurrentPage by rememberSaveable { mutableStateOf(0) }
+
     val flowUiState = viewModel.flowUiState.collectAsStateValue()
     if (flowUiState == null) return
 
@@ -531,6 +534,14 @@ fun FlowPage(
                     val filterState = flowUiState.pagerData.filterState
                     val pagingItems = pager.collectAsLazyPagingItems().also { pagingItems = it }
 
+                    // Reset E-Ink page when filter/pager changes
+                    LaunchedEffect(pager) { einkCurrentPage = 0 }
+
+                    // E-Ink pagination derived state
+                    val einkTotalPages = maxOf(1, (pagingItems.itemCount + einkItemsPerPage - 1) / einkItemsPerPage)
+                    val einkStartIndex = if (einkMode) einkCurrentPage * einkItemsPerPage else null
+                    val einkEndIndex = if (einkMode) (einkCurrentPage + 1) * einkItemsPerPage else null
+
                     if (markAsReadOnScroll && filterState.filter.isUnread()) {
                         LaunchedEffect(listState.isScrollInProgress) {
                             if (!listState.isScrollInProgress) {
@@ -701,8 +712,28 @@ fun FlowPage(
                                 onMarkAboveAsRead = onMarkAboveAsRead,
                                 onMarkBelowAsRead = onMarkBelowAsRead,
                                 onShare = onShare,
+                                einkPageStart = einkStartIndex,
+                                einkPageEnd = einkEndIndex,
                             )
                             item {
+                                if (einkMode) {
+                                    EInkPaginationBar(
+                                        currentPage = einkCurrentPage + 1,
+                                        totalPages = einkTotalPages,
+                                        onPrev = {
+                                            if (einkCurrentPage > 0) {
+                                                einkCurrentPage--
+                                                scope.launch { listState.scrollToItem(0) }
+                                            }
+                                        },
+                                        onNext = {
+                                            if (einkCurrentPage < einkTotalPages - 1) {
+                                                einkCurrentPage++
+                                                scope.launch { listState.scrollToItem(0) }
+                                            }
+                                        },
+                                    )
+                                }
                                 Spacer(modifier = Modifier.height(128.dp))
                                 Spacer(
                                     modifier =

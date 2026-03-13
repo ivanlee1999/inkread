@@ -29,16 +29,32 @@ fun LazyListScope.ArticleList(
     onMarkAboveAsRead: ((ArticleWithFeed) -> Unit)? = null,
     onMarkBelowAsRead: ((ArticleWithFeed) -> Unit)? = null,
     onShare: ((ArticleWithFeed) -> Unit)? = null,
+    einkPageStart: Int? = null,
+    einkPageEnd: Int? = null,
 ) {
     // https://issuetracker.google.com/issues/193785330
     // FIXME: Using sticky header with paging-compose need to iterate through the entire list
     //  to figure out where to add sticky headers, which significantly impacts the performance
     if (!isShowStickyHeader) {
+        val start = einkPageStart ?: 0
+        val end = if (einkPageEnd != null) {
+            einkPageEnd.coerceAtMost(pagingItems.itemCount)
+        } else {
+            pagingItems.itemCount
+        }
+        val count = (end - start).coerceAtLeast(0)
         items(
-            count = pagingItems.itemCount,
-            key = pagingItems.itemKey(::key),
-            contentType = pagingItems.itemContentType(::contentType),
-        ) { index ->
+            count = count,
+            key = { relIndex ->
+                val absIndex = relIndex + start
+                pagingItems.peek(absIndex)?.let { key(it) } ?: absIndex
+            },
+            contentType = { relIndex ->
+                val absIndex = relIndex + start
+                pagingItems.peek(absIndex)?.let { contentType(it) } ?: 0
+            },
+        ) { relIndex ->
+            val index = relIndex + start
             when (val item = pagingItems[index]) {
                 is ArticleFlowItem.Article -> {
                     val article = item.articleWithFeed.article
@@ -52,7 +68,7 @@ fun LazyListScope.ArticleList(
                         onToggleStarred = onToggleStarred,
                         onToggleRead = onToggleRead,
                         onMarkAboveAsRead =
-                            if (index == 1) null
+                            if (index <= 1) null
                             else onMarkAboveAsRead, // index == 0 -> ArticleFlowItem.Date
                         onMarkBelowAsRead =
                             if (index == pagingItems.itemCount - 1) null else onMarkBelowAsRead,
