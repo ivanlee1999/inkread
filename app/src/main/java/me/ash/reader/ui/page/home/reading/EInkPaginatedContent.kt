@@ -38,7 +38,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.debounce
 import me.ash.reader.infrastructure.android.VolumeKeyEvent
 import me.ash.reader.infrastructure.android.VolumeKeyEventBus
 import me.ash.reader.infrastructure.preference.EInkFontSizePreference
@@ -46,6 +48,7 @@ import me.ash.reader.infrastructure.preference.LocalEInkFontSize
 import me.ash.reader.ui.page.home.flow.EInkPaginationBar
 
 @SuppressLint("SetJavaScriptEnabled")
+@OptIn(FlowPreview::class)
 @Composable
 fun EInkPaginatedContent(
     modifier: Modifier = Modifier,
@@ -58,6 +61,8 @@ fun EInkPaginatedContent(
     contentPadding: PaddingValues = PaddingValues(),
     onImageClick: ((imgUrl: String, altText: String) -> Unit)? = null,
     onPageChanged: ((currentPage: Int, totalPages: Int) -> Unit)? = null,
+    onPrevArticle: (() -> Unit)? = null,
+    onNextArticle: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -76,28 +81,26 @@ fun EInkPaginatedContent(
     }
 
     LaunchedEffect(Unit) {
-        var lastEventMs = 0L
-        VolumeKeyEventBus.events.collect { event ->
-            val now = System.currentTimeMillis()
-            if (now - lastEventMs < 300) return@collect
-            lastEventMs = now
-            when (event) {
-                VolumeKeyEvent.VOLUME_DOWN -> {
-                    if (currentPage < totalPages - 1) {
-                        currentPage++
-                        webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
-                        onPageChanged?.invoke(currentPage + 1, totalPages)
+        VolumeKeyEventBus.events
+            .debounce(150)
+            .collect { event ->
+                when (event) {
+                    VolumeKeyEvent.NEXT -> {
+                        if (currentPage < totalPages - 1) {
+                            currentPage++
+                            webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
+                            onPageChanged?.invoke(currentPage + 1, totalPages)
+                        }
                     }
-                }
-                VolumeKeyEvent.VOLUME_UP -> {
-                    if (currentPage > 0) {
-                        currentPage--
-                        webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
-                        onPageChanged?.invoke(currentPage + 1, totalPages)
+                    VolumeKeyEvent.PREV -> {
+                        if (currentPage > 0) {
+                            currentPage--
+                            webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
+                            onPageChanged?.invoke(currentPage + 1, totalPages)
+                        }
                     }
                 }
             }
-        }
     }
 
     fun nextPage() {
@@ -245,6 +248,8 @@ fun EInkPaginatedContent(
                     )
                 }
             },
+            onPrevArticle = onPrevArticle,
+            onNextArticle = onNextArticle,
         )
     }
 }
@@ -296,10 +301,9 @@ img {
     max-width: 100% !important;
     width: auto !important;
     height: auto !important;
-    max-height: calc(100vh - 32px);
+    max-height: 90vh;
     object-fit: contain;
     break-inside: avoid;
-    page-break-inside: avoid;
     display: block;
     margin: 8px auto;
 }

@@ -147,6 +147,18 @@ fun ReadingPage(
                                     currentImageData = ImageData(imgUrl, altText)
                                     showFullScreenImageViewer = true
                                 },
+                                onPrevArticle = if (isPreviousArticleAvailable) {
+                                    {
+                                        val (id, index) = readerState.previousArticle!!
+                                        onLoadArticle(id, index)
+                                    }
+                                } else null,
+                                onNextArticle = if (isNextArticleAvailable) {
+                                    {
+                                        val (id, index) = readerState.nextArticle!!
+                                        onLoadArticle(id, index)
+                                    }
+                                } else null,
                             )
                         }
                     } else {

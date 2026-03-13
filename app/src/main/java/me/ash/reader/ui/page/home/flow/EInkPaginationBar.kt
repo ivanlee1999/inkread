@@ -32,6 +32,8 @@ fun EInkPaginationBar(
     canIncreaseFontSize: Boolean = false,
     onDecreaseFontSize: () -> Unit = {},
     onIncreaseFontSize: () -> Unit = {},
+    onPrevArticle: (() -> Unit)? = null,
+    onNextArticle: (() -> Unit)? = null,
 ) {
     Row(
         modifier = modifier
@@ -41,11 +43,29 @@ fun EInkPaginationBar(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // Previous article
+        IconButton(
+            onClick = { onPrevArticle?.invoke() },
+            enabled = onPrevArticle != null,
+            modifier = Modifier.size(48.dp),
+        ) {
+            Text(
+                text = "◀◀",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (onPrevArticle != null) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                },
+            )
+        }
+
         // Font size decrease
         IconButton(
             onClick = onDecreaseFontSize,
             enabled = canDecreaseFontSize,
-            modifier = Modifier.size(56.dp),
+            modifier = Modifier.size(48.dp),
         ) {
             Text(
                 text = "A-",
@@ -59,10 +79,11 @@ fun EInkPaginationBar(
             )
         }
 
+        // Previous page
         IconButton(
             onClick = onPrev,
             enabled = currentPage > 1,
-            modifier = Modifier.size(56.dp),
+            modifier = Modifier.size(48.dp),
         ) {
             Icon(
                 imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
@@ -79,15 +100,16 @@ fun EInkPaginationBar(
             text = "Page $currentPage of $totalPages",
             style = MaterialTheme.typography.bodyMedium.copy(
                 fontWeight = FontWeight.Medium,
-                fontSize = 16.sp,
+                fontSize = 14.sp,
             ),
             color = MaterialTheme.colorScheme.onSurface,
         )
 
+        // Next page
         IconButton(
             onClick = onNext,
             enabled = currentPage < totalPages,
-            modifier = Modifier.size(56.dp),
+            modifier = Modifier.size(48.dp),
         ) {
             Icon(
                 imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
@@ -104,13 +126,31 @@ fun EInkPaginationBar(
         IconButton(
             onClick = onIncreaseFontSize,
             enabled = canIncreaseFontSize,
-            modifier = Modifier.size(56.dp),
+            modifier = Modifier.size(48.dp),
         ) {
             Text(
                 text = "A+",
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Bold,
                 color = if (canIncreaseFontSize) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                },
+            )
+        }
+
+        // Next article
+        IconButton(
+            onClick = { onNextArticle?.invoke() },
+            enabled = onNextArticle != null,
+            modifier = Modifier.size(48.dp),
+        ) {
+            Text(
+                text = "▶▶",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (onNextArticle != null) {
                     MaterialTheme.colorScheme.onSurface
                 } else {
                     MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)

@@ -1,22 +1,18 @@
 package me.ash.reader.infrastructure.android
 
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.receiveAsFlow
 
 enum class VolumeKeyEvent {
-    VOLUME_UP,
-    VOLUME_DOWN,
+    NEXT,
+    PREV,
 }
 
 object VolumeKeyEventBus {
-    private val _events = MutableSharedFlow<VolumeKeyEvent>(
-        extraBufferCapacity = 1,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST,
-    )
-    val events = _events.asSharedFlow()
+    private val channel = Channel<VolumeKeyEvent>(Channel.CONFLATED)
+    val events = channel.receiveAsFlow()
 
     fun emit(event: VolumeKeyEvent) {
-        _events.tryEmit(event)
+        channel.trySend(event)
     }
 }

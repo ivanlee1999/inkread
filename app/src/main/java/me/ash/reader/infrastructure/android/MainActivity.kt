@@ -213,16 +213,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.action == KeyEvent.ACTION_DOWN && settingsProvider.settings.einkMode.isEInkMode()) {
+        if (settingsProvider.settings.einkMode.isEInkMode()) {
             when (event.keyCode) {
-                KeyEvent.KEYCODE_VOLUME_DOWN -> {
-                    VolumeKeyEventBus.emit(VolumeKeyEvent.VOLUME_DOWN)
-                    return true
+                KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_UP -> {
+                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                        val direction = if (event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)
+                            VolumeKeyEvent.NEXT else VolumeKeyEvent.PREV
+                        VolumeKeyEventBus.emit(direction)
+                    }
+                    return true  // Always consume vol keys in e-ink mode
                 }
-                KeyEvent.KEYCODE_VOLUME_UP -> {
-                    VolumeKeyEventBus.emit(VolumeKeyEvent.VOLUME_UP)
-                    return true
-                }
+                KeyEvent.KEYCODE_VOLUME_MUTE -> return true  // Consume mute too (KOReader pattern)
             }
         }
         return super.dispatchKeyEvent(event)
