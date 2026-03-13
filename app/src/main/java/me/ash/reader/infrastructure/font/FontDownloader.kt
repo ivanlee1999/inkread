@@ -4,6 +4,7 @@ import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.net.HttpURLConnection
 import java.net.URL
 
 class FontDownloader(private val context: Context) {
@@ -21,11 +22,27 @@ class FontDownloader(private val context: Context) {
         withContext(Dispatchers.IO) {
             val tempFile = File(fontsDir, "$fontName.tmp")
             try {
-                URL(url).openStream().use { input ->
+                var connection = URL(url).openConnection() as HttpURLConnection
+                connection.instanceFollowRedirects = true
+                connection.connect()
+                var redirectCount = 0
+                while (connection.responseCode in 301..302 && redirectCount < 5) {
+                    val newUrl = connection.getHeaderField("Location")
+                    connection.disconnect()
+                    connection = URL(newUrl).openConnection() as HttpURLConnection
+                    connection.instanceFollowRedirects = true
+                    connection.connect()
+                    redirectCount++
+                }
+                if (connection.responseCode != 200) {
+                    throw java.io.IOException("HTTP ${connection.responseCode}")
+                }
+                connection.inputStream.use { input ->
                     tempFile.outputStream().use { output ->
                         input.copyTo(output)
                     }
                 }
+                connection.disconnect()
                 tempFile.renameTo(file)
             } catch (e: Exception) {
                 tempFile.delete()

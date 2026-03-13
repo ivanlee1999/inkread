@@ -165,6 +165,7 @@ fun EInkPaginatedContent(
                                 ViewGroup.LayoutParams.MATCH_PARENT,
                             )
                             settings.javaScriptEnabled = true
+                            settings.allowFileAccess = true
                             @Suppress("DEPRECATION")
                             settings.allowFileAccessFromFileURLs = true
                             setBackgroundColor(android.graphics.Color.WHITE)
@@ -193,7 +194,7 @@ fun EInkPaginatedContent(
                                 "Android",
                             )
                             webViewRef.value = this
-                            loadDataWithBaseURL("file:///android_asset/", htmlContent, "text/html", "UTF-8", null)
+                            loadDataWithBaseURL(null, htmlContent, "text/html", "UTF-8", null)
                         }
                     },
                     modifier = Modifier.fillMaxSize(),
