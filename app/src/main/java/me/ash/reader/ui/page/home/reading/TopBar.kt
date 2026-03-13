@@ -1,11 +1,8 @@
 package me.ash.reader.ui.page.home.reading
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
@@ -39,7 +36,6 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import me.ash.reader.R
@@ -47,9 +43,8 @@ import me.ash.reader.infrastructure.preference.LocalReadingPageTonalElevation
 import me.ash.reader.infrastructure.preference.LocalSharedContent
 import me.ash.reader.infrastructure.preference.ReadingPageTonalElevationPreference
 import me.ash.reader.ui.component.base.FeedbackIconButton
+import me.ash.reader.ui.component.base.RYExtensibleVisibility
 import me.ash.reader.ui.page.adaptive.NavigationAction
-
-private val sizeSpec = spring<IntSize>(stiffness = 700f)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -84,11 +79,7 @@ fun TopBar(
                     Modifier.fillMaxWidth()
                         .height(WindowInsets.statusBars.asPaddingValues().calculateTopPadding())
             )
-            AnimatedVisibility(
-                visible = isShow,
-                enter = expandVertically(expandFrom = Alignment.Bottom, animationSpec = sizeSpec),
-                exit = shrinkVertically(shrinkTowards = Alignment.Bottom, animationSpec = sizeSpec),
-            ) {
+            RYExtensibleVisibility(visible = isShow) {
                 TopAppBar(
                     title = {},
                     modifier =

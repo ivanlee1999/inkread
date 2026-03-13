@@ -13,6 +13,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.semantics.Role
+import me.ash.reader.ui.theme.isEInkMode
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -24,6 +25,18 @@ fun Modifier.alphaIndicationClickable(
     onClick: () -> Unit,
 ): Modifier {
     val interactionSource = interactionSource ?: remember { MutableInteractionSource() }
+
+    if (isEInkMode) {
+        return clickable(
+            enabled = enabled,
+            onClickLabel = onClickLabel,
+            role = role,
+            indication = null,
+            interactionSource = interactionSource,
+            onClick = onClick,
+        )
+    }
+
     val isPressed by interactionSource.collectIsPressedAsState()
     val animatedAlpha by
         animateFloatAsState(
@@ -52,6 +65,18 @@ fun Modifier.alphaIndicationSelectable(
     onClick: () -> Unit,
 ): Modifier {
     val interactionSource = interactionSource ?: remember { MutableInteractionSource() }
+
+    if (isEInkMode) {
+        return selectable(
+            selected = selected,
+            enabled = enabled,
+            role = role,
+            indication = null,
+            interactionSource = interactionSource,
+            onClick = onClick,
+        )
+    }
+
     val isPressed by interactionSource.collectIsPressedAsState()
     val animatedAlpha by
         animateFloatAsState(

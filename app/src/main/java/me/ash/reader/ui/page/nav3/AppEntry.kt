@@ -24,6 +24,9 @@ import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
 import androidx.navigation3.ui.LocalNavAnimatedContentScope
 import androidx.navigation3.ui.NavDisplay
 import kotlinx.coroutines.delay
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import me.ash.reader.infrastructure.preference.LocalEInkMode
 import me.ash.reader.ui.motion.materialSharedAxisXIn
 import me.ash.reader.ui.motion.materialSharedAxisXOut
 import me.ash.reader.ui.page.adaptive.ArticleData
@@ -77,7 +80,11 @@ fun AppEntry(backStack: NavBackStack<NavKey>) {
             isDestinationHistoryAware = false,
         )
 
+    val einkMode = LocalEInkMode.current.isEInkMode()
+
     SharedTransitionLayout {
+        val noAnimTransition = { EnterTransition.None togetherWith ExitTransition.None }
+
         NavDisplay(
             modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface),
             backStack = backStack,
@@ -87,7 +94,8 @@ fun AppEntry(backStack: NavBackStack<NavKey>) {
                     rememberViewModelStoreNavEntryDecorator(),
                 ),
             transitionSpec = {
-                materialSharedAxisXIn(
+                if (einkMode) noAnimTransition()
+                else materialSharedAxisXIn(
                     initialOffsetX = { (it * INITIAL_OFFSET_FACTOR).toInt() }
                 ) togetherWith
                     materialSharedAxisXOut(
@@ -95,13 +103,15 @@ fun AppEntry(backStack: NavBackStack<NavKey>) {
                     )
             },
             popTransitionSpec = {
-                materialSharedAxisXIn(
+                if (einkMode) noAnimTransition()
+                else materialSharedAxisXIn(
                     initialOffsetX = { -(it * INITIAL_OFFSET_FACTOR).toInt() }
                 ) togetherWith
                     materialSharedAxisXOut(targetOffsetX = { (it * INITIAL_OFFSET_FACTOR).toInt() })
             },
             predictivePopTransitionSpec = {
-                materialSharedAxisXIn(
+                if (einkMode) noAnimTransition()
+                else materialSharedAxisXIn(
                     initialOffsetX = { -(it * INITIAL_OFFSET_FACTOR).toInt() }
                 ) togetherWith
                     materialSharedAxisXOut(targetOffsetX = { (it * INITIAL_OFFSET_FACTOR).toInt() })

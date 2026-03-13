@@ -96,6 +96,7 @@ import me.ash.reader.ui.component.base.RYScaffold
 import me.ash.reader.ui.component.scrollbar.VerticalScrollIndicatorFactory
 import me.ash.reader.ui.component.scrollbar.drawVerticalScrollIndicator
 import me.ash.reader.ui.component.scrollbar.scrollIndicator
+import me.ash.reader.infrastructure.preference.LocalEInkMode
 import me.ash.reader.ui.ext.collectAsStateValue
 import me.ash.reader.ui.ext.openURL
 import me.ash.reader.ui.motion.Direction
@@ -139,6 +140,7 @@ fun FlowPage(
 
     val settings = LocalSettings.current
     val pullToSwitchFeed = settings.pullToSwitchFeed
+    val einkMode = LocalEInkMode.current.isEInkMode()
 
     val flowUiState = viewModel.flowUiState.collectAsStateValue()
     if (flowUiState == null) return
@@ -492,29 +494,36 @@ fun FlowPage(
                     }
                 }
                 val contentTransitionVertical =
-                    sharedYAxisTransitionExpressive(direction = Direction.Forward)
+                    if (einkMode) EnterTransition.None togetherWith ExitTransition.None
+                    else sharedYAxisTransitionExpressive(direction = Direction.Forward)
                 val contentTransitionBackward =
-                    sharedXAxisTransitionSlow(direction = Direction.Backward)
+                    if (einkMode) EnterTransition.None togetherWith ExitTransition.None
+                    else sharedXAxisTransitionSlow(direction = Direction.Backward)
                 val contentTransitionForward =
-                    sharedXAxisTransitionSlow(direction = Direction.Forward)
+                    if (einkMode) EnterTransition.None togetherWith ExitTransition.None
+                    else sharedXAxisTransitionSlow(direction = Direction.Forward)
                 AnimatedContent(
                     targetState = flowUiState,
                     contentKey = { it.pagerData.filterState.copy(searchContent = null) },
                     transitionSpec = {
-                        val targetFilter = targetState.pagerData.filterState
-                        val initialFilter = initialState.pagerData.filterState
-
-                        if (targetFilter.filter.index > initialFilter.filter.index) {
-                            contentTransitionForward
-                        } else if (targetFilter.filter.index < initialFilter.filter.index) {
-                            contentTransitionBackward
-                        } else if (
-                            targetFilter.group != initialFilter.group ||
-                                targetFilter.feed != initialFilter.feed
-                        ) {
-                            contentTransitionVertical
-                        } else {
+                        if (einkMode) {
                             EnterTransition.None togetherWith ExitTransition.None
+                        } else {
+                            val targetFilter = targetState.pagerData.filterState
+                            val initialFilter = initialState.pagerData.filterState
+
+                            if (targetFilter.filter.index > initialFilter.filter.index) {
+                                contentTransitionForward
+                            } else if (targetFilter.filter.index < initialFilter.filter.index) {
+                                contentTransitionBackward
+                            } else if (
+                                targetFilter.group != initialFilter.group ||
+                                    targetFilter.feed != initialFilter.feed
+                            ) {
+                                contentTransitionVertical
+                            } else {
+                                EnterTransition.None togetherWith ExitTransition.None
+                            }
                         }
                     },
                 ) { flowUiState ->
@@ -642,7 +651,7 @@ fun FlowPage(
                             modifier =
                                 Modifier.pullToLoad(
                                         state = pullToLoadState,
-                                        enabled = true,
+                                        enabled = !einkMode,
                                         contentOffsetY = { fraction ->
                                             if (fraction > 0f) {
                                                 (fraction * ContentOffsetMultiple * 1.5f)
@@ -734,7 +743,7 @@ fun FlowPage(
                 }
             },
         )
-        currentPullToLoadState?.let {
+        if (!einkMode) currentPullToLoadState?.let {
             PullToSyncIndicator(pullToLoadState = it, isSyncing = isSyncing)
             PullToLoadIndicator(
                 state = it,
