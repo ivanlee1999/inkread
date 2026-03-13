@@ -662,8 +662,14 @@ fun FlowPage(
                     val filterState = flowUiState.pagerData.filterState
                     val pagingItems = pager.collectAsLazyPagingItems().also { pagingItems = it }
 
-                    // Reset E-Ink page when filter/pager changes
-                    LaunchedEffect(pager) { einkCurrentPage = 0 }
+                    // Reset E-Ink page only when feed/filter genuinely changes (not back-navigation)
+                    var lastPagerIdentity by remember { mutableStateOf<Any?>(null) }
+                    LaunchedEffect(pager) {
+                        if (lastPagerIdentity != null && lastPagerIdentity !== pager) {
+                            einkCurrentPage = 0
+                        }
+                        lastPagerIdentity = pager
+                    }
 
                     // E-Ink pagination derived state
                     val einkTotalPages = maxOf(1, (pagingItems.itemCount + einkItemsPerPage - 1) / einkItemsPerPage)
