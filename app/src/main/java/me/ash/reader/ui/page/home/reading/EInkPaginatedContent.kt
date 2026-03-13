@@ -230,7 +230,7 @@ fun EInkPaginatedContent(
                     }
 
                     // Tap zones overlay
-                    Row(modifier = Modifier.fillMaxSize()) {
+                    Row(modifier = Modifier.fillMaxSize()) tapZoneRow@{
                         // Left 40% - previous page
                         Box(
                             modifier = Modifier
@@ -243,7 +243,7 @@ fun EInkPaginatedContent(
                             contentAlignment = Alignment.Center,
                         ) {
                             // Tap zone hint
-                            AnimatedVisibility(
+                            this@tapZoneRow.AnimatedVisibility(
                                 visible = showTapHints,
                                 exit = fadeOut(),
                             ) {
@@ -274,7 +274,7 @@ fun EInkPaginatedContent(
                             contentAlignment = Alignment.Center,
                         ) {
                             // Tap zone hint
-                            AnimatedVisibility(
+                            this@tapZoneRow.AnimatedVisibility(
                                 visible = showTapHints,
                                 exit = fadeOut(),
                             ) {

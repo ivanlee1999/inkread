@@ -23,5 +23,5 @@ object EInkFontSizePreference {
     }
 
     fun fromPreferences(preferences: Preferences): Int =
-        preferences[DataStoreKey.keys[einkFontSize]?.key as? Preferences.Key<Int>] ?: default
+        preferences[DataStoreKey.keys[einkFontSize]?.key as Preferences.Key<Int>] ?: default
 }

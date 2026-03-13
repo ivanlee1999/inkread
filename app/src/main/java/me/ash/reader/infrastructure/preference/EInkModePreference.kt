@@ -36,7 +36,7 @@ sealed class EInkModePreference(val value: Int) : Preference() {
         val values = listOf(Auto, ON, OFF)
 
         fun fromPreferences(preferences: Preferences) =
-            when (preferences[DataStoreKey.keys[einkMode]?.key as? Preferences.Key<Int>]) {
+            when (preferences[DataStoreKey.keys[einkMode]?.key as Preferences.Key<Int>]) {
                 0 -> Auto
                 1 -> ON
                 2 -> OFF
