@@ -406,6 +406,25 @@ fun FlowPage(
                                 }
                             },
                             actions = {
+                                // E-Ink filter toggle: All / Unread
+                                androidx.compose.material3.TextButton(
+                                    onClick = {
+                                        val newFilter = if (filterUiState.filter.isUnread()) {
+                                            me.ash.reader.domain.model.general.Filter.All
+                                        } else {
+                                            me.ash.reader.domain.model.general.Filter.Unread
+                                        }
+                                        viewModel.changeFilter(filterUiState.copy(filter = newFilter))
+                                        einkCurrentPage = 0
+                                    },
+                                ) {
+                                    Text(
+                                        text = if (filterUiState.filter.isUnread()) "Unread" else "All",
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                }
                                 RYExtensibleVisibility(visible = !filterUiState.filter.isStarred()) {
                                     FeedbackIconButton(
                                         imageVector = Icons.Rounded.DoneAll,
