@@ -32,6 +32,20 @@ fun LazyListScope.ArticleList(
     einkPageStart: Int? = null,
     einkPageEnd: Int? = null,
 ) {
+    // Compute per-feed unread counts from already-loaded paging items
+    val feedUnreadCounts = mutableMapOf<String, Int>()
+    for (i in 0 until pagingItems.itemCount) {
+        val item = pagingItems.peek(i)
+        if (item is ArticleFlowItem.Article) {
+            val article = item.articleWithFeed.article
+            val isUnread = diffMap[article.id]?.isUnread ?: article.isUnread
+            if (isUnread) {
+                val feedId = item.articleWithFeed.feed.id
+                feedUnreadCounts[feedId] = (feedUnreadCounts[feedId] ?: 0) + 1
+            }
+        }
+    }
+
     // https://issuetracker.google.com/issues/193785330
     // FIXME: Using sticky header with paging-compose need to iterate through the entire list
     //  to figure out where to add sticky headers, which significantly impacts the performance
@@ -61,6 +75,7 @@ fun LazyListScope.ArticleList(
                     SwipeableArticleItem(
                         articleWithFeed = item.articleWithFeed,
                         isUnread = diffMap[article.id]?.isUnread ?: article.isUnread,
+                        feedUnreadCount = feedUnreadCounts[item.articleWithFeed.feed.id] ?: 0,
                         articleListTonalElevation = articleListTonalElevation,
                         onClick = { onClick(it, index) },
                         isSwipeEnabled = isSwipeEnabled,
@@ -95,6 +110,7 @@ fun LazyListScope.ArticleList(
                         SwipeableArticleItem(
                             articleWithFeed = item.articleWithFeed,
                             isUnread = diffMap[article.id]?.isUnread ?: article.isUnread,
+                            feedUnreadCount = feedUnreadCounts[item.articleWithFeed.feed.id] ?: 0,
                             articleListTonalElevation = articleListTonalElevation,
                             onClick = { onClick(it, index) },
                             isSwipeEnabled = isSwipeEnabled,

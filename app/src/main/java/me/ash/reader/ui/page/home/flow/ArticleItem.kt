@@ -90,6 +90,7 @@ fun ArticleItem(
     modifier: Modifier = Modifier,
     articleWithFeed: ArticleWithFeed,
     isUnread: Boolean = articleWithFeed.article.isUnread,
+    feedUnreadCount: Int = 0,
     onClick: (ArticleWithFeed) -> Unit = {},
     onLongClick: (() -> Unit)? = null,
 ) {
@@ -100,6 +101,7 @@ fun ArticleItem(
         modifier = modifier,
         feedName = feed.name,
         feedIconUrl = feed.icon,
+        feedUnreadCount = feedUnreadCount,
         title = article.title,
         shortDescription = article.shortDescription,
         timeString = article.dateString,
@@ -117,6 +119,7 @@ fun ArticleItem(
     modifier: Modifier = Modifier,
     feedName: String = "",
     feedIconUrl: String? = null,
+    feedUnreadCount: Int = 0,
     title: String = "",
     shortDescription: String = "",
     timeString: String? = null,
@@ -169,7 +172,7 @@ fun ArticleItem(
                                 start = if (articleListFeedIcon.value) 30.dp else 0.dp,
                                 end = 10.dp,
                             ),
-                    text = feedName,
+                    text = if (feedUnreadCount > 0) "$feedName ($feedUnreadCount)" else feedName,
                     color = MaterialTheme.colorScheme.tertiary,
                     style = MaterialTheme.typography.labelMedium,
                     maxLines = 1,
@@ -311,6 +314,7 @@ private const val SwipeActionDelay = 300L
 fun SwipeableArticleItem(
     articleWithFeed: ArticleWithFeed,
     isUnread: Boolean = articleWithFeed.article.isUnread,
+    feedUnreadCount: Int = 0,
     articleListTonalElevation: Int = 0,
     onClick: (ArticleWithFeed) -> Unit = {},
     isSwipeEnabled: () -> Boolean = { false },
@@ -361,6 +365,7 @@ fun SwipeableArticleItem(
             ArticleItem(
                 articleWithFeed = articleWithFeed,
                 isUnread = isUnread,
+                feedUnreadCount = feedUnreadCount,
                 onClick = onClick,
                 onLongClick = onLongClick,
             )
