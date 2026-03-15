@@ -1,4 +1,5 @@
 // InkRead E-Ink Pagination Bar - v0.3.4
+// Supports article list and content reader pagination
 package me.ash.reader.ui.page.home.flow
 
 import androidx.compose.foundation.background
