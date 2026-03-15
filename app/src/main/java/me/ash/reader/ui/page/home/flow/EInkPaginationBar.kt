@@ -222,7 +222,7 @@ fun EInkPaginationBar(
             Text(
                 text = "Last sync: $timeText",
                 fontSize = 11.sp,
-                color = Color.Gray,
+                color = Color.DarkGray,
                 modifier = Modifier.fillMaxWidth(),
                 textAlign = TextAlign.Center,
             )
