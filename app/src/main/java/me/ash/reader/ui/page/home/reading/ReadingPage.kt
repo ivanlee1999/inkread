@@ -159,6 +159,8 @@ fun ReadingPage(
                                         onLoadArticle(id, index)
                                     }
                                 } else null,
+                                currentArticleIndex = readerState.articleOrdinal,
+                                totalArticleCount = readerState.totalArticleCount,
                             )
                         }
                     } else {

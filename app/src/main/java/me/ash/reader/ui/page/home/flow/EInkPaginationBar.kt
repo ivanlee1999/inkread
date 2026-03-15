@@ -44,6 +44,8 @@ fun EInkPaginationBar(
     onPrevArticle: (() -> Unit)? = null,
     onNextArticle: (() -> Unit)? = null,
     progress: Int? = null,
+    currentArticleIndex: Int? = null,
+    totalArticleCount: Int? = null,
 ) {
     Column(
         modifier = modifier
@@ -128,20 +130,29 @@ fun EInkPaginationBar(
             )
         }
 
-        Text(
-            text = if (totalArticles != null) {
-                "Page $currentPage/$totalPages ($totalArticles articles)"
-            } else if (progress != null) {
-                "Page $currentPage/$totalPages ($progress%)"
-            } else {
-                "Page $currentPage/$totalPages"
-            },
-            style = MaterialTheme.typography.bodyMedium.copy(
-                fontWeight = FontWeight.Medium,
-                fontSize = 14.sp,
-            ),
-            color = MaterialTheme.colorScheme.onSurface,
-        )
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = if (totalArticles != null) {
+                    "Page $currentPage/$totalPages ($totalArticles articles)"
+                } else if (progress != null) {
+                    "Page $currentPage/$totalPages ($progress%)"
+                } else {
+                    "Page $currentPage/$totalPages"
+                },
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 14.sp,
+                ),
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            if (currentArticleIndex != null && totalArticleCount != null) {
+                Text(
+                    text = "$currentArticleIndex/$totalArticleCount",
+                    fontSize = 11.sp,
+                    color = Color.Gray,
+                )
+            }
+        }
 
         // Next page
         IconButton(

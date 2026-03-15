@@ -69,6 +69,8 @@ fun EInkPaginatedContent(
     onPageChanged: ((currentPage: Int, totalPages: Int) -> Unit)? = null,
     onPrevArticle: (() -> Unit)? = null,
     onNextArticle: (() -> Unit)? = null,
+    currentArticleIndex: Int? = null,
+    totalArticleCount: Int? = null,
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -294,6 +296,8 @@ fun EInkPaginatedContent(
             onPrevArticle = onPrevArticle,
             onNextArticle = onNextArticle,
             progress = progress,
+            currentArticleIndex = currentArticleIndex,
+            totalArticleCount = totalArticleCount,
         )
     }
 }

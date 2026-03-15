@@ -431,8 +431,10 @@ constructor(
             }
         }
 
+        val articleOrdinal = if (index != -1) items.take(index + 1).count { it is ArticleFlowItem.Article } else null
+        val totalArticleCount = items.count { it is ArticleFlowItem.Article }.takeIf { it > 0 }
         Timber.d("$previousArticle, $nextArticle, $listIndex")
-        return copy(nextArticle = nextArticle, previousArticle = previousArticle, listIndex = index)
+        return copy(nextArticle = nextArticle, previousArticle = previousArticle, listIndex = index, articleOrdinal = articleOrdinal, totalArticleCount = totalArticleCount)
     }
 
     fun downloadImage(
@@ -465,6 +467,8 @@ data class ReaderState(
     val listIndex: Int? = null,
     val nextArticle: PrefetchResult? = null,
     val previousArticle: PrefetchResult? = null,
+    val articleOrdinal: Int? = null,
+    val totalArticleCount: Int? = null,
 ) {
     data class PrefetchResult(val articleId: String, val index: Int)
 
