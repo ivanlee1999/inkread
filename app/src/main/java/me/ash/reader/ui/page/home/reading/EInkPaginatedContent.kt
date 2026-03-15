@@ -265,6 +265,8 @@ fun EInkPaginatedContent(
             }
         }
 
+        val progress = if (totalPages > 0) ((currentPage + 1) * 100 / totalPages) else 0
+
         EInkPaginationBar(
             currentPage = currentPage + 1,
             totalPages = totalPages,
@@ -291,6 +293,7 @@ fun EInkPaginatedContent(
             },
             onPrevArticle = onPrevArticle,
             onNextArticle = onNextArticle,
+            progress = progress,
         )
     }
 }

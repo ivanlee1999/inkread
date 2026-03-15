@@ -13,6 +13,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -42,6 +43,7 @@ fun EInkPaginationBar(
     onIncreaseFontSize: () -> Unit = {},
     onPrevArticle: (() -> Unit)? = null,
     onNextArticle: (() -> Unit)? = null,
+    progress: Int? = null,
 ) {
     Column(
         modifier = modifier
@@ -58,6 +60,14 @@ fun EInkPaginationBar(
             }
             .navigationBarsPadding(),
     ) {
+        if (progress != null) {
+            LinearProgressIndicator(
+                progress = { progress / 100f },
+                modifier = Modifier.fillMaxWidth().height(2.dp),
+                color = Color.Black,
+                trackColor = Color.LightGray,
+            )
+        }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -119,7 +129,13 @@ fun EInkPaginationBar(
         }
 
         Text(
-            text = if (totalArticles != null) "Page $currentPage/$totalPages ($totalArticles articles)" else "Page $currentPage/$totalPages",
+            text = if (totalArticles != null) {
+                "Page $currentPage/$totalPages ($totalArticles articles)"
+            } else if (progress != null) {
+                "Page $currentPage/$totalPages ($progress%)"
+            } else {
+                "Page $currentPage/$totalPages"
+            },
             style = MaterialTheme.typography.bodyMedium.copy(
                 fontWeight = FontWeight.Medium,
                 fontSize = 14.sp,
