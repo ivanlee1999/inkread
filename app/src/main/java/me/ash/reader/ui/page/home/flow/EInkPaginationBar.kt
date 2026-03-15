@@ -22,6 +22,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -33,6 +34,7 @@ fun EInkPaginationBar(
     onNext: () -> Unit,
     modifier: Modifier = Modifier,
     totalArticles: Int? = null,
+    lastSyncTime: Long? = null,
     fontSize: Int = 18,
     canDecreaseFontSize: Boolean = false,
     canIncreaseFontSize: Boolean = false,
@@ -178,5 +180,21 @@ fun EInkPaginationBar(
             )
         }
     }
+        if (lastSyncTime != null && lastSyncTime > 0L) {
+            val elapsed = (System.currentTimeMillis() - lastSyncTime) / 1000
+            val timeText = when {
+                elapsed < 60 -> "Just now"
+                elapsed < 3600 -> "${elapsed / 60} min ago"
+                elapsed < 86400 -> "${elapsed / 3600}h ago"
+                else -> "${elapsed / 86400}d ago"
+            }
+            Text(
+                text = "Last sync: $timeText",
+                fontSize = 11.sp,
+                color = Color.Gray,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center,
+            )
+        }
     }
 }

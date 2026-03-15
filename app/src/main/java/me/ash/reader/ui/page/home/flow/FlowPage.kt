@@ -62,6 +62,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -376,6 +377,14 @@ fun FlowPage(
     }
 
     val isSyncing = viewModel.isSyncingFlow.collectAsStateValue()
+    var lastSyncTime by remember { mutableLongStateOf(0L) }
+    var wasSyncing by remember { mutableStateOf(false) }
+    LaunchedEffect(isSyncing) {
+        if (wasSyncing && !isSyncing) {
+            lastSyncTime = System.currentTimeMillis()
+        }
+        wasSyncing = isSyncing
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         RYScaffold(
@@ -976,6 +985,7 @@ fun FlowPage(
                         currentPage = einkCurrentPage + 1,
                         totalPages = einkTotalPagesState,
                         totalArticles = einkArticleCountState,
+                        lastSyncTime = lastSyncTime,
                         onPrev = {
                             if (einkCurrentPage > 0) {
                                 einkCurrentPage--
