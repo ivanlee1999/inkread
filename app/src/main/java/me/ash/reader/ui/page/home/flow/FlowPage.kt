@@ -426,17 +426,21 @@ fun FlowPage(
                                 // E-Ink filter toggle: All / Unread
                                 androidx.compose.material3.TextButton(
                                     onClick = {
-                                        val newFilter = if (filterUiState.filter.isUnread()) {
-                                            me.ash.reader.domain.model.general.Filter.All
-                                        } else {
-                                            me.ash.reader.domain.model.general.Filter.Unread
+                                        val newFilter = when {
+                                            filterUiState.filter.isAll() -> me.ash.reader.domain.model.general.Filter.Unread
+                                            filterUiState.filter.isUnread() -> me.ash.reader.domain.model.general.Filter.Starred
+                                            else -> me.ash.reader.domain.model.general.Filter.All
                                         }
                                         viewModel.changeFilter(filterUiState.copy(filter = newFilter))
                                         einkCurrentPage = 0
                                     },
                                 ) {
                                     Text(
-                                        text = if (filterUiState.filter.isUnread()) "Unread" else "All",
+                                        text = when {
+                                            filterUiState.filter.isUnread() -> "Unread"
+                                            filterUiState.filter.isStarred() -> "★"
+                                            else -> "All"
+                                        },
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onSurface,
