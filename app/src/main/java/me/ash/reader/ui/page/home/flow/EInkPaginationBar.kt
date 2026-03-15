@@ -1,3 +1,4 @@
+// InkRead E-Ink Pagination Bar - v0.3.4
 package me.ash.reader.ui.page.home.flow
 
 import androidx.compose.foundation.background
