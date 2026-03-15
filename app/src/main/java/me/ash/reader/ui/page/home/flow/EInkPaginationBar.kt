@@ -51,6 +51,7 @@ fun EInkPaginationBar(
     currentArticleIndex: Int? = null,
     totalArticleCount: Int? = null,
 ) {
+    // Bottom bar: page controls, font size, article nav, progress
     Column(
         modifier = modifier
             .fillMaxWidth()
