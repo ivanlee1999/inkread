@@ -71,7 +71,7 @@ fun EInkPaginationBar(
         if (progress != null) {
             LinearProgressIndicator(
                 progress = { progress / 100f },
-                modifier = Modifier.fillMaxWidth().height(2.dp),
+                modifier = Modifier.fillMaxWidth().height(3.dp),
                 color = Color.Black,
                 trackColor = Color(0xFFE0E0E0),
             )
