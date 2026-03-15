@@ -104,7 +104,7 @@ fun EInkPaginationBar(
             modifier = Modifier.size(48.dp),
         ) {
             Text(
-                text = "A-",
+                text = "A\u2212",
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Bold,
                 color = if (canDecreaseFontSize) {
