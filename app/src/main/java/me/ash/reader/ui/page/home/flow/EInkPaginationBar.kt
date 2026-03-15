@@ -133,7 +133,7 @@ fun EInkPaginationBar(
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
                 text = if (totalArticles != null) {
-                    "$currentPage / $totalPages ($totalArticles articles)"
+                    "$currentPage / $totalPages · $totalArticles articles"
                 } else if (progress != null) {
                     "$currentPage / $totalPages ($progress%)"
                 } else {
