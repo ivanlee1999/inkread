@@ -87,7 +87,7 @@ fun EInkPaginationBar(
         ) {
             Text(
                 text = "◀◀",
-                fontSize = 12.sp,
+                fontSize = 14.sp,
                 fontWeight = FontWeight.Bold,
                 color = if (onPrevArticle != null) {
                     MaterialTheme.colorScheme.onSurface
@@ -199,7 +199,7 @@ fun EInkPaginationBar(
         ) {
             Text(
                 text = "▶▶",
-                fontSize = 12.sp,
+                fontSize = 14.sp,
                 fontWeight = FontWeight.Bold,
                 color = if (onNextArticle != null) {
                     MaterialTheme.colorScheme.onSurface
