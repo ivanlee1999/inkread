@@ -72,7 +72,7 @@ fun EInkPaginationBar(
                 progress = { progress / 100f },
                 modifier = Modifier.fillMaxWidth().height(2.dp),
                 color = Color.Black,
-                trackColor = Color.LightGray,
+                trackColor = Color(0xFFE0E0E0),
             )
         }
     Row(
