@@ -77,7 +77,7 @@ fun EInkPaginationBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(56.dp),
+            .height(52.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
