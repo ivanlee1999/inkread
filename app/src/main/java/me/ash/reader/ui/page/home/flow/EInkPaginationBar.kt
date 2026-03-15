@@ -119,7 +119,7 @@ fun EInkPaginationBar(
         IconButton(
             onClick = onPrev,
             enabled = currentPage > 1,
-            modifier = Modifier.size(48.dp),
+            modifier = Modifier.size(52.dp),
         ) {
             Icon(
                 imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
@@ -160,7 +160,7 @@ fun EInkPaginationBar(
         IconButton(
             onClick = onNext,
             enabled = currentPage < totalPages,
-            modifier = Modifier.size(48.dp),
+            modifier = Modifier.size(52.dp),
         ) {
             Icon(
                 imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
