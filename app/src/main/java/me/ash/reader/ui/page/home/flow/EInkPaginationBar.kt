@@ -21,6 +21,12 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -51,6 +57,13 @@ fun EInkPaginationBar(
     currentArticleIndex: Int? = null,
     totalArticleCount: Int? = null,
 ) {
+    var pageTextBold by remember { mutableStateOf(false) }
+    LaunchedEffect(currentPage) {
+        pageTextBold = true
+        delay(1000)
+        pageTextBold = false
+    }
+
     // Bottom bar: page controls, font size, article nav, progress
     Column(
         modifier = modifier
@@ -146,7 +159,7 @@ fun EInkPaginationBar(
                     "$currentPage / $totalPages"
                 },
                 style = MaterialTheme.typography.bodyMedium.copy(
-                    fontWeight = FontWeight.Medium,
+                    fontWeight = if (pageTextBold) FontWeight.Bold else FontWeight.Medium,
                     fontSize = 14.sp,
                 ),
                 color = MaterialTheme.colorScheme.onSurface,

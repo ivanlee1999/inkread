@@ -85,6 +85,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import kotlinx.coroutines.FlowPreview
@@ -166,6 +168,7 @@ fun FlowPage(
     val settings = LocalSettings.current
     val pullToSwitchFeed = settings.pullToSwitchFeed
     val einkMode = LocalEInkMode.current.isEInkMode()
+    val haptic = LocalHapticFeedback.current
 
     val navBarBottomPx = WindowInsets.navigationBars.getBottom(LocalDensity.current)
     val navBarBottom = with(LocalDensity.current) { navBarBottomPx.toDp() }
@@ -317,11 +320,13 @@ fun FlowPage(
                         VolumeKeyEvent.NEXT -> {
                             if (einkCurrentPage < einkTotalPagesState - 1) {
                                 einkCurrentPage++
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             }
                         }
                         VolumeKeyEvent.PREV -> {
                             if (einkCurrentPage > 0) {
                                 einkCurrentPage--
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             }
                         }
                     }
@@ -920,9 +925,11 @@ fun FlowPage(
                                                 onDragEnd = {
                                                     if (dragAccumulator < -150f && einkCurrentPage < einkTotalPagesState - 1) {
                                                         einkCurrentPage++
+                                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                                         scope.launch { listState.scrollToItem(0) }
                                                     } else if (dragAccumulator > 150f && einkCurrentPage > 0) {
                                                         einkCurrentPage--
+                                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                                         scope.launch { listState.scrollToItem(0) }
                                                     }
                                                     dragAccumulator = 0f

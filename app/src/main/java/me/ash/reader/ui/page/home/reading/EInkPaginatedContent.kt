@@ -55,6 +55,18 @@ import me.ash.reader.infrastructure.preference.LocalEInkChineseFont
 import me.ash.reader.infrastructure.preference.LocalEInkEnglishFont
 import me.ash.reader.infrastructure.preference.LocalEInkFontSize
 import me.ash.reader.ui.page.home.flow.EInkPaginationBar
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.dp
 
 @SuppressLint("SetJavaScriptEnabled")
 @OptIn(FlowPreview::class)
@@ -103,11 +115,33 @@ fun EInkPaginatedContent(
     var totalPages by rememberSaveable(content, einkFontSize) { mutableIntStateOf(1) }
     var showTapHints by remember { mutableStateOf(true) }
     var horizontalDrag by remember { mutableFloatStateOf(0f) }
+    var showLeftArrow by remember { mutableStateOf(false) }
+    var showRightArrow by remember { mutableStateOf(false) }
+    var swipeHintShown by rememberSaveable { mutableStateOf(false) }
+    var showSwipeHint by remember { mutableStateOf(false) }
+    var dragVisualTarget by remember { mutableFloatStateOf(0f) }
+    val density = LocalDensity.current
+    val maxDragPx = remember(density) { with(density) { 30.dp.toPx() } }
+    val haptic = LocalHapticFeedback.current
+    val dragVisualOffset by animateFloatAsState(
+        targetValue = dragVisualTarget,
+        animationSpec = tween(durationMillis = 100, easing = LinearEasing),
+        label = "dragVisual",
+    )
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
 
     LaunchedEffect(Unit) {
         delay(2000)
         showTapHints = false
+    }
+
+    LaunchedEffect(Unit) {
+        if (!swipeHintShown) {
+            showSwipeHint = true
+            swipeHintShown = true
+            delay(3000)
+            showSwipeHint = false
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -120,6 +154,12 @@ fun EInkPaginatedContent(
                             currentPage++
                             webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
                             onPageChanged?.invoke(currentPage + 1, totalPages)
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            coroutineScope.launch {
+                                showRightArrow = true
+                                delay(500)
+                                showRightArrow = false
+                            }
                         }
                     }
                     VolumeKeyEvent.PREV -> {
@@ -127,6 +167,12 @@ fun EInkPaginatedContent(
                             currentPage--
                             webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
                             onPageChanged?.invoke(currentPage + 1, totalPages)
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            coroutineScope.launch {
+                                showLeftArrow = true
+                                delay(500)
+                                showLeftArrow = false
+                            }
                         }
                     }
                 }
@@ -139,6 +185,12 @@ fun EInkPaginatedContent(
             Log.d("InkRead", "nextPage -> currentPage=$currentPage totalPages=$totalPages")
             webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
             onPageChanged?.invoke(currentPage + 1, totalPages)
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            coroutineScope.launch {
+                showRightArrow = true
+                delay(500)
+                showRightArrow = false
+            }
         }
     }
 
@@ -148,6 +200,12 @@ fun EInkPaginatedContent(
             Log.d("InkRead", "prevPage -> currentPage=$currentPage totalPages=$totalPages")
             webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
             onPageChanged?.invoke(currentPage + 1, totalPages)
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            coroutineScope.launch {
+                showLeftArrow = true
+                delay(500)
+                showLeftArrow = false
+            }
         }
     }
 
@@ -168,14 +226,18 @@ fun EInkPaginatedContent(
                     detectHorizontalDragGestures(
                         onDragEnd = {
                             if (horizontalDrag < -200f && onNextArticle != null) {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 onNextArticle.invoke()
                             } else if (horizontalDrag > 200f && onPrevArticle != null) {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 onPrevArticle.invoke()
                             }
                             horizontalDrag = 0f
+                            dragVisualTarget = 0f
                         },
                         onHorizontalDrag = { _, dragAmount ->
                             horizontalDrag += dragAmount
+                            dragVisualTarget = horizontalDrag.coerceIn(-maxDragPx, maxDragPx)
                         },
                     )
                 },
@@ -226,7 +288,9 @@ fun EInkPaginatedContent(
                             loadDataWithBaseURL(null, htmlContent, "text/html", "UTF-8", null)
                         }
                     },
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer { translationX = dragVisualOffset },
                 )
             }
 
@@ -281,6 +345,63 @@ fun EInkPaginatedContent(
                                 color = Color.Black.copy(alpha = 0.5f),
                             )
                         }
+                    }
+                }
+            }
+
+            // Left arrow overlay - page turn feedback
+            AnimatedVisibility(
+                visible = showLeftArrow,
+                enter = fadeIn(animationSpec = tween(200)),
+                exit = fadeOut(animationSpec = tween(300)),
+                modifier = Modifier.align(Alignment.CenterStart).padding(start = 16.dp),
+            ) {
+                Text(
+                    text = "←",
+                    fontSize = 48.sp,
+                    color = Color.Black.copy(alpha = 0.5f),
+                )
+            }
+
+            // Right arrow overlay - page turn feedback
+            AnimatedVisibility(
+                visible = showRightArrow,
+                enter = fadeIn(animationSpec = tween(200)),
+                exit = fadeOut(animationSpec = tween(300)),
+                modifier = Modifier.align(Alignment.CenterEnd).padding(end = 16.dp),
+            ) {
+                Text(
+                    text = "→",
+                    fontSize = 48.sp,
+                    color = Color.Black.copy(alpha = 0.5f),
+                )
+            }
+
+            // One-time swipe hint overlay shown on first article open
+            AnimatedVisibility(
+                visible = showSwipeHint,
+                enter = fadeIn(animationSpec = tween(300)),
+                exit = fadeOut(animationSpec = tween(500)),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.5f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "Swipe ← → to navigate articles",
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Text(
+                            text = "Tap left/right to turn pages",
+                            color = Color.White,
+                            fontSize = 14.sp,
+                        )
                     }
                 }
             }
