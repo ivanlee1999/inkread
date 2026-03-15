@@ -103,7 +103,7 @@ fun EInkPaginationBar(
             modifier = Modifier.size(48.dp),
         ) {
             Text(
-                text = "◀◀",
+                text = "⏮",
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Bold,
                 color = if (onPrevArticle != null) {
@@ -215,7 +215,7 @@ fun EInkPaginationBar(
             modifier = Modifier.size(48.dp),
         ) {
             Text(
-                text = "▶▶",
+                text = "⏭",
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Bold,
                 color = if (onNextArticle != null) {
