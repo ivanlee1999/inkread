@@ -245,3 +245,4 @@ fun EInkPaginationBar(
         Spacer(modifier = Modifier.height(4.dp))
     }
 }
+// Pipeline v2 — channel-aware notifications
