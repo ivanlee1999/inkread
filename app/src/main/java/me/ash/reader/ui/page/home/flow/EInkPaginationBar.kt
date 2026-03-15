@@ -80,7 +80,7 @@ fun EInkPaginationBar(
             }
             .navigationBarsPadding(),
     ) {
-        Divider(color = Color.Black, thickness = 0.5.dp)
+        Divider(color = Color.Black, thickness = 1.dp)
         if (progress != null) {
             LinearProgressIndicator(
                 progress = { progress / 100f },
