@@ -46,6 +46,7 @@ import java.util.Locale
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.launch
 import me.ash.reader.infrastructure.android.VolumeKeyEvent
 import me.ash.reader.infrastructure.android.VolumeKeyEventBus
 import me.ash.reader.infrastructure.preference.EInkChineseFontPreference
@@ -59,9 +60,13 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
@@ -122,6 +127,17 @@ fun EInkPaginatedContent(
     var dragVisualTarget by remember { mutableFloatStateOf(0f) }
     val density = LocalDensity.current
     val maxDragPx = remember(density) { with(density) { 30.dp.toPx() } }
+
+    // Bottom bar auto-hide state
+    var bottomBarVisible by remember { mutableStateOf(false) }
+
+    // Auto-hide the bottom bar after 3 seconds of no interaction
+    LaunchedEffect(bottomBarVisible) {
+        if (bottomBarVisible) {
+            delay(3000)
+            bottomBarVisible = false
+        }
+    }
     val haptic = LocalHapticFeedback.current
     val dragVisualOffset by animateFloatAsState(
         targetValue = dragVisualTarget,
@@ -350,7 +366,7 @@ fun EInkPaginatedContent(
             }
 
             // Left arrow overlay - page turn feedback
-            AnimatedVisibility(
+            androidx.compose.animation.AnimatedVisibility(
                 visible = showLeftArrow,
                 enter = fadeIn(animationSpec = tween(200)),
                 exit = fadeOut(animationSpec = tween(300)),
@@ -364,7 +380,7 @@ fun EInkPaginatedContent(
             }
 
             // Right arrow overlay - page turn feedback
-            AnimatedVisibility(
+            androidx.compose.animation.AnimatedVisibility(
                 visible = showRightArrow,
                 enter = fadeIn(animationSpec = tween(200)),
                 exit = fadeOut(animationSpec = tween(300)),
@@ -378,7 +394,7 @@ fun EInkPaginatedContent(
             }
 
             // One-time swipe hint overlay shown on first article open
-            AnimatedVisibility(
+            androidx.compose.animation.AnimatedVisibility(
                 visible = showSwipeHint,
                 enter = fadeIn(animationSpec = tween(300)),
                 exit = fadeOut(animationSpec = tween(500)),
@@ -405,40 +421,77 @@ fun EInkPaginatedContent(
                     }
                 }
             }
+
+            // Tap detector on bottom 15% of content area to toggle bottom bar
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.15f)
+                    .align(Alignment.BottomCenter)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) {
+                        bottomBarVisible = !bottomBarVisible
+                    },
+            )
         }
 
         val progress = if (totalPages > 0) ((currentPage + 1) * 100 / totalPages) else 0
 
-        EInkPaginationBar(
-            currentPage = currentPage + 1,
-            totalPages = totalPages,
-            onPrev = { prevPage() },
-            onNext = { nextPage() },
-            fontSize = einkFontSize,
-            canDecreaseFontSize = fontSizeIndex > 0,
-            canIncreaseFontSize = fontSizeIndex < EInkFontSizePreference.values.lastIndex,
-            onDecreaseFontSize = {
-                if (fontSizeIndex > 0) {
-                    EInkFontSizePreference.put(
-                        context, coroutineScope,
-                        EInkFontSizePreference.values[fontSizeIndex - 1],
-                    )
-                }
-            },
-            onIncreaseFontSize = {
-                if (fontSizeIndex < EInkFontSizePreference.values.lastIndex) {
-                    EInkFontSizePreference.put(
-                        context, coroutineScope,
-                        EInkFontSizePreference.values[fontSizeIndex + 1],
-                    )
-                }
-            },
-            onPrevArticle = onPrevArticle,
-            onNextArticle = onNextArticle,
-            progress = progress,
-            currentArticleIndex = currentArticleIndex,
-            totalArticleCount = totalArticleCount,
+        // Thin progress bar — always visible at the bottom
+        LinearProgressIndicator(
+            progress = { progress / 100f },
+            modifier = Modifier.fillMaxWidth().height(3.dp),
+            color = Color.Black,
+            trackColor = Color(0xFFE0E0E0),
         )
+
+        // Full bottom bar — hidden by default, shown on tap, auto-hides after 3s
+        AnimatedVisibility(
+            visible = bottomBarVisible,
+            enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(animationSpec = tween(200)),
+            exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(animationSpec = tween(200)),
+        ) {
+            EInkPaginationBar(
+                currentPage = currentPage + 1,
+                totalPages = totalPages,
+                onPrev = {
+                    prevPage()
+                    bottomBarVisible = true // Reset auto-hide timer on interaction
+                },
+                onNext = {
+                    nextPage()
+                    bottomBarVisible = true // Reset auto-hide timer on interaction
+                },
+                fontSize = einkFontSize,
+                canDecreaseFontSize = fontSizeIndex > 0,
+                canIncreaseFontSize = fontSizeIndex < EInkFontSizePreference.values.lastIndex,
+                onDecreaseFontSize = {
+                    bottomBarVisible = true // Reset auto-hide timer
+                    if (fontSizeIndex > 0) {
+                        EInkFontSizePreference.put(
+                            context, coroutineScope,
+                            EInkFontSizePreference.values[fontSizeIndex - 1],
+                        )
+                    }
+                },
+                onIncreaseFontSize = {
+                    bottomBarVisible = true // Reset auto-hide timer
+                    if (fontSizeIndex < EInkFontSizePreference.values.lastIndex) {
+                        EInkFontSizePreference.put(
+                            context, coroutineScope,
+                            EInkFontSizePreference.values[fontSizeIndex + 1],
+                        )
+                    }
+                },
+                onPrevArticle = onPrevArticle,
+                onNextArticle = onNextArticle,
+                progress = progress,
+                currentArticleIndex = currentArticleIndex,
+                totalArticleCount = totalArticleCount,
+            )
+        }
     }
 }
 
