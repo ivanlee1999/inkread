@@ -578,11 +578,11 @@ body {
     font-family: $fontFamilyCss;
     font-size: ${fontSize}px;
     line-height: ${lineHeight};
-    letter-spacing: ${letterSpacing}sp;
+    letter-spacing: ${letterSpacing}px;
     word-spacing: ${wordSpacing}em;
     color: #000;
     background: #fff;
-    column-gap: 32px;
+    column-gap: ${horizontalPadding * 2}px;
     column-fill: auto;
     overflow: hidden;
     -webkit-text-size-adjust: none;
@@ -630,7 +630,8 @@ function setupPagination() {
     _vw = window.innerWidth;
     var vh = window.innerHeight;
     document.body.style.height = vh + 'px';
-    document.body.style.columnWidth = (_vw - 32) + 'px';
+    var padding = ${horizontalPadding};
+    document.body.style.columnWidth = (_vw - padding * 2) + 'px';
     // Recount after images load and a delay for layout
     recountPages();
     window.addEventListener('load', function() { recountPages(); });

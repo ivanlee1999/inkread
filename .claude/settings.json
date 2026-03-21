@@ -1,0 +1,15 @@
+{
+    "hooks": {
+        "Stop": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "echo HOOK_FIRED_$(date +%s) >> /tmp/claude-hook-test.log && openclaw system event --text 'Claude Code finished. Check .pending-action.md and continue.' --mode now 2>/dev/null || true"
+                    }
+                ]
+            }
+        ]
+    }
+}
