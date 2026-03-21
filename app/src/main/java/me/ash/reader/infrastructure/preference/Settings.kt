@@ -88,5 +88,6 @@ data class Settings(
     val einkFontSize: Int = EInkFontSizePreference.default,
     val einkEnglishFont: Int = EInkEnglishFontPreference.default,
     val einkChineseFont: Int = EInkChineseFontPreference.default,
+    val einkWordSpacing: Float = EInkWordSpacingPreference.default,
 )
 

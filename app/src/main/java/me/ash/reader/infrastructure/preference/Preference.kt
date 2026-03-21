@@ -95,5 +95,6 @@ fun Preferences.toSettings(): Settings {
         einkFontSize = EInkFontSizePreference.fromPreferences(this),
         einkEnglishFont = EInkEnglishFontPreference.fromPreferences(this),
         einkChineseFont = EInkChineseFontPreference.fromPreferences(this),
+        einkWordSpacing = EInkWordSpacingPreference.fromPreferences(this),
     )
 }

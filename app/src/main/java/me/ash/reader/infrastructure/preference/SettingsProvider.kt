@@ -146,6 +146,7 @@ class SettingsProvider @Inject constructor(
             LocalEInkFontSize provides settings.einkFontSize,
             LocalEInkEnglishFont provides settings.einkEnglishFont,
             LocalEInkChineseFont provides settings.einkChineseFont,
+            LocalEInkWordSpacing provides settings.einkWordSpacing,
         ) {
             content()
         }

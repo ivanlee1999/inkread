@@ -55,6 +55,10 @@ import me.ash.reader.infrastructure.preference.EInkFontSizePreference
 import me.ash.reader.infrastructure.preference.LocalEInkChineseFont
 import me.ash.reader.infrastructure.preference.LocalEInkEnglishFont
 import me.ash.reader.infrastructure.preference.LocalEInkFontSize
+import me.ash.reader.infrastructure.preference.LocalEInkWordSpacing
+import me.ash.reader.infrastructure.preference.LocalReadingTextHorizontalPadding
+import me.ash.reader.infrastructure.preference.LocalReadingTextLetterSpacing
+import me.ash.reader.infrastructure.preference.LocalReadingTextLineHeight
 import me.ash.reader.ui.page.home.flow.EInkPaginationBar
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
@@ -97,6 +101,10 @@ fun EInkPaginatedContent(
     val einkFontSize = LocalEInkFontSize.current
     val einkEnglishFont = LocalEInkEnglishFont.current
     val einkChineseFont = LocalEInkChineseFont.current
+    val horizontalPadding = LocalReadingTextHorizontalPadding.current
+    val lineHeight = LocalReadingTextLineHeight.current
+    val letterSpacing = LocalReadingTextLetterSpacing.current
+    val wordSpacing = LocalEInkWordSpacing.current
     val fontSizeIndex = EInkFontSizePreference.values.indexOf(einkFontSize)
         .takeIf { it >= 0 } ?: EInkFontSizePreference.values.indexOf(EInkFontSizePreference.default)
 
@@ -116,8 +124,8 @@ fun EInkPaginatedContent(
             ?.absolutePath
     }
 
-    var currentPage by rememberSaveable(content, einkFontSize) { mutableIntStateOf(0) }
-    var totalPages by rememberSaveable(content, einkFontSize) { mutableIntStateOf(1) }
+    var currentPage by rememberSaveable(content, einkFontSize, horizontalPadding, lineHeight, letterSpacing, wordSpacing) { mutableIntStateOf(0) }
+    var totalPages by rememberSaveable(content, einkFontSize, horizontalPadding, lineHeight, letterSpacing, wordSpacing) { mutableIntStateOf(1) }
     var showTapHints by remember { mutableStateOf(true) }
     var horizontalDrag by remember { mutableFloatStateOf(0f) }
     var showLeftArrow by remember { mutableStateOf(false) }
@@ -225,8 +233,8 @@ fun EInkPaginatedContent(
         }
     }
 
-    val htmlContent = remember(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate) {
-        buildArticleHtml(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate)
+    val htmlContent = remember(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate, horizontalPadding, lineHeight, letterSpacing, wordSpacing) {
+        buildArticleHtml(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate, horizontalPadding, lineHeight, letterSpacing, wordSpacing)
     }
 
     Column(
@@ -258,7 +266,7 @@ fun EInkPaginatedContent(
                     )
                 },
         ) {
-            key(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath) {
+            key(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, horizontalPadding, lineHeight, letterSpacing, wordSpacing) {
                 AndroidView(
                     factory = { ctx ->
                         WebView(ctx).apply {
@@ -511,6 +519,10 @@ private fun buildArticleHtml(
     feedName: String,
     author: String?,
     publishedDate: Date,
+    horizontalPadding: Int,
+    lineHeight: Float,
+    letterSpacing: Float,
+    wordSpacing: Float,
 ): String {
     val dateStr = SimpleDateFormat("MMM d, yyyy · HH:mm", Locale.getDefault()).format(publishedDate)
     val metaLine = buildString {
@@ -562,10 +574,12 @@ $chineseFontFace
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
 body {
-    padding: 16px;
+    padding: ${horizontalPadding}px;
     font-family: $fontFamilyCss;
     font-size: ${fontSize}px;
-    line-height: 1.6;
+    line-height: ${lineHeight};
+    letter-spacing: ${letterSpacing}sp;
+    word-spacing: ${wordSpacing}em;
     color: #000;
     background: #fff;
     column-gap: 32px;

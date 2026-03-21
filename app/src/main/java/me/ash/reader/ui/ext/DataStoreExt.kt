@@ -206,6 +206,7 @@ sealed interface PreferencesKey {
         const val einkFontSize = "einkFontSize"
         const val einkEnglishFont = "einkEnglishFont"
         const val einkChineseFont = "einkChineseFont"
+        const val einkWordSpacing = "einkWordSpacing"
 
         private val keyList =
             listOf(
@@ -286,6 +287,7 @@ sealed interface PreferencesKey {
                 IntKey(einkFontSize),
                 IntKey(einkEnglishFont),
                 IntKey(einkChineseFont),
+                FloatKey(einkWordSpacing),
             )
 
         val keys = keyList.associateBy { it.name }
@@ -379,6 +381,7 @@ data class DataStoreKey<T>(val key: Preferences.Key<T>, val type: Class<T>) {
         const val einkFontSize = "einkFontSize"
         const val einkEnglishFont = "einkEnglishFont"
         const val einkChineseFont = "einkChineseFont"
+        const val einkWordSpacing = "einkWordSpacing"
 
         val keys: MutableMap<String, DataStoreKey<*>> =
             mutableMapOf(
@@ -535,6 +538,7 @@ data class DataStoreKey<T>(val key: Preferences.Key<T>, val type: Class<T>) {
                 einkFontSize to DataStoreKey(intPreferencesKey(einkFontSize), Int::class.java),
                 einkEnglishFont to DataStoreKey(intPreferencesKey(einkEnglishFont), Int::class.java),
                 einkChineseFont to DataStoreKey(intPreferencesKey(einkChineseFont), Int::class.java),
+                einkWordSpacing to DataStoreKey(floatPreferencesKey(einkWordSpacing), Float::class.java),
             )
     }
 }

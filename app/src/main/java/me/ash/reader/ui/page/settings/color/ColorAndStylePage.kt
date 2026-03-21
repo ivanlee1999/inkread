@@ -61,6 +61,7 @@ import me.ash.reader.infrastructure.preference.EInkChineseFontPreference
 import me.ash.reader.infrastructure.preference.EInkEnglishFontPreference
 import me.ash.reader.infrastructure.preference.EInkFontSizePreference
 import me.ash.reader.infrastructure.preference.EInkModePreference
+import me.ash.reader.infrastructure.preference.EInkWordSpacingPreference
 import me.ash.reader.infrastructure.preference.LocalBasicFonts
 import me.ash.reader.infrastructure.preference.LocalCustomPrimaryColor
 import me.ash.reader.infrastructure.preference.LocalDarkTheme
@@ -68,6 +69,7 @@ import me.ash.reader.infrastructure.preference.LocalEInkChineseFont
 import me.ash.reader.infrastructure.preference.LocalEInkEnglishFont
 import me.ash.reader.infrastructure.preference.LocalEInkFontSize
 import me.ash.reader.infrastructure.preference.LocalEInkMode
+import me.ash.reader.infrastructure.preference.LocalEInkWordSpacing
 import me.ash.reader.infrastructure.preference.LocalThemeIndex
 import me.ash.reader.infrastructure.preference.ThemeIndexPreference
 import me.ash.reader.infrastructure.preference.not
@@ -114,6 +116,7 @@ fun ColorAndStylePage(
     val einkEnglishFont = LocalEInkEnglishFont.current
     val einkChineseFont = LocalEInkChineseFont.current
     val einkFontSize = LocalEInkFontSize.current
+    val einkWordSpacing = LocalEInkWordSpacing.current
     val scope = rememberCoroutineScope()
 
     val fontDownloader = remember { FontDownloader(context) }
@@ -323,6 +326,16 @@ fun ColorAndStylePage(
                         onClick = {
                             val nextIdx = (EInkFontSizePreference.values.indexOf(einkFontSize) + 1) % EInkFontSizePreference.values.size
                             EInkFontSizePreference.put(context, scope, EInkFontSizePreference.values[nextIdx])
+                        },
+                    ) {}
+                    SettingItem(
+                        title = "E-Ink Word Spacing",
+                        desc = "${einkWordSpacing}em",
+                        onClick = {
+                            val steps = listOf(0f, 0.05f, 0.1f, 0.15f, 0.2f, 0.25f, 0.3f)
+                            val currentIdx = steps.indexOf(einkWordSpacing).takeIf { it >= 0 } ?: 0
+                            val nextIdx = (currentIdx + 1) % steps.size
+                            EInkWordSpacingPreference.put(context, scope, steps[nextIdx])
                         },
                     ) {}
                     SettingItem(
