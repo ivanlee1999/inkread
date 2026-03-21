@@ -36,7 +36,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import java.io.File
@@ -93,6 +92,7 @@ fun EInkPaginatedContent(
     onPageChanged: ((currentPage: Int, totalPages: Int) -> Unit)? = null,
     onPrevArticle: (() -> Unit)? = null,
     onNextArticle: (() -> Unit)? = null,
+    onNavigateToStylePage: (() -> Unit)? = null,
     currentArticleIndex: Int? = null,
     totalArticleCount: Int? = null,
 ) {
@@ -126,12 +126,9 @@ fun EInkPaginatedContent(
 
     var currentPage by rememberSaveable(content, einkFontSize, horizontalPadding, lineHeight, letterSpacing, wordSpacing) { mutableIntStateOf(0) }
     var totalPages by rememberSaveable(content, einkFontSize, horizontalPadding, lineHeight, letterSpacing, wordSpacing) { mutableIntStateOf(1) }
-    var showTapHints by remember { mutableStateOf(true) }
     var horizontalDrag by remember { mutableFloatStateOf(0f) }
     var showLeftArrow by remember { mutableStateOf(false) }
     var showRightArrow by remember { mutableStateOf(false) }
-    var swipeHintShown by rememberSaveable { mutableStateOf(false) }
-    var showSwipeHint by remember { mutableStateOf(false) }
     var dragVisualTarget by remember { mutableFloatStateOf(0f) }
     val density = LocalDensity.current
     val maxDragPx = remember(density) { with(density) { 30.dp.toPx() } }
@@ -153,20 +150,6 @@ fun EInkPaginatedContent(
         label = "dragVisual",
     )
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
-
-    LaunchedEffect(Unit) {
-        delay(2000)
-        showTapHints = false
-    }
-
-    LaunchedEffect(Unit) {
-        if (!swipeHintShown) {
-            showSwipeHint = true
-            swipeHintShown = true
-            delay(3000)
-            showSwipeHint = false
-        }
-    }
 
     LaunchedEffect(Unit) {
         VolumeKeyEventBus.events
@@ -328,23 +311,7 @@ fun EInkPaginatedContent(
                             indication = null,
                         ) { prevPage() },
                     contentAlignment = Alignment.Center,
-                ) {
-                    if (showTapHints) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(Color.Black.copy(alpha = 0.08f)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                text = "< Prev",
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = Color.Black.copy(alpha = 0.5f),
-                            )
-                        }
-                    }
-                }
+                ) {}
                 Box(
                     modifier = Modifier
                         .fillMaxHeight()
@@ -354,23 +321,7 @@ fun EInkPaginatedContent(
                             indication = null,
                         ) { nextPage() },
                     contentAlignment = Alignment.Center,
-                ) {
-                    if (showTapHints) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(Color.Black.copy(alpha = 0.05f)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                text = "Next >",
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = Color.Black.copy(alpha = 0.5f),
-                            )
-                        }
-                    }
-                }
+                ) {}
             }
 
             // Left arrow overlay - page turn feedback
@@ -401,33 +352,20 @@ fun EInkPaginatedContent(
                 )
             }
 
-            // One-time swipe hint overlay shown on first article open
-            androidx.compose.animation.AnimatedVisibility(
-                visible = showSwipeHint,
-                enter = fadeIn(animationSpec = tween(300)),
-                exit = fadeOut(animationSpec = tween(500)),
-                modifier = Modifier.fillMaxSize(),
-            ) {
+            // Tap detector on upper center 15% of content area to open reading style settings
+            if (onNavigateToStylePage != null) {
                 Box(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.5f)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = "Swipe ← → to navigate articles",
-                            color = Color.White,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Medium,
-                        )
-                        Text(
-                            text = "Tap left/right to turn pages",
-                            color = Color.White,
-                            fontSize = 14.sp,
-                        )
-                    }
-                }
+                        .fillMaxWidth(0.6f)
+                        .fillMaxHeight(0.15f)
+                        .align(Alignment.TopCenter)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) {
+                            onNavigateToStylePage.invoke()
+                        },
+                )
             }
 
             // Tap detector on bottom 15% of content area to toggle bottom bar

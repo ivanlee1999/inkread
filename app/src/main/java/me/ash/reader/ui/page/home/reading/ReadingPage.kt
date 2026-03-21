@@ -159,6 +159,7 @@ fun ReadingPage(
                                         onLoadArticle(id, index)
                                     }
                                 } else null,
+                                onNavigateToStylePage = onNavigateToStylePage,
                                 currentArticleIndex = readerState.articleOrdinal,
                                 totalArticleCount = readerState.totalArticleCount,
                             )
