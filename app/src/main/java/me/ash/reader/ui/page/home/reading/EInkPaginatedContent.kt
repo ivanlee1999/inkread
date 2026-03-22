@@ -129,6 +129,7 @@ fun EInkPaginatedContent(
     var horizontalDrag by remember { mutableFloatStateOf(0f) }
     var showLeftArrow by remember { mutableStateOf(false) }
     var showRightArrow by remember { mutableStateOf(false) }
+    var showBoundaryText by remember { mutableStateOf<String?>(null) }
     var dragVisualTarget by remember { mutableFloatStateOf(0f) }
     val density = LocalDensity.current
     val maxDragPx = remember(density) { with(density) { 30.dp.toPx() } }
@@ -178,6 +179,13 @@ fun EInkPaginatedContent(
             Log.d("InkRead", "nextPage -> last page, switching to next article")
             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
             onNextArticle.invoke()
+        } else if (currentPage >= totalPages - 1) {
+            // No more articles - show boundary feedback
+            coroutineScope.launch {
+                showBoundaryText = "No more articles"
+                delay(1000)
+                showBoundaryText = null
+            }
         }
     }
 
@@ -197,6 +205,13 @@ fun EInkPaginatedContent(
             Log.d("InkRead", "prevPage -> first page, switching to previous article")
             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
             onPrevArticle.invoke()
+        } else if (currentPage == 0) {
+            // No previous articles - show boundary feedback
+            coroutineScope.launch {
+                showBoundaryText = "No previous articles"
+                delay(1000)
+                showBoundaryText = null
+            }
         }
     }
 
@@ -336,6 +351,20 @@ fun EInkPaginatedContent(
                     text = "→",
                     fontSize = 48.sp,
                     color = Color.Black.copy(alpha = 0.5f),
+                )
+            }
+
+            // Boundary indicator - no more articles
+            androidx.compose.animation.AnimatedVisibility(
+                visible = showBoundaryText != null,
+                enter = fadeIn(animationSpec = tween(200)),
+                exit = fadeOut(animationSpec = tween(300)),
+                modifier = Modifier.align(Alignment.Center),
+            ) {
+                Text(
+                    text = showBoundaryText ?: "",
+                    fontSize = 16.sp,
+                    color = Color.Black.copy(alpha = 0.4f),
                 )
             }
 
