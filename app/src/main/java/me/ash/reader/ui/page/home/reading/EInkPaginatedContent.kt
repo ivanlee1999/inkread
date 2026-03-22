@@ -156,38 +156,8 @@ fun EInkPaginatedContent(
             .debounce(300)
             .collect { event ->
                 when (event) {
-                    VolumeKeyEvent.NEXT -> {
-                        if (currentPage < totalPages - 1) {
-                            currentPage++
-                            webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
-                            onPageChanged?.invoke(currentPage + 1, totalPages)
-                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            coroutineScope.launch {
-                                showRightArrow = true
-                                delay(500)
-                                showRightArrow = false
-                            }
-                        } else if (onNextArticle != null) {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onNextArticle.invoke()
-                        }
-                    }
-                    VolumeKeyEvent.PREV -> {
-                        if (currentPage > 0) {
-                            currentPage--
-                            webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
-                            onPageChanged?.invoke(currentPage + 1, totalPages)
-                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            coroutineScope.launch {
-                                showLeftArrow = true
-                                delay(500)
-                                showLeftArrow = false
-                            }
-                        } else if (onPrevArticle != null) {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onPrevArticle.invoke()
-                        }
-                    }
+                    VolumeKeyEvent.NEXT -> nextPage()
+                    VolumeKeyEvent.PREV -> prevPage()
                 }
             }
     }
