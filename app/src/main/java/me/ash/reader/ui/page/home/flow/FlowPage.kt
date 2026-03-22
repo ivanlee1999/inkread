@@ -60,6 +60,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -362,7 +363,7 @@ fun FlowPage(
             }
         }
     } else {
-        LaunchedEffect(Unit) {
+        LaunchedEffect(readerState.articleId, pagingItems, einkItemsPerPage) {
             if (readerState.articleId != null) {
                 val articleId = readerState.articleId
 
@@ -456,19 +457,22 @@ fun FlowPage(
                                         color = MaterialTheme.colorScheme.onSurface,
                                     )
                                 }
-                                // E-Ink sync/refresh button
-                                val infiniteTransition = rememberInfiniteTransition(label = "sync")
-                                val angle by infiniteTransition.animateFloat(
-                                    initialValue = 0f,
-                                    targetValue = 360f,
-                                    animationSpec = infiniteRepeatable(
-                                        animation = tween(1000, easing = LinearEasing),
-                                        repeatMode = RepeatMode.Restart
-                                    ),
-                                    label = "syncRotation"
-                                )
+                                // E-Ink sync/refresh button — only animate while syncing
+                                val syncAngle = if (isSyncing) {
+                                    val infiniteTransition = rememberInfiniteTransition(label = "sync")
+                                    val angle by infiniteTransition.animateFloat(
+                                        initialValue = 0f,
+                                        targetValue = 360f,
+                                        animationSpec = infiniteRepeatable(
+                                            animation = tween(1000, easing = LinearEasing),
+                                            repeatMode = RepeatMode.Restart
+                                        ),
+                                        label = "syncRotation"
+                                    )
+                                    angle
+                                } else 0f
                                 FeedbackIconButton(
-                                    modifier = Modifier.rotate(if (isSyncing) angle else 0f),
+                                    modifier = Modifier.rotate(syncAngle),
                                     imageVector = Icons.Rounded.Refresh,
                                     contentDescription = stringResource(R.string.refresh),
                                     tint = if (isSyncing) MaterialTheme.colorScheme.primary
@@ -741,38 +745,47 @@ fun FlowPage(
                         lastPagerIdentity = pager
                     }
 
-                    // E-Ink pagination derived state
+                    // E-Ink pagination derived state — count article items only (exclude date headers)
+                    val einkArticleCount by remember(pagingItems.itemCount) {
+                        derivedStateOf {
+                            var count = 0
+                            for (i in 0 until pagingItems.itemCount) {
+                                if (pagingItems.peek(i) is ArticleFlowItem.Article) count++
+                            }
+                            count
+                        }
+                    }
+                    // Pagination is based on total item count (articles + headers)
+                    // since einkPageStart/einkPageEnd slice the flat list
                     val einkTotalPages = maxOf(1, (pagingItems.itemCount + einkItemsPerPage - 1) / einkItemsPerPage)
+                    // Clamp einkCurrentPage when list shrinks (e.g. filter/sync changes)
+                    if (einkCurrentPage >= einkTotalPages) {
+                        einkCurrentPage = (einkTotalPages - 1).coerceAtLeast(0)
+                    }
                     val einkStartIndex = if (einkMode) einkCurrentPage * einkItemsPerPage else null
                     val einkEndIndex = if (einkMode) (einkCurrentPage + 1) * einkItemsPerPage else null
                     // Hoist pagination state up so bottomBar can access it
                     SideEffect {
                         einkTotalPagesState = einkTotalPages
-                        einkArticleCountState = pagingItems.itemCount
+                        einkArticleCountState = einkArticleCount
                     }
 
                     if (markAsReadOnScroll && filterState.filter.isUnread()) {
                         LaunchedEffect(listState.isScrollInProgress) {
                             if (!listState.isScrollInProgress) {
-                                val firstItemKey =
+                                val firstVisibleArticleIndex =
                                     listState.layoutInfo.visibleItemsInfo
                                         .firstOrNull { it.contentType == CONTENT_TYPE_ARTICLE }
-                                        ?.key
+                                        ?.index ?: return@LaunchedEffect
+                                // Only scan items before the first visible article
                                 val items = mutableListOf<ArticleWithFeed>()
-                                var found = false
-                                val itemCount = pagingItems.itemCount
-                                for (index in 0 until itemCount) {
-                                    pagingItems.peek(index).let {
-                                        if (it is ArticleFlowItem.Article) {
-                                            if (it.articleWithFeed.article.id == firstItemKey) {
-                                                found = true
-                                                break
-                                            }
-                                            items.add(it.articleWithFeed)
-                                        }
+                                for (index in 0 until firstVisibleArticleIndex) {
+                                    val item = pagingItems.peek(index)
+                                    if (item is ArticleFlowItem.Article) {
+                                        items.add(item.articleWithFeed)
                                     }
                                 }
-                                if (items.isNotEmpty() && found) {
+                                if (items.isNotEmpty()) {
                                     viewModel.diffMapHolder.updateDiff(
                                         articleWithFeed = items.toTypedArray(),
                                         isUnread = false,
@@ -897,6 +910,25 @@ fun FlowPage(
 
                     var dragAccumulator by remember { mutableFloatStateOf(0f) }
 
+                    val diffMap = viewModel.diffMapHolder.diffMap
+                    val feedUnreadCounts by remember(pagingItems.itemCount, diffMap) {
+                        derivedStateOf {
+                            val counts = mutableMapOf<String, Int>()
+                            for (i in 0 until pagingItems.itemCount) {
+                                val item = pagingItems.peek(i)
+                                if (item is ArticleFlowItem.Article) {
+                                    val article = item.articleWithFeed.article
+                                    val isUnread = diffMap[article.id]?.isUnread ?: article.isUnread
+                                    if (isUnread) {
+                                        val feedId = item.articleWithFeed.feed.id
+                                        counts[feedId] = (counts[feedId] ?: 0) + 1
+                                    }
+                                }
+                            }
+                            counts
+                        }
+                    }
+
                     LazyColumn(
                             userScrollEnabled = !einkMode,
                             contentPadding = if (einkMode) PaddingValues(bottom = 56.dp + navBarBottom) else PaddingValues(),
@@ -950,7 +982,7 @@ fun FlowPage(
                         ) {
                             ArticleList(
                                 pagingItems = pagingItems,
-                                diffMap = viewModel.diffMapHolder.diffMap,
+                                diffMap = diffMap,
                                 isShowFeedIcon = articleListFeedIcon.value,
                                 isShowStickyHeader = articleListDateStickyHeader.value,
                                 articleListTonalElevation = articleListTonalElevation.value,
@@ -979,6 +1011,7 @@ fun FlowPage(
                                 onShare = onShare,
                                 einkPageStart = einkStartIndex,
                                 einkPageEnd = einkEndIndex,
+                                feedUnreadCounts = feedUnreadCounts,
                             )
                             if (!einkMode) {
                                 item {

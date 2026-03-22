@@ -34,8 +34,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import me.ash.reader.R
 
 @Composable
 fun EInkPaginationBar(
@@ -46,7 +48,6 @@ fun EInkPaginationBar(
     modifier: Modifier = Modifier,
     totalArticles: Int? = null,
     lastSyncTime: Long? = null,
-    fontSize: Int = 18,
     canDecreaseFontSize: Boolean = false,
     canIncreaseFontSize: Boolean = false,
     onDecreaseFontSize: () -> Unit = {},
@@ -140,7 +141,7 @@ fun EInkPaginationBar(
         ) {
             Icon(
                 imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                contentDescription = "Previous page",
+                contentDescription = stringResource(R.string.previous_page),
                 tint = if (currentPage > 1) {
                     MaterialTheme.colorScheme.onSurface
                 } else {
@@ -152,7 +153,7 @@ fun EInkPaginationBar(
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
                 text = if (totalArticles != null) {
-                    "$currentPage / $totalPages · $totalArticles articles"
+                    "$currentPage / $totalPages · ${stringResource(R.string.articles_count, totalArticles)}"
                 } else if (progress != null) {
                     "$currentPage / $totalPages ($progress%)"
                 } else {
@@ -181,7 +182,7 @@ fun EInkPaginationBar(
         ) {
             Icon(
                 imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
-                contentDescription = "Next page",
+                contentDescription = stringResource(R.string.next_page),
                 tint = if (currentPage < totalPages) {
                     MaterialTheme.colorScheme.onSurface
                 } else {
@@ -229,13 +230,13 @@ fun EInkPaginationBar(
         if (lastSyncTime != null && lastSyncTime > 0L) {
             val elapsed = (System.currentTimeMillis() - lastSyncTime) / 1000
             val timeText = when {
-                elapsed < 60 -> "Just now"
-                elapsed < 3600 -> "${elapsed / 60} min ago"
-                elapsed < 86400 -> "${elapsed / 3600}h ago"
-                else -> "${elapsed / 86400}d ago"
+                elapsed < 60 -> stringResource(R.string.last_sync_just_now)
+                elapsed < 3600 -> stringResource(R.string.last_sync_min_ago, elapsed / 60)
+                elapsed < 86400 -> stringResource(R.string.last_sync_hours_ago, elapsed / 3600)
+                else -> stringResource(R.string.last_sync_days_ago, elapsed / 86400)
             }
             Text(
-                text = "Last sync: $timeText",
+                text = stringResource(R.string.last_sync_prefix, timeText),
                 fontSize = 11.sp,
                 color = Color.DarkGray,
                 modifier = Modifier.fillMaxWidth(),

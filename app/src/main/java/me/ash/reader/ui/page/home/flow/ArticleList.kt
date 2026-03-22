@@ -9,6 +9,8 @@ import androidx.compose.ui.unit.dp
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.itemContentType
 import androidx.paging.compose.itemKey
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.remember
 import me.ash.reader.domain.data.Diff
 import me.ash.reader.domain.model.article.ArticleFlowItem
 import me.ash.reader.domain.model.article.ArticleWithFeed
@@ -31,20 +33,8 @@ fun LazyListScope.ArticleList(
     onShare: ((ArticleWithFeed) -> Unit)? = null,
     einkPageStart: Int? = null,
     einkPageEnd: Int? = null,
+    feedUnreadCounts: Map<String, Int> = emptyMap(),
 ) {
-    // Compute per-feed unread counts from already-loaded paging items
-    val feedUnreadCounts = mutableMapOf<String, Int>()
-    for (i in 0 until pagingItems.itemCount) {
-        val item = pagingItems.peek(i)
-        if (item is ArticleFlowItem.Article) {
-            val article = item.articleWithFeed.article
-            val isUnread = diffMap[article.id]?.isUnread ?: article.isUnread
-            if (isUnread) {
-                val feedId = item.articleWithFeed.feed.id
-                feedUnreadCounts[feedId] = (feedUnreadCounts[feedId] ?: 0) + 1
-            }
-        }
-    }
 
     // https://issuetracker.google.com/issues/193785330
     // FIXME: Using sticky header with paging-compose need to iterate through the entire list
