@@ -167,6 +167,9 @@ fun EInkPaginatedContent(
                                 delay(500)
                                 showRightArrow = false
                             }
+                        } else if (onNextArticle != null) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onNextArticle.invoke()
                         }
                     }
                     VolumeKeyEvent.PREV -> {
@@ -180,6 +183,9 @@ fun EInkPaginatedContent(
                                 delay(500)
                                 showLeftArrow = false
                             }
+                        } else if (onPrevArticle != null) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onPrevArticle.invoke()
                         }
                     }
                 }
@@ -198,6 +204,10 @@ fun EInkPaginatedContent(
                 delay(500)
                 showRightArrow = false
             }
+        } else if (onNextArticle != null) {
+            Log.d("InkRead", "nextPage -> last page, switching to next article")
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            onNextArticle.invoke()
         }
     }
 
@@ -213,6 +223,10 @@ fun EInkPaginatedContent(
                 delay(500)
                 showLeftArrow = false
             }
+        } else if (onPrevArticle != null) {
+            Log.d("InkRead", "prevPage -> first page, switching to previous article")
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            onPrevArticle.invoke()
         }
     }
 
