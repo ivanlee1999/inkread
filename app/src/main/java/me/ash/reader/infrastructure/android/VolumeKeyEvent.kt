@@ -21,7 +21,7 @@ enum class VolumeKeyPriority {
 
 object VolumeKeyEventBus {
     private val _events = MutableSharedFlow<VolumeKeyEvent>(
-        replay = 1,
+        replay = 0,
         extraBufferCapacity = 1,
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
     )
