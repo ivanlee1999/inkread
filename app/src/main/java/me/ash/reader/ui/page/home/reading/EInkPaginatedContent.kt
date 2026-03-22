@@ -152,17 +152,6 @@ fun EInkPaginatedContent(
     )
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
 
-    LaunchedEffect(Unit) {
-        VolumeKeyEventBus.events
-            .debounce(300)
-            .collect { event ->
-                when (event) {
-                    VolumeKeyEvent.NEXT -> nextPage()
-                    VolumeKeyEvent.PREV -> prevPage()
-                }
-            }
-    }
-
     fun nextPage() {
         if (currentPage < totalPages - 1) {
             currentPage++
@@ -213,6 +202,17 @@ fun EInkPaginatedContent(
                 showBoundaryText = null
             }
         }
+    }
+
+    LaunchedEffect(Unit) {
+        VolumeKeyEventBus.events
+            .debounce(300)
+            .collect { event ->
+                when (event) {
+                    VolumeKeyEvent.NEXT -> nextPage()
+                    VolumeKeyEvent.PREV -> prevPage()
+                }
+            }
     }
 
     val htmlContent = remember(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate, horizontalPadding, lineHeight, letterSpacing, wordSpacing) {
