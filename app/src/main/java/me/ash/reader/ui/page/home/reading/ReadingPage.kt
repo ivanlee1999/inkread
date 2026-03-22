@@ -24,6 +24,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,12 +44,15 @@ import kotlin.math.abs
 import kotlinx.coroutines.launch
 import me.ash.reader.R
 import me.ash.reader.infrastructure.android.TextToSpeechManager
+import me.ash.reader.infrastructure.preference.LocalOpenLink
+import me.ash.reader.infrastructure.preference.LocalOpenLinkSpecificBrowser
 import me.ash.reader.infrastructure.preference.LocalPullToSwitchArticle
 import me.ash.reader.infrastructure.preference.LocalReadingAutoHideToolbar
 import me.ash.reader.infrastructure.preference.LocalReadingBoldCharacters
 import me.ash.reader.infrastructure.preference.LocalReadingTextLineHeight
 import me.ash.reader.infrastructure.preference.not
 import me.ash.reader.ui.ext.collectAsStateValue
+import me.ash.reader.ui.ext.openURL
 import me.ash.reader.ui.ext.showToast
 import me.ash.reader.ui.page.adaptive.ArticleListReaderViewModel
 import me.ash.reader.ui.page.adaptive.NavigationAction
@@ -71,6 +75,8 @@ fun ReadingPage(
 ) {
     val context = LocalContext.current
     val hapticFeedback = LocalHapticFeedback.current
+    val openLink = LocalOpenLink.current
+    val openLinkSpecificBrowser = LocalOpenLinkSpecificBrowser.current
     val isPullToSwitchArticleEnabled = LocalPullToSwitchArticle.current.value
     val readingUiState = viewModel.readingUiState.collectAsStateValue()
     val readerState = viewModel.readerStateStateFlow.collectAsStateValue()
@@ -139,13 +145,16 @@ fun ReadingPage(
                                 contentPadding = paddings,
                                 content = readerState.content.text ?: "",
                                 feedName = readerState.feedName,
-                                title = readerState.title.toString(),
+                                title = readerState.title.orEmpty(),
                                 author = readerState.author,
                                 link = readerState.link,
                                 publishedDate = readerState.publishedDate,
                                 onImageClick = { imgUrl, altText ->
                                     currentImageData = ImageData(imgUrl, altText)
                                     showFullScreenImageViewer = true
+                                },
+                                onLinkClick = { url ->
+                                    context.openURL(url, openLink, openLinkSpecificBrowser)
                                 },
                                 onPrevArticle = if (isPreviousArticleAvailable) {
                                     {
@@ -264,12 +273,15 @@ fun ReadingPage(
                                     }
                                 }
 
-                                showTopDivider =
-                                    snapshotFlow {
-                                            scrollState.value >= 120 ||
-                                                listState.firstVisibleItemIndex != 0
-                                        }
-                                        .collectAsStateValue(initial = false)
+                                val topDividerVisible by remember {
+                                    derivedStateOf {
+                                        scrollState.value >= 120 ||
+                                            listState.firstVisibleItemIndex != 0
+                                    }
+                                }
+                                LaunchedEffect(topDividerVisible) {
+                                    showTopDivider = topDividerVisible
+                                }
 
                                 CompositionLocalProvider(
                                     LocalTextStyle provides
@@ -301,7 +313,7 @@ fun ReadingPage(
                                             contentPadding = paddings,
                                             content = content.text ?: "",
                                             feedName = feedName,
-                                            title = title.toString(),
+                                            title = title.orEmpty(),
                                             author = author,
                                             link = link,
                                             publishedDate = publishedDate,
@@ -393,10 +405,11 @@ fun ReadingPage(
                 viewModel.downloadImage(
                     it,
                     onSuccess = { context.showToast(context.getString(R.string.image_saved)) },
-                    onFailure = {
-                        // FIXME: crash the app for error report
-                        th ->
-                        throw th
+                    onFailure = { th ->
+                        timber.log.Timber.e(th, "Image download failed")
+                        context.showToast(
+                            context.getString(R.string.image_save_failed)
+                        )
                     },
                 )
             },

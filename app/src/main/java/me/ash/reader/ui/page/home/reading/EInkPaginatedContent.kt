@@ -88,6 +88,7 @@ fun EInkPaginatedContent(
     publishedDate: Date,
     contentPadding: PaddingValues = PaddingValues(),
     onImageClick: ((imgUrl: String, altText: String) -> Unit)? = null,
+    onLinkClick: ((url: String) -> Unit)? = null,
     onPageChanged: ((currentPage: Int, totalPages: Int) -> Unit)? = null,
     onPrevArticle: (() -> Unit)? = null,
     onNextArticle: (() -> Unit)? = null,
@@ -123,8 +124,8 @@ fun EInkPaginatedContent(
             ?.absolutePath
     }
 
-    var currentPage by rememberSaveable(content, einkFontSize, horizontalPadding, lineHeight, letterSpacing, wordSpacing) { mutableIntStateOf(0) }
-    var totalPages by rememberSaveable(content, einkFontSize, horizontalPadding, lineHeight, letterSpacing, wordSpacing) { mutableIntStateOf(1) }
+    var currentPage by rememberSaveable(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, horizontalPadding, lineHeight, letterSpacing, wordSpacing) { mutableIntStateOf(0) }
+    var totalPages by rememberSaveable(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, horizontalPadding, lineHeight, letterSpacing, wordSpacing) { mutableIntStateOf(1) }
     var horizontalDrag by remember { mutableFloatStateOf(0f) }
     var showLeftArrow by remember { mutableStateOf(false) }
     var showRightArrow by remember { mutableStateOf(false) }
@@ -150,6 +151,20 @@ fun EInkPaginatedContent(
         label = "dragVisual",
     )
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
+
+    // Clean up WebView when leaving composition to prevent memory leaks
+    DisposableEffect(Unit) {
+        onDispose {
+            webViewRef.value?.let { wv ->
+                wv.removeJavascriptInterface("Android")
+                wv.stopLoading()
+                wv.loadUrl("about:blank")
+                (wv.parent as? ViewGroup)?.removeView(wv)
+                wv.destroy()
+            }
+            webViewRef.value = null
+        }
+    }
 
     fun nextPage() {
         if (currentPage < totalPages - 1) {
@@ -262,9 +277,7 @@ fun EInkPaginatedContent(
                                 ViewGroup.LayoutParams.MATCH_PARENT,
                             )
                             settings.javaScriptEnabled = true
-                            settings.allowFileAccess = true
-                            @Suppress("DEPRECATION")
-                            settings.allowFileAccessFromFileURLs = true
+                            settings.allowFileAccess = false
                             setBackgroundColor(android.graphics.Color.WHITE)
                             isHorizontalScrollBarEnabled = false
                             isVerticalScrollBarEnabled = false
@@ -284,17 +297,33 @@ fun EInkPaginatedContent(
                                 ) = true
                             }
                             addJavascriptInterface(
-                                EInkJsInterface { pages ->
-                                    Handler(Looper.getMainLooper()).post {
-                                        totalPages = maxOf(1, pages)
-                                        // Clamp currentPage if totalPages decreased (e.g. after image load recount)
-                                        if (currentPage >= totalPages) {
-                                            currentPage = totalPages - 1
-                                            webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
+                                EInkJsInterface(
+                                    onTotalPages = { pages ->
+                                        Handler(Looper.getMainLooper()).post {
+                                            totalPages = maxOf(1, pages)
+                                            // Clamp currentPage if totalPages decreased (e.g. after image load recount)
+                                            if (currentPage >= totalPages) {
+                                                currentPage = totalPages - 1
+                                                webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
+                                            }
+                                            onPageChanged?.invoke(currentPage + 1, totalPages)
                                         }
-                                        onPageChanged?.invoke(currentPage + 1, totalPages)
-                                    }
-                                },
+                                    },
+                                    onImageClick = onImageClick?.let { callback ->
+                                        { src, alt ->
+                                            Handler(Looper.getMainLooper()).post {
+                                                callback(src, alt)
+                                            }
+                                        }
+                                    },
+                                    onLinkClick = onLinkClick?.let { callback ->
+                                        { href ->
+                                            Handler(Looper.getMainLooper()).post {
+                                                callback(href)
+                                            }
+                                        }
+                                    },
+                                ),
                                 "Android",
                             )
                             webViewRef.value = this
@@ -452,7 +481,6 @@ fun EInkPaginatedContent(
                     nextPage()
                     bottomBarVisible = true // Reset auto-hide timer on interaction
                 },
-                fontSize = einkFontSize,
                 canDecreaseFontSize = fontSizeIndex > 0,
                 canIncreaseFontSize = fontSizeIndex < EInkFontSizePreference.values.lastIndex,
                 onDecreaseFontSize = {
@@ -483,9 +511,23 @@ fun EInkPaginatedContent(
     }
 }
 
-private class EInkJsInterface(private val onTotalPages: (Int) -> Unit) {
+private class EInkJsInterface(
+    private val onTotalPages: (Int) -> Unit,
+    private val onImageClick: ((String, String) -> Unit)? = null,
+    private val onLinkClick: ((String) -> Unit)? = null,
+) {
     @JavascriptInterface
     fun onTotalPages(pages: Int) = onTotalPages.invoke(pages)
+
+    @JavascriptInterface
+    fun onImageClicked(src: String, alt: String) {
+        onImageClick?.invoke(src, alt)
+    }
+
+    @JavascriptInterface
+    fun onLinkClicked(href: String) {
+        onLinkClick?.invoke(href)
+    }
 }
 
 private fun buildArticleHtml(
@@ -516,11 +558,13 @@ private fun buildArticleHtml(
 
     fun fontFaceBlock(cssName: String, filePath: String): String {
         val format = if (filePath.endsWith(".otf")) "opentype" else "truetype"
-        val fileUrl = "file://$filePath"
+        val mimeType = if (filePath.endsWith(".otf")) "font/otf" else "font/ttf"
+        val fontBytes = java.io.File(filePath).readBytes()
+        val base64 = android.util.Base64.encodeToString(fontBytes, android.util.Base64.NO_WRAP)
         return """
 @font-face {
     font-family: '$cssName';
-    src: url('$fileUrl') format('$format');
+    src: url('data:$mimeType;base64,$base64') format('$format');
     font-weight: normal;
     font-style: normal;
 }"""
@@ -647,6 +691,28 @@ document.addEventListener('keydown', function(e) {
         e.stopPropagation();
     }
 });
+document.addEventListener('click', function(e) {
+    var target = e.target;
+    // Handle image clicks
+    if (target.tagName === 'IMG') {
+        e.preventDefault();
+        e.stopPropagation();
+        Android.onImageClicked(target.src || '', target.alt || '');
+        return;
+    }
+    // Handle link clicks
+    var anchor = target.closest ? target.closest('a') : null;
+    if (!anchor) {
+        var el = target;
+        while (el && el.tagName !== 'A') el = el.parentElement;
+        anchor = el;
+    }
+    if (anchor && anchor.href) {
+        e.preventDefault();
+        e.stopPropagation();
+        Android.onLinkClicked(anchor.href);
+    }
+});
 </script>
 </head>
 <body onload="setupPagination()">
@@ -654,7 +720,20 @@ document.addEventListener('keydown', function(e) {
   <h1>$escapedTitle</h1>
   <p class="eink-meta">$escapedMeta</p>
 </div>
-$content
+${sanitizeHtml(content)}
 </body>
 </html>"""
+}
+
+/**
+ * Basic HTML sanitization to strip script injection vectors before
+ * loading content into the WebView with JavaScript enabled.
+ */
+private fun sanitizeHtml(html: String): String {
+    return html
+        .replace(Regex("<script[^>]*>[\\s\\S]*?</script>", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("<script[^>]*/>", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("\\bon\\w+\\s*=\\s*\"[^\"]*\"", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("\\bon\\w+\\s*=\\s*'[^']*'", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("javascript:", RegexOption.IGNORE_CASE), "")
 }

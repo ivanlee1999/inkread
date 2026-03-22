@@ -35,6 +35,9 @@ class AndroidImageDownloader @Inject constructor(
         return withContext(ioDispatcher) {
             Request.Builder().url(imageUrl).build().runCatching {
                 okHttpClient.newCall(this).execute().run {
+                    if (!isSuccessful) {
+                        throw IOException("Image download failed: HTTP $code")
+                    }
 
                     val fileName = URLUtil.guessFileName(
                         imageUrl, header("Content-Disposition"), body.contentType()?.toString()

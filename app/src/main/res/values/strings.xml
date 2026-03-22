@@ -325,6 +325,15 @@
     <string name="mark_below_as_read">Mark below as read</string>
     <string name="save">Save</string>
     <string name="image_saved">Image saved</string>
+    <string name="image_save_failed">Failed to save image</string>
+    <string name="previous_page">Previous page</string>
+    <string name="next_page">Next page</string>
+    <string name="last_sync_just_now">Just now</string>
+    <string name="last_sync_min_ago">%1$d min ago</string>
+    <string name="last_sync_hours_ago">%1$dh ago</string>
+    <string name="last_sync_days_ago">%1$dd ago</string>
+    <string name="last_sync_prefix">Last sync: %1$s</string>
+    <string name="articles_count">%1$d articles</string>
     <string name="permission_denied">Permission denied</string>
     <string name="shared_content">Shared content</string>
     <string name="only_link">Only link</string>

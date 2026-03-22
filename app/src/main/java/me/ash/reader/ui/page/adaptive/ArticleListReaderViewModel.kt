@@ -278,20 +278,29 @@ constructor(
             val itemByIndex =
                 listIndex?.let { snapshotList.getOrNull(it) as? ArticleFlowItem.Article }
 
-            val itemFromList =
-                if (itemByIndex != null && itemByIndex.articleWithFeed.article.id != articleId) {
-                    itemByIndex
-                } else {
-                    snapshotList.find { item ->
+            // Resolution order:
+            // 1. Item at listIndex if its ID matches the requested articleId
+            // 2. Search the snapshot list by articleId
+            // 3. Query the database
+            val item = when {
+                itemByIndex != null && itemByIndex.articleWithFeed.article.id == articleId ->
+                    itemByIndex.articleWithFeed
+                else -> {
+                    val found = snapshotList.find { item ->
                         item is ArticleFlowItem.Article &&
                             item.articleWithFeed.article.id == articleId
                     } as? ArticleFlowItem.Article
+                    found?.articleWithFeed
+                        ?: rssService.get().findArticleById(articleId)
                 }
+            }
 
-            val item =
-                itemByIndex?.articleWithFeed
-                    ?: (itemFromList?.articleWithFeed
-                        ?: rssService.get().findArticleById(articleId)!!)
+            if (item == null) {
+                _readerState.update {
+                    it.copy(content = ReaderState.Error("Article not found"))
+                }
+                return@launch
+            }
 
             if (diffMapHolder.checkIfUnread(item)) {
                 diffMapHolder.updateDiff(item, isUnread = false)
