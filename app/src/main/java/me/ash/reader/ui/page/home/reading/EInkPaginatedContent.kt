@@ -42,12 +42,12 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 import me.ash.reader.infrastructure.android.VolumeKeyEvent
 import me.ash.reader.infrastructure.android.VolumeKeyEventBus
+import me.ash.reader.infrastructure.android.VolumeKeyPriority
+import androidx.compose.runtime.DisposableEffect
 import me.ash.reader.infrastructure.preference.EInkChineseFontPreference
 import me.ash.reader.infrastructure.preference.EInkEnglishFontPreference
 import me.ash.reader.infrastructure.preference.EInkFontSizePreference
@@ -77,7 +77,6 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
 
 @SuppressLint("SetJavaScriptEnabled")
-@OptIn(FlowPreview::class)
 @Composable
 fun EInkPaginatedContent(
     modifier: Modifier = Modifier,
@@ -204,15 +203,22 @@ fun EInkPaginatedContent(
         }
     }
 
+    // Register as HIGH-priority volume key consumer so that when the article
+    // (ReadingPage) is visible it receives events exclusively, preventing the
+    // FlowPage (list) from also reacting in two-pane layouts.
+    val volumeKeyFlow = remember { VolumeKeyEventBus.register(VolumeKeyPriority.HIGH) }
+    DisposableEffect(Unit) {
+        onDispose { VolumeKeyEventBus.unregister(VolumeKeyPriority.HIGH) }
+    }
     LaunchedEffect(Unit) {
-        VolumeKeyEventBus.events
-            .debounce(300)
-            .collect { event ->
+        volumeKeyFlow.collect { event ->
+            if (VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.HIGH)) {
                 when (event) {
                     VolumeKeyEvent.NEXT -> nextPage()
                     VolumeKeyEvent.PREV -> prevPage()
                 }
             }
+        }
     }
 
     val htmlContent = remember(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate, horizontalPadding, lineHeight, letterSpacing, wordSpacing) {
@@ -232,7 +238,25 @@ fun EInkPaginatedContent(
             key(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, horizontalPadding, lineHeight, letterSpacing, wordSpacing) {
                 AndroidView(
                     factory = { ctx ->
-                        WebView(ctx).apply {
+                        object : WebView(ctx) {
+                            // Override key handling so volume keys always pass
+                            // through to Activity.dispatchKeyEvent, even if the
+                            // WebView somehow gains focus.
+                            override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {
+                                if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
+                                    keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) {
+                                    return false // let Activity handle it
+                                }
+                                return super.onKeyDown(keyCode, event)
+                            }
+                            override fun onKeyUp(keyCode: Int, event: android.view.KeyEvent?): Boolean {
+                                if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
+                                    keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) {
+                                    return false // let Activity handle it
+                                }
+                                return super.onKeyUp(keyCode, event)
+                            }
+                        }.apply {
                             layoutParams = ViewGroup.LayoutParams(
                                 ViewGroup.LayoutParams.MATCH_PARENT,
                                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -246,9 +270,11 @@ fun EInkPaginatedContent(
                             isVerticalScrollBarEnabled = false
                             isFocusable = false
                             isFocusableInTouchMode = false
+                            overScrollMode = android.view.View.OVER_SCROLL_NEVER
                             setOnKeyListener { _, _, _ ->
-                                // Return false so WebView never consumes key events;
-                                // volume keys are handled by Activity.dispatchKeyEvent
+                                // Let all keys propagate normally; the WebView
+                                // onKeyDown/onKeyUp overrides already handle
+                                // volume key passthrough.
                                 false
                             }
                             webViewClient = object : WebViewClient() {

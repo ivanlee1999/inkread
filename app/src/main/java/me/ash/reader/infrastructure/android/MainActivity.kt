@@ -232,18 +232,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        Log.d("InkRead", "onKeyDown: code=$keyCode action=${event.action} repeat=${event.repeatCount}")
+        // Volume keys are already handled in dispatchKeyEvent; just consume them
+        // here to prevent any fallthrough (e.g. from WebView focus stealing).
         if (settingsProvider.settings.einkMode.isEInkMode()) {
             when (keyCode) {
-                KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_UP -> {
-                    if (event.repeatCount == 0) {
-                        val direction = if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)
-                            VolumeKeyEvent.NEXT else VolumeKeyEvent.PREV
-                        Log.d("InkRead", "onKeyDown volume: emitting $direction")
-                        VolumeKeyEventBus.emit(direction)
-                    }
-                    return true
-                }
+                KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_UP -> return true
             }
         }
         return super.onKeyDown(keyCode, event)

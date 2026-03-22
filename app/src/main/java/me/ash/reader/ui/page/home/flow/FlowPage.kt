@@ -89,13 +89,13 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
-import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
 import me.ash.reader.infrastructure.android.VolumeKeyEvent
 import me.ash.reader.infrastructure.android.VolumeKeyEventBus
+import me.ash.reader.infrastructure.android.VolumeKeyPriority
+import androidx.compose.runtime.DisposableEffect
 import me.ash.reader.R
 import me.ash.reader.domain.data.PagerData
 import me.ash.reader.domain.model.article.ArticleFlowItem
@@ -139,7 +139,6 @@ import me.ash.reader.ui.page.home.reading.rememberPullToLoadState
     ExperimentalMaterial3Api::class,
     ExperimentalSharedTransitionApi::class,
     ExperimentalMaterialApi::class,
-    FlowPreview::class,
 )
 @Composable
 fun FlowPage(
@@ -311,11 +310,16 @@ fun FlowPage(
         if (einkMode) snapAppBarToCollapsed()
     }
 
+    // Register as LOW-priority volume key consumer. In two-pane layouts,
+    // when ReadingPage (HIGH priority) is also active, events go there instead.
     if (einkMode) {
+        val volumeKeyFlow = remember { VolumeKeyEventBus.register(VolumeKeyPriority.LOW) }
+        DisposableEffect(Unit) {
+            onDispose { VolumeKeyEventBus.unregister(VolumeKeyPriority.LOW) }
+        }
         LaunchedEffect(Unit) {
-            VolumeKeyEventBus.events
-                .debounce(300)
-                .collect { event ->
+            volumeKeyFlow.collect { event ->
+                if (VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.LOW)) {
                     when (event) {
                         VolumeKeyEvent.NEXT -> {
                             if (einkCurrentPage < einkTotalPagesState - 1) {
@@ -331,6 +335,7 @@ fun FlowPage(
                         }
                     }
                 }
+            }
         }
     }
 
