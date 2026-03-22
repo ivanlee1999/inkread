@@ -242,26 +242,7 @@ fun EInkPaginatedContent(
         Box(
             modifier = Modifier
                 .weight(1f)
-                .fillMaxWidth()
-                .pointerInput(Unit) {
-                    detectHorizontalDragGestures(
-                        onDragEnd = {
-                            if (horizontalDrag < -200f && onNextArticle != null) {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                onNextArticle.invoke()
-                            } else if (horizontalDrag > 200f && onPrevArticle != null) {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                onPrevArticle.invoke()
-                            }
-                            horizontalDrag = 0f
-                            dragVisualTarget = 0f
-                        },
-                        onHorizontalDrag = { _, dragAmount ->
-                            horizontalDrag += dragAmount
-                            dragVisualTarget = horizontalDrag.coerceIn(-maxDragPx, maxDragPx)
-                        },
-                    )
-                },
+                .fillMaxWidth(),
         ) {
             key(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, horizontalPadding, lineHeight, letterSpacing, wordSpacing) {
                 AndroidView(
@@ -315,7 +296,29 @@ fun EInkPaginatedContent(
                 )
             }
 
-            Row(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectHorizontalDragGestures(
+                            onDragEnd = {
+                                if (horizontalDrag < -200f && onNextArticle != null) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onNextArticle.invoke()
+                                } else if (horizontalDrag > 200f && onPrevArticle != null) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onPrevArticle.invoke()
+                                }
+                                horizontalDrag = 0f
+                                dragVisualTarget = 0f
+                            },
+                            onHorizontalDrag = { _, dragAmount ->
+                                horizontalDrag += dragAmount
+                                dragVisualTarget = horizontalDrag.coerceIn(-maxDragPx, maxDragPx)
+                            },
+                        )
+                    },
+            ) {
                 Box(
                     modifier = Modifier
                         .fillMaxHeight()
