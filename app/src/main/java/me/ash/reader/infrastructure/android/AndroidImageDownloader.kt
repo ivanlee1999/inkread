@@ -34,13 +34,13 @@ class AndroidImageDownloader @Inject constructor(
     suspend fun downloadImage(imageUrl: String): Result<Uri> {
         return withContext(ioDispatcher) {
             Request.Builder().url(imageUrl).build().runCatching {
-                okHttpClient.newCall(this).execute().run {
-                    if (!isSuccessful) {
-                        throw IOException("Image download failed: HTTP $code")
+                okHttpClient.newCall(this).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        throw IOException("Image download failed: HTTP ${response.code}")
                     }
 
                     val fileName = URLUtil.guessFileName(
-                        imageUrl, header("Content-Disposition"), body.contentType()?.toString()
+                        imageUrl, response.header("Content-Disposition"), response.body.contentType()?.toString()
                     )
 
                     val relativePath =
@@ -65,7 +65,7 @@ class AndroidImageDownloader @Inject constructor(
                             ?: return@withContext Result.failure(IOException("Cannot create image"))
 
                         resolver.openFileDescriptor(imageUri, "w", null).use { pfd ->
-                            body.byteStream().use {
+                            response.body.byteStream().use {
                                 it.copyTo(
                                     FileOutputStream(
                                         pfd?.fileDescriptor ?: return@withContext Result.failure(
@@ -82,7 +82,7 @@ class AndroidImageDownloader @Inject constructor(
                         }
                         imageUri
                     } else {
-                        saveImageForAndroidP(
+                        response.saveImageForAndroidP(
                             fileName,
                             Environment.getExternalStoragePublicDirectory(relativePath).path
                         )

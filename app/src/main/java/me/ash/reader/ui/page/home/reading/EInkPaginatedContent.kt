@@ -76,6 +76,18 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
 
+/** Cache for base64-encoded font data keyed by file path, so font files are only read once per app session. */
+private object FontBase64Cache {
+    private val cache = HashMap<String, String>()
+
+    fun getOrPut(filePath: String): String = synchronized(cache) {
+        cache.getOrPut(filePath) {
+            val fontBytes = java.io.File(filePath).readBytes()
+            android.util.Base64.encodeToString(fontBytes, android.util.Base64.NO_WRAP)
+        }
+    }
+}
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun EInkPaginatedContent(
@@ -291,10 +303,18 @@ fun EInkPaginatedContent(
                                 false
                             }
                             webViewClient = object : WebViewClient() {
+                                // Block all navigation away from the local content.
+                                // This prevents javascript: scheme exploits and
+                                // accidental navigation to external URLs.
                                 override fun shouldOverrideUrlLoading(
                                     view: WebView?,
                                     url: String?,
-                                ) = true
+                                ): Boolean = true
+
+                                override fun shouldOverrideUrlLoading(
+                                    view: WebView?,
+                                    request: android.webkit.WebResourceRequest?,
+                                ): Boolean = true
                             }
                             addJavascriptInterface(
                                 EInkJsInterface(
@@ -307,20 +327,6 @@ fun EInkPaginatedContent(
                                                 webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
                                             }
                                             onPageChanged?.invoke(currentPage + 1, totalPages)
-                                        }
-                                    },
-                                    onImageClick = onImageClick?.let { callback ->
-                                        { src, alt ->
-                                            Handler(Looper.getMainLooper()).post {
-                                                callback(src, alt)
-                                            }
-                                        }
-                                    },
-                                    onLinkClick = onLinkClick?.let { callback ->
-                                        { href ->
-                                            Handler(Looper.getMainLooper()).post {
-                                                callback(href)
-                                            }
                                         }
                                     },
                                 ),
@@ -513,21 +519,9 @@ fun EInkPaginatedContent(
 
 private class EInkJsInterface(
     private val onTotalPages: (Int) -> Unit,
-    private val onImageClick: ((String, String) -> Unit)? = null,
-    private val onLinkClick: ((String) -> Unit)? = null,
 ) {
     @JavascriptInterface
     fun onTotalPages(pages: Int) = onTotalPages.invoke(pages)
-
-    @JavascriptInterface
-    fun onImageClicked(src: String, alt: String) {
-        onImageClick?.invoke(src, alt)
-    }
-
-    @JavascriptInterface
-    fun onLinkClicked(href: String) {
-        onLinkClick?.invoke(href)
-    }
 }
 
 private fun buildArticleHtml(
@@ -559,8 +553,7 @@ private fun buildArticleHtml(
     fun fontFaceBlock(cssName: String, filePath: String): String {
         val format = if (filePath.endsWith(".otf")) "opentype" else "truetype"
         val mimeType = if (filePath.endsWith(".otf")) "font/otf" else "font/ttf"
-        val fontBytes = java.io.File(filePath).readBytes()
-        val base64 = android.util.Base64.encodeToString(fontBytes, android.util.Base64.NO_WRAP)
+        val base64 = FontBase64Cache.getOrPut(filePath)
         return """
 @font-face {
     font-family: '$cssName';
@@ -691,28 +684,10 @@ document.addEventListener('keydown', function(e) {
         e.stopPropagation();
     }
 });
-document.addEventListener('click', function(e) {
-    var target = e.target;
-    // Handle image clicks
-    if (target.tagName === 'IMG') {
-        e.preventDefault();
-        e.stopPropagation();
-        Android.onImageClicked(target.src || '', target.alt || '');
-        return;
-    }
-    // Handle link clicks
-    var anchor = target.closest ? target.closest('a') : null;
-    if (!anchor) {
-        var el = target;
-        while (el && el.tagName !== 'A') el = el.parentElement;
-        anchor = el;
-    }
-    if (anchor && anchor.href) {
-        e.preventDefault();
-        e.stopPropagation();
-        Android.onLinkClicked(anchor.href);
-    }
-});
+// Note: Image and link tap-to-open is intentionally disabled in E-Ink mode.
+// The full-screen overlay captures all taps for page turning, so WebView
+// never receives touch events. Links and images are displayed but not
+// interactive.
 </script>
 </head>
 <body onload="setupPagination()">
@@ -726,14 +701,37 @@ ${sanitizeHtml(content)}
 }
 
 /**
- * Basic HTML sanitization to strip script injection vectors before
+ * HTML sanitization to strip script injection vectors before
  * loading content into the WebView with JavaScript enabled.
+ *
+ * Handles:
+ * - `<script>` tags and their content (including unclosed tags)
+ * - Quoted event handlers: `onclick="..."` / `onclick='...'`
+ * - Unquoted event handlers: `onclick=alert(1)`
+ * - `javascript:` scheme including HTML-entity-encoded variants
  */
 private fun sanitizeHtml(html: String): String {
-    return html
-        .replace(Regex("<script[^>]*>[\\s\\S]*?</script>", RegexOption.IGNORE_CASE), "")
-        .replace(Regex("<script[^>]*/>", RegexOption.IGNORE_CASE), "")
+    // First decode common HTML entities that could hide "javascript:" scheme
+    // e.g. java&#x73;cript: , java&#115;cript: , java&Tab;script:
+    val decoded = html
+        .replace(Regex("&#x[0-9a-fA-F]+;"), { m ->
+            val code = m.value.removePrefix("&#x").removeSuffix(";").toIntOrNull(16)
+            if (code != null) code.toChar().toString() else m.value
+        })
+        .replace(Regex("&#[0-9]+;"), { m ->
+            val code = m.value.removePrefix("&#").removeSuffix(";").toIntOrNull()
+            if (code != null) code.toChar().toString() else m.value
+        })
+
+    return decoded
+        // Strip <script> tags and all content between them (including nested / unclosed)
+        .replace(Regex("<script[\\s\\S]*?</script>", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("<script[^>]*/?>", RegexOption.IGNORE_CASE), "")
+        // Strip quoted event handlers: onclick="..." / onclick='...'
         .replace(Regex("\\bon\\w+\\s*=\\s*\"[^\"]*\"", RegexOption.IGNORE_CASE), "")
         .replace(Regex("\\bon\\w+\\s*=\\s*'[^']*'", RegexOption.IGNORE_CASE), "")
-        .replace(Regex("javascript:", RegexOption.IGNORE_CASE), "")
+        // Strip unquoted event handlers: onclick=alert(1)  (value ends at space or >)
+        .replace(Regex("\\bon\\w+\\s*=\\s*[^\"'\\s>]+", RegexOption.IGNORE_CASE), "")
+        // Strip javascript: scheme (after entity decoding above)
+        .replace(Regex("javascript\\s*:", RegexOption.IGNORE_CASE), "")
 }
