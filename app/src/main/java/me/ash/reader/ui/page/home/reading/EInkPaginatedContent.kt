@@ -387,8 +387,6 @@ fun EInkPaginatedContent(
                     // remember(htmlContent) — no need to reset it here.
                     if (htmlContent != lastLoadedHtmlKey) {
                         lastLoadedHtmlKey = htmlContent
-                        currentPage = 0
-                        totalPages = 0
                         webView.loadDataWithBaseURL(null, htmlContent, "text/html", "UTF-8", null)
                     }
                 },
