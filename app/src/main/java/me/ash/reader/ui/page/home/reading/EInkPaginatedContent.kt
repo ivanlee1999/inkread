@@ -138,8 +138,12 @@ fun EInkPaginatedContent(
             ?.absolutePath
     }
 
-    var currentPage by rememberSaveable(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, horizontalPadding, lineHeight, letterSpacing, wordSpacing) { mutableIntStateOf(0) }
-    var totalPages by rememberSaveable(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, horizontalPadding, lineHeight, letterSpacing, wordSpacing) { mutableIntStateOf(0) }
+    // Stable (unkeyed) state so the JS bridge always writes to the same objects.
+    // Reset inline when htmlContent changes (same pattern as isInitialPaginationReady).
+    val currentPageState = rememberSaveable { mutableIntStateOf(0) }
+    var currentPage by currentPageState
+    val totalPagesState = rememberSaveable { mutableIntStateOf(0) }
+    var totalPages by totalPagesState
     // Track the last loaded HTML key to detect content/style changes in the update callback
     var lastLoadedHtmlKey by remember { mutableStateOf("") }
 
@@ -267,6 +271,8 @@ fun EInkPaginatedContent(
     if (lastHtmlContentForReady.value != htmlContent) {
         lastHtmlContentForReady.value = htmlContent
         isInitialPaginationReady = false
+        currentPage = 0
+        totalPages = 0
     }
 
     Column(
