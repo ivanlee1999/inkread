@@ -23,7 +23,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -137,7 +136,13 @@ fun EInkPaginatedContent(
     }
 
     var currentPage by rememberSaveable(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, horizontalPadding, lineHeight, letterSpacing, wordSpacing) { mutableIntStateOf(0) }
-    var totalPages by rememberSaveable(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, horizontalPadding, lineHeight, letterSpacing, wordSpacing) { mutableIntStateOf(1) }
+    var totalPages by rememberSaveable(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, horizontalPadding, lineHeight, letterSpacing, wordSpacing) { mutableIntStateOf(0) }
+    // Track whether initial pagination is complete so we can hide WebView until ready
+    var isInitialPaginationReady by remember { mutableStateOf(false) }
+
+    // Track the last loaded HTML key to detect content/style changes in the update callback
+    var lastLoadedHtmlKey by remember { mutableStateOf("") }
+
     var horizontalDrag by remember { mutableFloatStateOf(0f) }
     var showLeftArrow by remember { mutableStateOf(false) }
     var showRightArrow by remember { mutableStateOf(false) }
@@ -262,85 +267,115 @@ fun EInkPaginatedContent(
                 .weight(1f)
                 .fillMaxWidth(),
         ) {
-            key(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, horizontalPadding, lineHeight, letterSpacing, wordSpacing) {
-                AndroidView(
-                    factory = { ctx ->
-                        object : WebView(ctx) {
-                            // Override key handling so volume keys always pass
-                            // through to Activity.dispatchKeyEvent, even if the
-                            // WebView somehow gains focus.
-                            override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {
-                                if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
-                                    keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) {
-                                    return false // let Activity handle it
-                                }
-                                return super.onKeyDown(keyCode, event)
-                            }
-                            override fun onKeyUp(keyCode: Int, event: android.view.KeyEvent?): Boolean {
-                                if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
-                                    keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) {
-                                    return false // let Activity handle it
-                                }
-                                return super.onKeyUp(keyCode, event)
-                            }
-                        }.apply {
-                            layoutParams = ViewGroup.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                            )
-                            settings.javaScriptEnabled = true
-                            settings.allowFileAccess = false
-                            setBackgroundColor(android.graphics.Color.WHITE)
-                            isHorizontalScrollBarEnabled = false
-                            isVerticalScrollBarEnabled = false
-                            isFocusable = false
-                            isFocusableInTouchMode = false
-                            overScrollMode = android.view.View.OVER_SCROLL_NEVER
-                            setOnKeyListener { _, _, _ ->
-                                // Let all keys propagate normally; the WebView
-                                // onKeyDown/onKeyUp overrides already handle
-                                // volume key passthrough.
-                                false
-                            }
-                            webViewClient = object : WebViewClient() {
-                                // Block all navigation away from the local content.
-                                // This prevents javascript: scheme exploits and
-                                // accidental navigation to external URLs.
-                                override fun shouldOverrideUrlLoading(
-                                    view: WebView?,
-                                    url: String?,
-                                ): Boolean = true
-
-                                override fun shouldOverrideUrlLoading(
-                                    view: WebView?,
-                                    request: android.webkit.WebResourceRequest?,
-                                ): Boolean = true
-                            }
-                            addJavascriptInterface(
-                                EInkJsInterface(
-                                    onTotalPages = { pages ->
-                                        Handler(Looper.getMainLooper()).post {
-                                            totalPages = maxOf(1, pages)
-                                            // Clamp currentPage if totalPages decreased (e.g. after image load recount)
-                                            if (currentPage >= totalPages) {
-                                                currentPage = totalPages - 1
-                                                webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
-                                            }
-                                            onPageChanged?.invoke(currentPage + 1, totalPages)
-                                        }
-                                    },
-                                ),
-                                "Android",
-                            )
-                            webViewRef.value = this
-                            loadDataWithBaseURL(null, htmlContent, "text/html", "UTF-8", null)
-                        }
-                    },
+            // White placeholder shown while WebView pagination is not yet ready
+            if (!isInitialPaginationReady) {
+                Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .graphicsLayer { translationX = dragVisualOffset },
+                        .background(Color.White),
                 )
             }
+
+            AndroidView(
+                factory = { ctx ->
+                    object : WebView(ctx) {
+                        // Override key handling so volume keys always pass
+                        // through to Activity.dispatchKeyEvent, even if the
+                        // WebView somehow gains focus.
+                        override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {
+                            if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
+                                keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) {
+                                return false // let Activity handle it
+                            }
+                            return super.onKeyDown(keyCode, event)
+                        }
+                        override fun onKeyUp(keyCode: Int, event: android.view.KeyEvent?): Boolean {
+                            if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
+                                keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) {
+                                return false // let Activity handle it
+                            }
+                            return super.onKeyUp(keyCode, event)
+                        }
+                    }.apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                        )
+                        settings.javaScriptEnabled = true
+                        settings.allowFileAccess = false
+                        setBackgroundColor(android.graphics.Color.WHITE)
+                        isHorizontalScrollBarEnabled = false
+                        isVerticalScrollBarEnabled = false
+                        isFocusable = false
+                        isFocusableInTouchMode = false
+                        overScrollMode = android.view.View.OVER_SCROLL_NEVER
+                        setOnKeyListener { _, _, _ ->
+                            // Let all keys propagate normally; the WebView
+                            // onKeyDown/onKeyUp overrides already handle
+                            // volume key passthrough.
+                            false
+                        }
+                        webViewClient = object : WebViewClient() {
+                            // Block all navigation away from the local content.
+                            // This prevents javascript: scheme exploits and
+                            // accidental navigation to external URLs.
+                            override fun shouldOverrideUrlLoading(
+                                view: WebView?,
+                                url: String?,
+                            ): Boolean = true
+
+                            override fun shouldOverrideUrlLoading(
+                                view: WebView?,
+                                request: android.webkit.WebResourceRequest?,
+                            ): Boolean = true
+                        }
+                        addJavascriptInterface(
+                            EInkJsInterface(
+                                onTotalPages = { pages ->
+                                    Handler(Looper.getMainLooper()).post {
+                                        totalPages = maxOf(1, pages)
+                                        // Clamp currentPage if totalPages decreased (e.g. after image load recount)
+                                        if (currentPage >= totalPages) {
+                                            currentPage = totalPages - 1
+                                            webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
+                                        }
+                                        onPageChanged?.invoke(currentPage + 1, totalPages)
+                                    }
+                                },
+                                onInitialPaginationReady = { pages ->
+                                    Handler(Looper.getMainLooper()).post {
+                                        totalPages = maxOf(1, pages)
+                                        currentPage = 0
+                                        isInitialPaginationReady = true
+                                        onPageChanged?.invoke(currentPage + 1, totalPages)
+                                    }
+                                },
+                            ),
+                            "Android",
+                        )
+                        webViewRef.value = this
+                        lastLoadedHtmlKey = htmlContent
+                        loadDataWithBaseURL(null, htmlContent, "text/html", "UTF-8", null)
+                    }
+                },
+                update = { webView ->
+                    // Reload content when html changes (style/content change) without
+                    // destroying and recreating the entire WebView composable.
+                    if (htmlContent != lastLoadedHtmlKey) {
+                        lastLoadedHtmlKey = htmlContent
+                        isInitialPaginationReady = false
+                        currentPage = 0
+                        totalPages = 0
+                        webView.loadDataWithBaseURL(null, htmlContent, "text/html", "UTF-8", null)
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        translationX = dragVisualOffset
+                        alpha = if (isInitialPaginationReady) 1f else 0f
+                    },
+            )
 
             Row(
                 modifier = Modifier
@@ -462,17 +497,20 @@ fun EInkPaginatedContent(
 
         val progress = if (totalPages > 0) ((currentPage + 1) * 100 / totalPages) else 0
 
-        // Thin progress bar — always visible at the bottom
-        LinearProgressIndicator(
-            progress = { progress / 100f },
-            modifier = Modifier.fillMaxWidth().height(3.dp),
-            color = Color.Black,
-            trackColor = Color(0xFFE0E0E0),
-        )
+        // Thin progress bar — visible at the bottom only after pagination is ready
+        if (totalPages > 0) {
+            LinearProgressIndicator(
+                progress = { progress / 100f },
+                modifier = Modifier.fillMaxWidth().height(3.dp),
+                color = Color.Black,
+                trackColor = Color(0xFFE0E0E0),
+            )
+        }
 
         // Full bottom bar — hidden by default, shown on tap, auto-hides after 3s
+        // Also hidden when pagination is not yet ready (totalPages == 0)
         AnimatedVisibility(
-            visible = bottomBarVisible,
+            visible = bottomBarVisible && totalPages > 0,
             enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(animationSpec = tween(200)),
             exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(animationSpec = tween(200)),
         ) {
@@ -519,9 +557,13 @@ fun EInkPaginatedContent(
 
 private class EInkJsInterface(
     private val onTotalPages: (Int) -> Unit,
+    private val onInitialPaginationReady: (Int) -> Unit,
 ) {
     @JavascriptInterface
     fun onTotalPages(pages: Int) = onTotalPages.invoke(pages)
+
+    @JavascriptInterface
+    fun onInitialPaginationReady(pages: Int) = onInitialPaginationReady.invoke(pages)
 }
 
 private fun buildArticleHtml(
@@ -604,6 +646,7 @@ body {
     overflow: hidden;
     -webkit-text-size-adjust: none;
     text-size-adjust: none;
+    visibility: hidden;
 }
 img {
     max-width: 100% !important;
@@ -643,19 +686,6 @@ p, li, blockquote {
 </style>
 <script>
 var _vw, _totalPages = 1;
-function setupPagination() {
-    _vw = window.innerWidth;
-    var vh = window.innerHeight;
-    document.body.style.height = vh + 'px';
-    var padding = ${horizontalPadding};
-    document.body.style.columnWidth = (_vw - padding * 2) + 'px';
-    // Recount after images load and a delay for layout
-    recountPages();
-    window.addEventListener('load', function() { recountPages(); });
-    // Also recount after longer delay for lazy-loaded content
-    setTimeout(recountPages, 500);
-    setTimeout(recountPages, 1500);
-}
 function recountPages() {
     var sw = document.body.scrollWidth;
     // scrollWidth can be slightly larger than content due to rounding
@@ -678,6 +708,20 @@ function goToPage(n) {
     if (n >= _totalPages) n = _totalPages - 1;
     document.body.style.transform = 'translateX(-' + (n * _vw) + 'px)';
 }
+function finishInitialPagination() {
+    _vw = window.innerWidth;
+    var vh = window.innerHeight;
+    document.body.style.height = vh + 'px';
+    var padding = ${horizontalPadding};
+    document.body.style.columnWidth = (_vw - padding * 2) + 'px';
+    recountPages();
+    goToPage(0);
+    document.body.style.visibility = 'visible';
+    Android.onInitialPaginationReady(_totalPages);
+    // Delayed recounts for image reflow — do NOT re-hide body
+    setTimeout(recountPages, 500);
+    setTimeout(recountPages, 1500);
+}
 document.addEventListener('keydown', function(e) {
     if (e.key === 'AudioVolumeUp' || e.key === 'AudioVolumeDown' || e.key === 'VolumeUp' || e.key === 'VolumeDown') {
         e.preventDefault();
@@ -690,7 +734,7 @@ document.addEventListener('keydown', function(e) {
 // interactive.
 </script>
 </head>
-<body onload="setupPagination()">
+<body onload="finishInitialPagination()">
 <div class="eink-metadata">
   <h1>$escapedTitle</h1>
   <p class="eink-meta">$escapedMeta</p>

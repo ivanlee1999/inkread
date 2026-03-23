@@ -13,6 +13,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyListState
@@ -128,6 +129,14 @@ fun ReadingPage(
                 if (readerState.articleId != null) {
                     if (isEInkMode) {
                         // E-Ink paginated content reader
+                        if (readerState.content is ReaderState.Loading) {
+                            // Show plain white placeholder while content is still loading
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(MaterialTheme.colorScheme.surface),
+                            )
+                        } else {
                         CompositionLocalProvider(
                             LocalTextStyle provides
                                 LocalTextStyle.current.run {
@@ -172,6 +181,7 @@ fun ReadingPage(
                                 currentArticleIndex = readerState.articleOrdinal,
                                 totalArticleCount = readerState.totalArticleCount,
                             )
+                        }
                         }
                     } else {
                     // Content
