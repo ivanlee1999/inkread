@@ -379,18 +379,25 @@ constructor(
     }
 
     fun renderFullContent() {
+        val article = currentArticle ?: return
+        val articleId = article.id
         val fetchJob =
             viewModelScope.launch {
                 readerCacheHelper
-                    .readOrFetchFullContent(currentArticle!!)
+                    .readOrFetchFullContent(article)
                     .onSuccess { content ->
                         val state = ReaderState.FullContent(content = content)
-                        currentArticle?.id?.let { contentCache.put(it, state) }
-                        _readerState.update { it.copy(content = state) }
+                        contentCache.put(articleId, state)
+                        // Only update UI if still viewing the same article
+                        if (currentArticle?.id == articleId) {
+                            _readerState.update { it.copy(content = state) }
+                        }
                     }
                     .onFailure { th ->
-                        _readerState.update {
-                            it.copy(content = ReaderState.Error(th.message.toString()))
+                        if (currentArticle?.id == articleId) {
+                            _readerState.update {
+                                it.copy(content = ReaderState.Error(th.message.toString()))
+                            }
                         }
                     }
             }
