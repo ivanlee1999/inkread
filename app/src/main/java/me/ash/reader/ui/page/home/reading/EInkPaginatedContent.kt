@@ -258,9 +258,16 @@ fun EInkPaginatedContent(
     }
 
     // Track whether initial pagination is complete so we can hide WebView until ready.
-    // Keyed to htmlContent so it resets synchronously in the same recomposition that
-    // detects a content/style change — no one-frame flash of stale content.
-    var isInitialPaginationReady by remember(htmlContent) { mutableStateOf(false) }
+    // Use a STABLE (unkeyed) state so the JS bridge callback always writes to the same object.
+    // Reset it via SideEffect when htmlContent changes so the placeholder shows immediately.
+    val isInitialPaginationReadyState = remember { mutableStateOf(false) }
+    var isInitialPaginationReady by isInitialPaginationReadyState
+    // Track the last htmlContent to detect changes and reset pagination ready state.
+    val lastHtmlContentForReady = remember { mutableStateOf(htmlContent) }
+    if (lastHtmlContentForReady.value != htmlContent) {
+        lastHtmlContentForReady.value = htmlContent
+        isInitialPaginationReady = false
+    }
 
     Column(
         modifier = modifier
