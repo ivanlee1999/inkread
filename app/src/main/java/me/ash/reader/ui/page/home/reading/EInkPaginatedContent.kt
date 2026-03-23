@@ -422,11 +422,11 @@ fun EInkPaginatedContent(
                                 if (!isDragConfirmed) {
                                     val distX = kotlin.math.abs(totalDragX)
                                     val distY = kotlin.math.abs(totalDragY)
-                                    if (distX > viewConfiguration.touchSlop && distX > distY * 1.5f) {
+                                    if (distX > viewConfiguration.touchSlop && distX > distY * 1.2f) {
                                         // Confirmed horizontal drag — now start consuming
                                         isDragConfirmed = true
-                                    } else if (distY > viewConfiguration.touchSlop) {
-                                        // Vertical intent — bail out, let child handle it
+                                    } else if (distY > viewConfiguration.touchSlop && distY > distX * 2f) {
+                                        // Clearly vertical intent — bail out, let child handle it
                                         break
                                     }
                                 }
@@ -713,10 +713,34 @@ h1, h2, h3, h4, h5, h6 {
     break-inside: avoid-column;
     break-after: avoid;
 }
-p, li, blockquote {
-
+p, li, blockquote, div {
+    max-width: 100%;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
     orphans: 3;
     widows: 3;
+}
+pre {
+    max-width: 100%;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    break-inside: avoid;
+}
+code {
+    max-width: 100%;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+}
+table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    break-inside: avoid;
+}
+iframe, video, embed, object {
+    max-width: 100% !important;
+    break-inside: avoid;
 }
 .eink-metadata {
     margin-bottom: 1.2em;
@@ -772,6 +796,13 @@ function finishInitialPagination() {
     // Delayed recounts for image reflow — do NOT re-hide body
     setTimeout(recountPages, 500);
     setTimeout(recountPages, 1500);
+    // Recount when images finish loading — handles images that arrive after the
+    // fixed timeouts above (slow network, large files).
+    document.querySelectorAll('img').forEach(function(img) {
+        if (!img.complete) {
+            img.onload = function() { recountPages(); };
+        }
+    });
 }
 document.addEventListener('keydown', function(e) {
     if (e.key === 'AudioVolumeUp' || e.key === 'AudioVolumeDown' || e.key === 'VolumeUp' || e.key === 'VolumeDown') {
