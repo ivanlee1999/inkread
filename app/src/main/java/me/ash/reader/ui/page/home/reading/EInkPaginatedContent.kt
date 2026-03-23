@@ -10,7 +10,9 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -384,23 +387,39 @@ fun EInkPaginatedContent(
                 modifier = Modifier
                     .fillMaxSize()
                     .pointerInput(Unit) {
-                        detectHorizontalDragGestures(
-                            onDragEnd = {
-                                if (horizontalDrag < -200f && onNextArticle != null) {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    onNextArticle.invoke()
-                                } else if (horizontalDrag > 200f && onPrevArticle != null) {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    onPrevArticle.invoke()
+                        awaitPointerEventScope {
+                            while (true) {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                down.consume()
+                                var totalDrag = 0f
+                                var isDragging = false
+                                drag(down.id) { change ->
+                                    val dragX = change.positionChange().x
+                                    // Only start consuming as horizontal drag after touch slop
+                                    if (!isDragging && kotlin.math.abs(totalDrag + dragX) > viewConfiguration.touchSlop) {
+                                        isDragging = true
+                                    }
+                                    if (isDragging) {
+                                        change.consume()
+                                        totalDrag += dragX
+                                        horizontalDrag = totalDrag
+                                        dragVisualTarget = totalDrag.coerceIn(-maxDragPx, maxDragPx)
+                                    }
+                                }
+                                // Drag ended
+                                if (isDragging) {
+                                    if (totalDrag < -200f && onNextArticle != null) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        onNextArticle.invoke()
+                                    } else if (totalDrag > 200f && onPrevArticle != null) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        onPrevArticle.invoke()
+                                    }
                                 }
                                 horizontalDrag = 0f
                                 dragVisualTarget = 0f
-                            },
-                            onHorizontalDrag = { _, dragAmount ->
-                                horizontalDrag += dragAmount
-                                dragVisualTarget = horizontalDrag.coerceIn(-maxDragPx, maxDragPx)
-                            },
-                        )
+                            }
+                        }
                     },
             ) {
                 Box(
