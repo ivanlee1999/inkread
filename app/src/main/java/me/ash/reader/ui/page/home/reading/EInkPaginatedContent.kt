@@ -743,9 +743,20 @@ code {
 }
 table {
     display: block;
-    max-width: 100%;
+    max-width: 100% !important;
+    width: 100% !important;
     overflow-x: auto;
+    table-layout: fixed;
     break-inside: avoid;
+}
+td, th {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    max-width: 100%;
+}
+svg, canvas {
+    max-width: 100% !important;
+    height: auto !important;
 }
 iframe, video, embed, object {
     max-width: 100% !important;
