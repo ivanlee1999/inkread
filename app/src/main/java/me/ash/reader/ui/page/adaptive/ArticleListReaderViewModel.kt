@@ -419,7 +419,7 @@ constructor(
             }
         viewModelScope.launch {
             delay(100L)
-            if (fetchJob.isActive) {
+            if (fetchJob.isActive && currentArticle?.id == articleId) {
                 setLoading()
             }
         }
