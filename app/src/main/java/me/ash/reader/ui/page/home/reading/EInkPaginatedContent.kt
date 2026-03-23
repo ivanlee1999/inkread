@@ -157,15 +157,11 @@ fun EInkPaginatedContent(
     val maxDragPx = remember(density) { with(density) { 80.dp.toPx() } }
 
     // Bottom bar auto-hide state
-    var bottomBarVisible by remember { mutableStateOf(false) }
+    var bottomBarVisible by rememberSaveable { mutableStateOf(false) }
 
     // Auto-hide the bottom bar after 3 seconds of no interaction
-    LaunchedEffect(bottomBarVisible) {
-        if (bottomBarVisible) {
-            delay(3000)
-            bottomBarVisible = false
-        }
-    }
+    // Bottom bar stays visible until user taps the middle area to dismiss.
+    // No auto-hide timer — user controls visibility explicitly.
     val haptic = LocalHapticFeedback.current
     // Use direct state (not animated) — e-ink displays can't show smooth animation
     // and animateFloatAsState can leave stale offsets on e-ink refresh.
