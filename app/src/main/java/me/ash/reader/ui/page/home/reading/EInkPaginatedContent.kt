@@ -29,6 +29,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -170,6 +171,8 @@ fun EInkPaginatedContent(
     // and animateFloatAsState can leave stale offsets on e-ink refresh.
     val dragVisualOffset = dragVisualTarget
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
+    val currentOnNextArticle by rememberUpdatedState(onNextArticle)
+    val currentOnPrevArticle by rememberUpdatedState(onPrevArticle)
 
     // Clean up WebView when leaving composition to prevent memory leaks
     DisposableEffect(Unit) {
@@ -436,12 +439,12 @@ fun EInkPaginatedContent(
                             }
                             // Gesture ended — only switch article if pagination is ready
                             if (isDragConfirmed && isInitialPaginationReady) {
-                                if (totalDragX < -100f && onNextArticle != null) {
+                                if (totalDragX < -100f && currentOnNextArticle != null) {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    onNextArticle.invoke()
-                                } else if (totalDragX > 100f && onPrevArticle != null) {
+                                    currentOnNextArticle?.invoke()
+                                } else if (totalDragX > 100f && currentOnPrevArticle != null) {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    onPrevArticle.invoke()
+                                    currentOnPrevArticle?.invoke()
                                 }
                             }
                             horizontalDrag = 0f
@@ -758,7 +761,7 @@ iframe, video, embed, object {
 }
 </style>
 <script>
-var _vw, _totalPages = 1;
+var _vw, _totalPages = 1, _didFinishInitialPagination = false;
 function recountPages() {
     var sw = document.body.scrollWidth;
     // scrollWidth can be slightly larger than content due to rounding
@@ -782,6 +785,8 @@ function goToPage(n) {
     document.body.style.transform = 'translateX(-' + (n * _vw) + 'px)';
 }
 function finishInitialPagination() {
+    if (_didFinishInitialPagination) return;
+    _didFinishInitialPagination = true;
     _vw = window.innerWidth;
     var vh = window.innerHeight;
     document.body.style.height = vh + 'px';
@@ -798,9 +803,20 @@ function finishInitialPagination() {
     // fixed timeouts above (slow network, large files).
     document.querySelectorAll('img').forEach(function(img) {
         if (!img.complete) {
-            img.onload = function() { recountPages(); };
+            img.addEventListener('load', recountPages, { once: true });
+            img.addEventListener('error', recountPages, { once: true });
         }
     });
+}
+function scheduleInitialPagination() {
+    window.requestAnimationFrame(function() {
+        finishInitialPagination();
+    });
+}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', scheduleInitialPagination, { once: true });
+} else {
+    scheduleInitialPagination();
 }
 document.addEventListener('keydown', function(e) {
     if (e.key === 'AudioVolumeUp' || e.key === 'AudioVolumeDown' || e.key === 'VolumeUp' || e.key === 'VolumeDown') {
@@ -814,7 +830,7 @@ document.addEventListener('keydown', function(e) {
 // interactive.
 </script>
 </head>
-<body onload="finishInitialPagination()">
+<body>
 <div class="eink-metadata">
   <h1>$escapedTitle</h1>
   <p class="eink-meta">$escapedMeta</p>
