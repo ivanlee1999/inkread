@@ -137,9 +137,6 @@ fun EInkPaginatedContent(
 
     var currentPage by rememberSaveable(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, horizontalPadding, lineHeight, letterSpacing, wordSpacing) { mutableIntStateOf(0) }
     var totalPages by rememberSaveable(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, horizontalPadding, lineHeight, letterSpacing, wordSpacing) { mutableIntStateOf(0) }
-    // Track whether initial pagination is complete so we can hide WebView until ready
-    var isInitialPaginationReady by remember { mutableStateOf(false) }
-
     // Track the last loaded HTML key to detect content/style changes in the update callback
     var lastLoadedHtmlKey by remember { mutableStateOf("") }
 
@@ -257,6 +254,11 @@ fun EInkPaginatedContent(
         buildArticleHtml(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate, horizontalPadding, lineHeight, letterSpacing, wordSpacing)
     }
 
+    // Track whether initial pagination is complete so we can hide WebView until ready.
+    // Keyed to htmlContent so it resets synchronously in the same recomposition that
+    // detects a content/style change — no one-frame flash of stale content.
+    var isInitialPaginationReady by remember(htmlContent) { mutableStateOf(false) }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -361,9 +363,10 @@ fun EInkPaginatedContent(
                 update = { webView ->
                     // Reload content when html changes (style/content change) without
                     // destroying and recreating the entire WebView composable.
+                    // Note: isInitialPaginationReady is already reset synchronously via
+                    // remember(htmlContent) — no need to reset it here.
                     if (htmlContent != lastLoadedHtmlKey) {
                         lastLoadedHtmlKey = htmlContent
-                        isInitialPaginationReady = false
                         currentPage = 0
                         totalPages = 0
                         webView.loadDataWithBaseURL(null, htmlContent, "text/html", "UTF-8", null)
