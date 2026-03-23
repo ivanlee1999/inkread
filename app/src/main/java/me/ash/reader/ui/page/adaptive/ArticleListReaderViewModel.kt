@@ -1,6 +1,7 @@
 package me.ash.reader.ui.page.adaptive
 
 import android.net.Uri
+import android.util.LruCache
 import androidx.compose.ui.util.fastFirstOrNull
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -9,11 +10,14 @@ import androidx.work.WorkManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.Date
 import javax.inject.Inject
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.collections.any
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -265,6 +269,12 @@ constructor(
     private val _readerState: MutableStateFlow<ReaderState> = MutableStateFlow(ReaderState())
     val readerStateStateFlow = _readerState.asStateFlow()
 
+    /** In-memory cache of resolved content for nearby articles, keyed by article ID. */
+    private val contentCache = LruCache<String, ReaderState.ContentState>(10)
+
+    /** Background job that preloads content for the next N articles. Cancelled on each navigation. */
+    private var preloadJob: Job? = null
+
     private val currentArticle: Article?
         get() = readingUiState.value.articleWithFeed?.article
 
@@ -309,8 +319,9 @@ constructor(
                 _readingUiState.update {
                     it.copy(articleWithFeed = this, isStarred = article.isStarred, isUnread = false)
                 }
+                val cachedContent = contentCache.get(article.id)
                 _readerState.update {
-                    it.copy(
+                    val base = it.copy(
                             articleId = article.id,
                             feedName = feed.name,
                             title = article.title,
@@ -319,13 +330,20 @@ constructor(
                             publishedDate = article.date,
                         )
                         .prefetchArticleId()
-                        .renderContent(this)
+
+                    if (cachedContent != null) {
+                        base.copy(content = cachedContent)
+                    } else {
+                        base.renderContent(this@run)
+                    }
                 }
+                _readerState.value.listIndex?.let { preloadNextArticles(it) }
             }
         }
     }
 
     fun clearReadingData() {
+        preloadJob?.cancel()
         _readingUiState.update { ReadingUiState() }
         _readerState.update { ReaderState() }
     }
@@ -335,12 +353,19 @@ constructor(
             if (articleWithFeed.feed.isFullContent) {
                 val fullContent =
                     readerCacheHelper.readFullContent(articleWithFeed.article.id).getOrNull()
-                if (fullContent != null) ReaderState.FullContent(fullContent)
-                else {
+                if (fullContent != null) {
+                    ReaderState.FullContent(fullContent).also {
+                        contentCache.put(articleWithFeed.article.id, it)
+                    }
+                } else {
                     renderFullContent()
                     ReaderState.Loading
                 }
-            } else ReaderState.Description(articleWithFeed.article.rawDescription)
+            } else {
+                ReaderState.Description(articleWithFeed.article.rawDescription).also {
+                    contentCache.put(articleWithFeed.article.id, it)
+                }
+            }
 
         return copy(content = contentState)
     }
@@ -359,9 +384,9 @@ constructor(
                 readerCacheHelper
                     .readOrFetchFullContent(currentArticle!!)
                     .onSuccess { content ->
-                        _readerState.update {
-                            it.copy(content = ReaderState.FullContent(content = content))
-                        }
+                        val state = ReaderState.FullContent(content = content)
+                        currentArticle?.id?.let { contentCache.put(it, state) }
+                        _readerState.update { it.copy(content = state) }
                     }
                     .onFailure { th ->
                         _readerState.update {
@@ -397,6 +422,66 @@ constructor(
 
     private fun setLoading() {
         _readerState.update { it.copy(content = ReaderState.Loading) }
+    }
+
+    /**
+     * Returns up to [count] articles following [currentIndex] in the snapshot list,
+     * skipping non-article items (e.g. date headers).
+     */
+    private fun getNextNArticles(currentIndex: Int, count: Int): List<ArticleWithFeed> {
+        val items = articleListUseCase.itemSnapshotList
+        val result = mutableListOf<ArticleWithFeed>()
+        val iterator = items.listIterator(currentIndex + 1)
+        while (iterator.hasNext() && result.size < count) {
+            val item = iterator.next()
+            if (item is ArticleFlowItem.Article) {
+                result.add(item.articleWithFeed)
+            }
+        }
+        return result
+    }
+
+    /**
+     * Preloads content for the next 5 articles from [currentIndex] in the background.
+     * Cancels any in-flight preload from a previous navigation.
+     *
+     * - Description-mode articles: caches [Article.rawDescription] (instant, no network).
+     * - Full-content articles: delegates to [ReaderCacheHelper.readOrFetchFullContent]
+     *   which checks the disk cache first and only fetches from the network on a miss.
+     *
+     * Articles are fetched sequentially so the most-likely-next article is ready first.
+     */
+    private fun preloadNextArticles(currentIndex: Int) {
+        preloadJob?.cancel()
+        preloadJob = viewModelScope.launch(ioDispatcher) {
+            val articlesToPreload = getNextNArticles(currentIndex, count = 5)
+
+            for (articleWithFeed in articlesToPreload) {
+                ensureActive()
+                val articleId = articleWithFeed.article.id
+
+                if (contentCache.get(articleId) != null) continue
+
+                try {
+                    val contentState = if (articleWithFeed.feed.isFullContent) {
+                        readerCacheHelper
+                            .readOrFetchFullContent(articleWithFeed.article)
+                            .getOrNull()
+                            ?.let { ReaderState.FullContent(it) }
+                    } else {
+                        ReaderState.Description(articleWithFeed.article.rawDescription)
+                    }
+
+                    if (contentState != null) {
+                        contentCache.put(articleId, contentState)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Timber.w(e, "Failed to preload article $articleId")
+                }
+            }
+        }
     }
 
     fun ReaderState.prefetchArticleId(): ReaderState {
