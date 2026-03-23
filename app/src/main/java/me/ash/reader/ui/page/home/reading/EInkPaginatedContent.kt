@@ -188,6 +188,9 @@ fun EInkPaginatedContent(
     }
 
     fun nextPage() {
+        // Only act if pagination is ready — totalPages=0 during loading would cause
+        // premature article switching (0 < 0-1 is false, falls through to onNextArticle).
+        if (!isInitialPaginationReady) return
         if (currentPage < totalPages - 1) {
             currentPage++
             Log.d("InkRead", "nextPage -> currentPage=$currentPage totalPages=$totalPages")
@@ -203,7 +206,7 @@ fun EInkPaginatedContent(
             Log.d("InkRead", "nextPage -> last page, switching to next article")
             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
             onNextArticle.invoke()
-        } else if (currentPage >= totalPages - 1) {
+        } else {
             // No more articles - show boundary feedback
             coroutineScope.launch {
                 showBoundaryText = "No more articles"
@@ -214,6 +217,7 @@ fun EInkPaginatedContent(
     }
 
     fun prevPage() {
+        if (!isInitialPaginationReady) return
         if (currentPage > 0) {
             currentPage--
             Log.d("InkRead", "prevPage -> currentPage=$currentPage totalPages=$totalPages")
@@ -229,7 +233,7 @@ fun EInkPaginatedContent(
             Log.d("InkRead", "prevPage -> first page, switching to previous article")
             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
             onPrevArticle.invoke()
-        } else if (currentPage == 0) {
+        } else {
             // No previous articles - show boundary feedback
             coroutineScope.launch {
                 showBoundaryText = "No previous articles"
@@ -434,8 +438,8 @@ fun EInkPaginatedContent(
                                     dragVisualTarget = totalDragX.coerceIn(-maxDragPx, maxDragPx)
                                 }
                             }
-                            // Gesture ended
-                            if (isDragConfirmed) {
+                            // Gesture ended — only switch article if pagination is ready
+                            if (isDragConfirmed && isInitialPaginationReady) {
                                 if (totalDragX < -200f && onNextArticle != null) {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     onNextArticle.invoke()
