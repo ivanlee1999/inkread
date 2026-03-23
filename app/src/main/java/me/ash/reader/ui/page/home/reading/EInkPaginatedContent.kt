@@ -166,11 +166,9 @@ fun EInkPaginatedContent(
         }
     }
     val haptic = LocalHapticFeedback.current
-    val dragVisualOffset by animateFloatAsState(
-        targetValue = dragVisualTarget,
-        animationSpec = tween(durationMillis = 100, easing = LinearEasing),
-        label = "dragVisual",
-    )
+    // Use direct state (not animated) — e-ink displays can't show smooth animation
+    // and animateFloatAsState can leave stale offsets on e-ink refresh.
+    val dragVisualOffset = dragVisualTarget
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
 
     // Clean up WebView when leaving composition to prevent memory leaks
