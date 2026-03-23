@@ -213,10 +213,21 @@ fun EInkPaginatedContent(
         totalPages = 0
     }
 
+    // Safety net: if JS never calls onInitialPaginationReady (WebView failure,
+    // JS error, etc.), force the flag so the user can at least swipe away.
+    LaunchedEffect(htmlContent) {
+        delay(5000L)
+        if (!isInitialPaginationReady) {
+            Log.w("InkRead", "isInitialPaginationReady timeout — forcing true (totalPages=$totalPages)")
+            isInitialPaginationReady = true
+            if (totalPages == 0) totalPages = 1
+        }
+    }
+
     fun nextPage() {
-        // Only act if pagination is ready — totalPages=0 during loading would cause
-        // premature article switching (0 < 0-1 is false, falls through to onNextArticle).
-        if (!isInitialPaginationReady) return
+        // Block during true loading (before any JS callback). Once totalPages > 0,
+        // allow navigation even if onInitialPaginationReady was somehow missed.
+        if (!isInitialPaginationReady && totalPages == 0) return
         if (currentPage < totalPages - 1) {
             currentPage++
             Log.d("InkRead", "nextPage -> currentPage=$currentPage totalPages=$totalPages")
@@ -243,7 +254,7 @@ fun EInkPaginatedContent(
     }
 
     fun prevPage() {
-        if (!isInitialPaginationReady) return
+        if (!isInitialPaginationReady && totalPages == 0) return
         if (currentPage > 0) {
             currentPage--
             Log.d("InkRead", "prevPage -> currentPage=$currentPage totalPages=$totalPages")
@@ -437,8 +448,9 @@ fun EInkPaginatedContent(
                                     dragVisualTarget = totalDragX.coerceIn(-maxDragPx, maxDragPx)
                                 }
                             }
-                            // Gesture ended — only switch article if pagination is ready
-                            if (isDragConfirmed && isInitialPaginationReady) {
+                            // Gesture ended — switch article if pagination is ready or
+                            // page count is known (totalPages > 0 means JS ran successfully)
+                            if (isDragConfirmed && (isInitialPaginationReady || totalPages > 0)) {
                                 if (totalDragX < -100f && currentOnNextArticle != null) {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     currentOnNextArticle?.invoke()
@@ -763,20 +775,29 @@ iframe, video, embed, object {
 <script>
 var _vw, _totalPages = 1, _didFinishInitialPagination = false;
 function recountPages() {
-    var sw = document.body.scrollWidth;
-    // scrollWidth can be slightly larger than content due to rounding
-    // Use floor + check if there's actual content on the last page
-    var n = Math.max(1, Math.round(sw / _vw));
-    // Verify last page has content by checking if scrolling there shows anything
-    if (n > 1) {
-        // Check if actual content extends to the last page
-        var lastPageStart = (n - 1) * _vw;
-        if (sw <= lastPageStart + 1) {
-            n = n - 1;  // Last page is empty
+    try {
+        var sw = document.body.scrollWidth;
+        if (!sw || !_vw || _vw <= 0 || !isFinite(sw) || !isFinite(_vw)) {
+            _totalPages = 1;
+            Android.onTotalPages(_totalPages);
+            return;
         }
+        var n = Math.max(1, Math.round(sw / _vw));
+        // Sanity cap: no article should exceed 500 pages.
+        // If it does, scrollWidth is wrong (wide content, layout not settled).
+        if (n > 500) n = 1;
+        if (n > 1) {
+            var lastPageStart = (n - 1) * _vw;
+            if (sw <= lastPageStart + 1) {
+                n = n - 1;
+            }
+        }
+        _totalPages = Math.max(1, n);
+        Android.onTotalPages(_totalPages);
+    } catch (e) {
+        _totalPages = 1;
+        try { Android.onTotalPages(_totalPages); } catch (e2) {}
     }
-    _totalPages = Math.max(1, n);
-    Android.onTotalPages(_totalPages);
 }
 function goToPage(n) {
     // Clamp to valid range
@@ -787,26 +808,37 @@ function goToPage(n) {
 function finishInitialPagination() {
     if (_didFinishInitialPagination) return;
     _didFinishInitialPagination = true;
-    _vw = window.innerWidth;
-    var vh = window.innerHeight;
-    document.body.style.height = vh + 'px';
-    var padding = ${horizontalPadding};
-    document.body.style.columnWidth = (_vw - padding * 2) + 'px';
-    recountPages();
-    goToPage(0);
-    document.body.style.visibility = 'visible';
-    Android.onInitialPaginationReady(_totalPages);
+    try {
+        _vw = window.innerWidth;
+        var vh = window.innerHeight;
+        if (!_vw || _vw <= 0) _vw = document.documentElement.clientWidth || 360;
+        if (!vh || vh <= 0) vh = document.documentElement.clientHeight || 640;
+        document.body.style.height = vh + 'px';
+        var padding = ${horizontalPadding};
+        document.body.style.columnWidth = (_vw - padding * 2) + 'px';
+        recountPages();
+        goToPage(0);
+        document.body.style.visibility = 'visible';
+    } catch (e) {
+        _totalPages = 1;
+        try { document.body.style.visibility = 'visible'; } catch (e2) {}
+    }
+    // ALWAYS fire — this is the call that unblocks Kotlin gesture handling.
+    // Must be outside the try block so it executes even if setup failed.
+    try { Android.onInitialPaginationReady(_totalPages); } catch (e) {}
     // Delayed recounts for image reflow — do NOT re-hide body
     setTimeout(recountPages, 500);
     setTimeout(recountPages, 1500);
     // Recount when images finish loading — handles images that arrive after the
     // fixed timeouts above (slow network, large files).
-    document.querySelectorAll('img').forEach(function(img) {
-        if (!img.complete) {
-            img.addEventListener('load', recountPages, { once: true });
-            img.addEventListener('error', recountPages, { once: true });
-        }
-    });
+    try {
+        document.querySelectorAll('img').forEach(function(img) {
+            if (!img.complete) {
+                img.addEventListener('load', recountPages, { once: true });
+                img.addEventListener('error', recountPages, { once: true });
+            }
+        });
+    } catch (e) {}
 }
 function scheduleInitialPagination() {
     window.requestAnimationFrame(function() {

@@ -2,6 +2,7 @@ package me.ash.reader.ui.page.adaptive
 
 import android.net.Uri
 import android.util.LruCache
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.util.fastFirstOrNull
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -141,6 +143,20 @@ constructor(
     init {
         viewModelScope.launch {
             syncWorkerStatusFlow.debounce(500L).collect { _isSyncingFlow.value = it }
+        }
+        // Re-run prefetchArticleId() when the paging snapshot list changes so that
+        // nextArticle/previousArticle stay fresh (list can change due to sync,
+        // read-status updates removing items from "Unread" filter, etc.).
+        viewModelScope.launch {
+            snapshotFlow { articleListUseCase.itemSnapshotList }
+                .drop(1) // skip the initial emission — initData handles first prefetch
+                .debounce(300L) // avoid rapid-fire during paging loads
+                .collect {
+                    val currentArticleId = _readerState.value.articleId
+                    if (currentArticleId != null) {
+                        _readerState.update { it.prefetchArticleId() }
+                    }
+                }
         }
     }
 
