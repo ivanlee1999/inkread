@@ -10,9 +10,9 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -387,38 +387,52 @@ fun EInkPaginatedContent(
                 modifier = Modifier
                     .fillMaxSize()
                     .pointerInput(Unit) {
-                        awaitPointerEventScope {
+                        // Use awaitEachGesture so each gesture starts fresh.
+                        // Only consume events after touch slop is crossed as a horizontal drag —
+                        // this lets child clickable tap zones still receive short taps for page turning.
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            // Do NOT consume the down yet — let child clickables see it too.
+                            var totalDragX = 0f
+                            var totalDragY = 0f
+                            var isDragConfirmed = false
+                            var pointer = down
                             while (true) {
-                                val down = awaitFirstDown(requireUnconsumed = false)
-                                down.consume()
-                                var totalDrag = 0f
-                                var isDragging = false
-                                drag(down.id) { change ->
-                                    val dragX = change.positionChange().x
-                                    // Only start consuming as horizontal drag after touch slop
-                                    if (!isDragging && kotlin.math.abs(totalDrag + dragX) > viewConfiguration.touchSlop) {
-                                        isDragging = true
-                                    }
-                                    if (isDragging) {
-                                        change.consume()
-                                        totalDrag += dragX
-                                        horizontalDrag = totalDrag
-                                        dragVisualTarget = totalDrag.coerceIn(-maxDragPx, maxDragPx)
-                                    }
-                                }
-                                // Drag ended
-                                if (isDragging) {
-                                    if (totalDrag < -200f && onNextArticle != null) {
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        onNextArticle.invoke()
-                                    } else if (totalDrag > 200f && onPrevArticle != null) {
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        onPrevArticle.invoke()
+                                val event = awaitPointerEvent()
+                                val dragChange = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!dragChange.pressed) break // finger lifted
+                                val delta = dragChange.positionChange()
+                                totalDragX += delta.x
+                                totalDragY += delta.y
+                                if (!isDragConfirmed) {
+                                    val distX = kotlin.math.abs(totalDragX)
+                                    val distY = kotlin.math.abs(totalDragY)
+                                    if (distX > viewConfiguration.touchSlop && distX > distY * 1.5f) {
+                                        // Confirmed horizontal drag — now start consuming
+                                        isDragConfirmed = true
+                                    } else if (distY > viewConfiguration.touchSlop) {
+                                        // Vertical intent — bail out, let child handle it
+                                        break
                                     }
                                 }
-                                horizontalDrag = 0f
-                                dragVisualTarget = 0f
+                                if (isDragConfirmed) {
+                                    dragChange.consume()
+                                    horizontalDrag = totalDragX
+                                    dragVisualTarget = totalDragX.coerceIn(-maxDragPx, maxDragPx)
+                                }
                             }
+                            // Gesture ended
+                            if (isDragConfirmed) {
+                                if (totalDragX < -200f && onNextArticle != null) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onNextArticle.invoke()
+                                } else if (totalDragX > 200f && onPrevArticle != null) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onPrevArticle.invoke()
+                                }
+                            }
+                            horizontalDrag = 0f
+                            dragVisualTarget = 0f
                         }
                     },
             ) {
