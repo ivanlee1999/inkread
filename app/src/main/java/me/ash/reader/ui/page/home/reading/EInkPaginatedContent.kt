@@ -153,7 +153,7 @@ fun EInkPaginatedContent(
     var showBoundaryText by remember { mutableStateOf<String?>(null) }
     var dragVisualTarget by remember { mutableFloatStateOf(0f) }
     val density = LocalDensity.current
-    val maxDragPx = remember(density) { with(density) { 30.dp.toPx() } }
+    val maxDragPx = remember(density) { with(density) { 80.dp.toPx() } }
 
     // Bottom bar auto-hide state
     var bottomBarVisible by remember { mutableStateOf(false) }
@@ -438,10 +438,10 @@ fun EInkPaginatedContent(
                             }
                             // Gesture ended — only switch article if pagination is ready
                             if (isDragConfirmed && isInitialPaginationReady) {
-                                if (totalDragX < -200f && onNextArticle != null) {
+                                if (totalDragX < -100f && onNextArticle != null) {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     onNextArticle.invoke()
-                                } else if (totalDragX > 200f && onPrevArticle != null) {
+                                } else if (totalDragX > 100f && onPrevArticle != null) {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     onPrevArticle.invoke()
                                 }
