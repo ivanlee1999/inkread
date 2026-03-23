@@ -187,6 +187,42 @@ fun EInkPaginatedContent(
         }
     }
 
+    // Register as HIGH-priority volume key consumer so that when the article
+    // (ReadingPage) is visible it receives events exclusively, preventing the
+    // FlowPage (list) from also reacting in two-pane layouts.
+    val volumeKeyFlow = remember { VolumeKeyEventBus.register(VolumeKeyPriority.HIGH) }
+    DisposableEffect(Unit) {
+        onDispose { VolumeKeyEventBus.unregister(VolumeKeyPriority.HIGH) }
+    }
+    LaunchedEffect(Unit) {
+        volumeKeyFlow.collect { event ->
+            if (VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.HIGH)) {
+                when (event) {
+                    VolumeKeyEvent.NEXT -> nextPage()
+                    VolumeKeyEvent.PREV -> prevPage()
+                }
+            }
+        }
+    }
+
+    val htmlContent = remember(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate, horizontalPadding, lineHeight, letterSpacing, wordSpacing) {
+        buildArticleHtml(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate, horizontalPadding, lineHeight, letterSpacing, wordSpacing)
+    }
+
+    // Track whether initial pagination is complete so we can hide WebView until ready.
+    // Use a STABLE (unkeyed) state so the JS bridge callback always writes to the same object.
+    // Reset it via SideEffect when htmlContent changes so the placeholder shows immediately.
+    val isInitialPaginationReadyState = remember { mutableStateOf(false) }
+    var isInitialPaginationReady by isInitialPaginationReadyState
+    // Track the last htmlContent to detect changes and reset pagination ready state.
+    val lastHtmlContentForReady = remember { mutableStateOf(htmlContent) }
+    if (lastHtmlContentForReady.value != htmlContent) {
+        lastHtmlContentForReady.value = htmlContent
+        isInitialPaginationReady = false
+        currentPage = 0
+        totalPages = 0
+    }
+
     fun nextPage() {
         // Only act if pagination is ready — totalPages=0 during loading would cause
         // premature article switching (0 < 0-1 is false, falls through to onNextArticle).
@@ -241,42 +277,6 @@ fun EInkPaginatedContent(
                 showBoundaryText = null
             }
         }
-    }
-
-    // Register as HIGH-priority volume key consumer so that when the article
-    // (ReadingPage) is visible it receives events exclusively, preventing the
-    // FlowPage (list) from also reacting in two-pane layouts.
-    val volumeKeyFlow = remember { VolumeKeyEventBus.register(VolumeKeyPriority.HIGH) }
-    DisposableEffect(Unit) {
-        onDispose { VolumeKeyEventBus.unregister(VolumeKeyPriority.HIGH) }
-    }
-    LaunchedEffect(Unit) {
-        volumeKeyFlow.collect { event ->
-            if (VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.HIGH)) {
-                when (event) {
-                    VolumeKeyEvent.NEXT -> nextPage()
-                    VolumeKeyEvent.PREV -> prevPage()
-                }
-            }
-        }
-    }
-
-    val htmlContent = remember(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate, horizontalPadding, lineHeight, letterSpacing, wordSpacing) {
-        buildArticleHtml(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate, horizontalPadding, lineHeight, letterSpacing, wordSpacing)
-    }
-
-    // Track whether initial pagination is complete so we can hide WebView until ready.
-    // Use a STABLE (unkeyed) state so the JS bridge callback always writes to the same object.
-    // Reset it via SideEffect when htmlContent changes so the placeholder shows immediately.
-    val isInitialPaginationReadyState = remember { mutableStateOf(false) }
-    var isInitialPaginationReady by isInitialPaginationReadyState
-    // Track the last htmlContent to detect changes and reset pagination ready state.
-    val lastHtmlContentForReady = remember { mutableStateOf(htmlContent) }
-    if (lastHtmlContentForReady.value != htmlContent) {
-        lastHtmlContentForReady.value = htmlContent
-        isInitialPaginationReady = false
-        currentPage = 0
-        totalPages = 0
     }
 
     Column(
