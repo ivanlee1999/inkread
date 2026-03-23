@@ -194,17 +194,6 @@ fun EInkPaginatedContent(
     DisposableEffect(Unit) {
         onDispose { VolumeKeyEventBus.unregister(VolumeKeyPriority.HIGH) }
     }
-    LaunchedEffect(Unit) {
-        volumeKeyFlow.collect { event ->
-            if (VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.HIGH)) {
-                when (event) {
-                    VolumeKeyEvent.NEXT -> nextPage()
-                    VolumeKeyEvent.PREV -> prevPage()
-                }
-            }
-        }
-    }
-
     val htmlContent = remember(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate, horizontalPadding, lineHeight, letterSpacing, wordSpacing) {
         buildArticleHtml(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate, horizontalPadding, lineHeight, letterSpacing, wordSpacing)
     }
@@ -275,6 +264,17 @@ fun EInkPaginatedContent(
                 showBoundaryText = "No previous articles"
                 delay(1000)
                 showBoundaryText = null
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        volumeKeyFlow.collect { event ->
+            if (VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.HIGH)) {
+                when (event) {
+                    VolumeKeyEvent.NEXT -> nextPage()
+                    VolumeKeyEvent.PREV -> prevPage()
+                }
             }
         }
     }
