@@ -281,12 +281,14 @@ fun FeedsPage(
                     }
 
                     itemsIndexed(groupWithFeedList) { _, (group, feeds) ->
+                        val groupImportant = feeds.sumOf { it.important }
                         GroupWithFeedsContainer {
                             GroupItem(
                                 isExpanded = {
                                     groupsVisible.getOrPut(group.id, groupListExpand::value)
                                 },
                                 group = group,
+                                important = groupImportant,
                                 onExpanded = {
                                     groupsVisible[group.id] =
                                         groupsVisible
