@@ -22,6 +22,8 @@ object ReadingChineseFontSizePreference {
         }
     }
 
-    fun fromPreferences(preferences: Preferences) =
-        preferences[(DataStoreKey.keys[readingChineseFontSize]?.key as? Preferences.Key<Int>) ?: return default] ?: default
+    fun fromPreferences(preferences: Preferences): Int {
+        val key = DataStoreKey.keys[readingChineseFontSize]?.key as? Preferences.Key<Int> ?: return default
+        return preferences[key] ?: default
+    }
 }
