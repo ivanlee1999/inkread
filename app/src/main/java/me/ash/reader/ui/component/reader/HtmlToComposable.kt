@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.io.InputStream
 import me.ash.reader.R
+import me.ash.reader.infrastructure.html.LanguageClassifier
 import me.ash.reader.infrastructure.preference.LocalReadingChineseFontSize
 import me.ash.reader.infrastructure.preference.LocalReadingEnglishFontSize
 import me.ash.reader.infrastructure.preference.LocalReadingImageMaximize
@@ -716,33 +717,7 @@ private fun TextComposer.appendTextChildren(
     }
 }
 
-/**
- * Determines if a Unicode code point is a CJK (Chinese/Japanese/Korean) character.
- */
-private fun isCJKCodePoint(codePoint: Int): Boolean {
-    return codePoint in 0x4E00..0x9FFF ||
-            codePoint in 0x3400..0x4DBF ||
-            codePoint in 0x20000..0x2A6DF ||
-            codePoint in 0xF900..0xFAFF ||
-            codePoint in 0x2E80..0x2EFF ||
-            codePoint in 0x2F00..0x2FDF ||
-            codePoint in 0x3000..0x303F ||
-            codePoint in 0x3040..0x309F ||
-            codePoint in 0x30A0..0x30FF ||
-            codePoint in 0x3100..0x312F ||
-            codePoint in 0xAC00..0xD7AF ||
-            codePoint in 0xFF00..0xFFEF
-}
-
-/**
- * Checks if a character is meaningful for language classification (not whitespace/punctuation).
- */
-private fun isClassifiableCodePoint(codePoint: Int): Boolean {
-    if (Character.isWhitespace(codePoint)) return false
-    val ch = codePoint.toChar()
-    if (codePoint < 0x80 && !ch.isLetterOrDigit()) return false
-    return true
-}
+// CJK and language classification functions are provided by LanguageClassifier
 
 /**
  * Represents a run of text classified by language.
@@ -753,7 +728,7 @@ private data class LanguageRun(val text: String, val isCJK: Boolean?)
 
 /**
  * Splits a string into runs of CJK and non-CJK text.
- * Whitespace and punctuation are attached to the adjacent classified run.
+ * Whitespace, punctuation, and emoji are treated as neutral and attached to the adjacent classified run.
  */
 private fun splitTextByLanguage(text: String): List<LanguageRun> {
     if (text.isEmpty()) return emptyList()
@@ -767,11 +742,11 @@ private fun splitTextByLanguage(text: String): List<LanguageRun> {
         val codePoint = text.codePointAt(i)
         val charCount = Character.charCount(codePoint)
 
-        if (!isClassifiableCodePoint(codePoint)) {
-            // Neutral character - append to current run
+        if (!LanguageClassifier.isClassifiable(codePoint)) {
+            // Neutral character (whitespace, punctuation, emoji) - append to current run
             currentBuilder.appendCodePoint(codePoint)
         } else {
-            val charIsCJK = isCJKCodePoint(codePoint)
+            val charIsCJK = LanguageClassifier.isCJK(codePoint)
             if (currentIsCJK == null) {
                 // First classifiable char - assign language
                 currentIsCJK = charIsCJK
