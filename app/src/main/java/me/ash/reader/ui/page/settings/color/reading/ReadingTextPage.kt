@@ -29,6 +29,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import me.ash.reader.R
+import me.ash.reader.infrastructure.preference.LocalReadingChineseFontSize
+import me.ash.reader.infrastructure.preference.LocalReadingEnglishFontSize
 import me.ash.reader.infrastructure.preference.LocalReadingTextLetterSpacing
 import me.ash.reader.infrastructure.preference.LocalReadingTextAlign
 import me.ash.reader.infrastructure.preference.LocalReadingTextBold
@@ -36,6 +38,8 @@ import me.ash.reader.infrastructure.preference.LocalReadingTextFontSize
 import me.ash.reader.infrastructure.preference.LocalReadingTextHorizontalPadding
 import me.ash.reader.infrastructure.preference.LocalReadingTextLineHeight
 import me.ash.reader.infrastructure.preference.LocalReadingTheme
+import me.ash.reader.infrastructure.preference.ReadingChineseFontSizePreference
+import me.ash.reader.infrastructure.preference.ReadingEnglishFontSizePreference
 import me.ash.reader.infrastructure.preference.ReadingTextLetterSpacingPreference
 import me.ash.reader.infrastructure.preference.ReadingTextAlignPreference
 import me.ash.reader.infrastructure.preference.ReadingTextFontSizePreference
@@ -64,6 +68,8 @@ fun ReadingTextPage(
 
     val readingTheme = LocalReadingTheme.current
     val fontSize = LocalReadingTextFontSize.current
+    val chineseFontSize = LocalReadingChineseFontSize.current
+    val englishFontSize = LocalReadingEnglishFontSize.current
     val lineHeight = LocalReadingTextLineHeight.current
     val letterSpacing = LocalReadingTextLetterSpacing.current
     val horizontalPadding = LocalReadingTextHorizontalPadding.current
@@ -71,12 +77,16 @@ fun ReadingTextPage(
     val bold = LocalReadingTextBold.current
 
     var fontSizeDialogVisible by remember { mutableStateOf(false) }
+    var chineseFontSizeDialogVisible by remember { mutableStateOf(false) }
+    var englishFontSizeDialogVisible by remember { mutableStateOf(false) }
     var lineHeightDialogVisible by remember { mutableStateOf(false) }
     var letterSpacingDialogVisible by remember { mutableStateOf(false) }
     var horizontalPaddingDialogVisible by remember { mutableStateOf(false) }
     var alignDialogVisible by remember { mutableStateOf(false) }
 
     var fontSizeValue: Int? by remember { mutableStateOf(fontSize) }
+    var chineseFontSizeValue: Int? by remember { mutableStateOf(chineseFontSize) }
+    var englishFontSizeValue: Int? by remember { mutableStateOf(englishFontSize) }
     var letterSpacingValue: String? by remember { mutableStateOf(letterSpacing.toString()) }
     var lineHeightMultipleValue: String by remember(lineHeight) { mutableStateOf(lineHeight.toString()) }
     var horizontalPaddingValue: Int? by remember { mutableStateOf(horizontalPadding) }
@@ -127,6 +137,16 @@ fun ReadingTextPage(
                         title = stringResource(R.string.font_size),
                         desc = "${fontSize}sp",
                         onClick = { fontSizeDialogVisible = true },
+                    ) {}
+                    SettingItem(
+                        title = stringResource(R.string.chinese_font_size),
+                        desc = "${chineseFontSize}sp",
+                        onClick = { chineseFontSizeDialogVisible = true },
+                    ) {}
+                    SettingItem(
+                        title = stringResource(R.string.english_font_size),
+                        desc = "${englishFontSize}sp",
+                        onClick = { englishFontSizeDialogVisible = true },
                     ) {}
                     SettingItem(
                         title = stringResource(R.string.bold),
@@ -185,6 +205,42 @@ fun ReadingTextPage(
             ReadingTextFontSizePreference.put(context, scope, fontSizeValue ?: 0)
             ReadingThemePreference.Custom.put(context, scope)
             fontSizeDialogVisible = false
+        }
+    )
+
+    TextFieldDialog(
+        visible = chineseFontSizeDialogVisible,
+        title = stringResource(R.string.chinese_font_size),
+        value = (chineseFontSizeValue ?: "").toString(),
+        placeholder = stringResource(R.string.value),
+        onValueChange = {
+            chineseFontSizeValue = it.filter { it.isDigit() }.toIntOrNull()
+        },
+        onDismissRequest = {
+            chineseFontSizeDialogVisible = false
+        },
+        onConfirm = {
+            ReadingChineseFontSizePreference.put(context, scope, chineseFontSizeValue ?: 0)
+            ReadingThemePreference.Custom.put(context, scope)
+            chineseFontSizeDialogVisible = false
+        }
+    )
+
+    TextFieldDialog(
+        visible = englishFontSizeDialogVisible,
+        title = stringResource(R.string.english_font_size),
+        value = (englishFontSizeValue ?: "").toString(),
+        placeholder = stringResource(R.string.value),
+        onValueChange = {
+            englishFontSizeValue = it.filter { it.isDigit() }.toIntOrNull()
+        },
+        onDismissRequest = {
+            englishFontSizeDialogVisible = false
+        },
+        onConfirm = {
+            ReadingEnglishFontSizePreference.put(context, scope, englishFontSizeValue ?: 0)
+            ReadingThemePreference.Custom.put(context, scope)
+            englishFontSizeDialogVisible = false
         }
     )
 

@@ -21,6 +21,8 @@ object WebViewStyle {
 
     fun get(
         fontSize: Int,
+        chineseFontSize: Int = fontSize,
+        englishFontSize: Int = fontSize,
         fontPath: String? = null,
         lineHeight: Float,
         letterSpacing: Float,
@@ -44,6 +46,8 @@ ${applyFontFace(fontPath)}
 :root {
     ${applyFontFamily(fontPath)}
     --font-size: ${fontSize}px;
+    --chinese-font-size: ${chineseFontSize}px;
+    --english-font-size: ${englishFontSize}px;
     --line-height: ${lineHeight * 1.5f};
     --letter-spacing: ${letterSpacing}px;
     --text-margin: ${textMargin}px;
@@ -134,6 +138,19 @@ span {
     line-height: var(--line-height) !important;
     letter-spacing: var(--letter-spacing) !important;
     text-align: var(--text-align) !important;
+}
+
+/* Language-specific font sizes */
+span.lang-zh {
+    font-size: var(--chinese-font-size) !important;
+}
+
+span.lang-en {
+    font-size: var(--english-font-size) !important;
+}
+
+span.lang-wrapper {
+    font-size: inherit;
 }
 
 /* Strong  */

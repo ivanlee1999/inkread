@@ -24,11 +24,14 @@ import me.ash.reader.infrastructure.preference.LocalReadingSubheadBold
 import me.ash.reader.infrastructure.preference.LocalReadingSubheadUpperCase
 import me.ash.reader.infrastructure.preference.LocalReadingTextAlign
 import me.ash.reader.infrastructure.preference.LocalReadingTextBold
+import me.ash.reader.infrastructure.preference.LocalReadingChineseFontSize
+import me.ash.reader.infrastructure.preference.LocalReadingEnglishFontSize
 import me.ash.reader.infrastructure.preference.LocalReadingTextFontSize
 import me.ash.reader.infrastructure.preference.LocalReadingTextHorizontalPadding
 import me.ash.reader.infrastructure.preference.LocalReadingTextLetterSpacing
 import me.ash.reader.infrastructure.preference.LocalReadingTextLineHeight
 import me.ash.reader.infrastructure.preference.ReadingFontsPreference
+import me.ash.reader.infrastructure.html.LanguageTextWrapper
 import me.ash.reader.ui.ext.ExternalFonts
 import me.ash.reader.ui.ext.openURL
 import me.ash.reader.ui.ext.surfaceColorAtElevation
@@ -60,6 +63,8 @@ fun RYWebView(
     val subheadUpperCase: Boolean = LocalReadingSubheadUpperCase.current.value
     val readingFonts = LocalReadingFonts.current
     val fontSize: Int = LocalReadingTextFontSize.current
+    val chineseFontSize: Int = LocalReadingChineseFontSize.current
+    val englishFontSize: Int = LocalReadingEnglishFontSize.current
     val letterSpacing: Float = LocalReadingTextLetterSpacing.current
     val lineHeight: Float = LocalReadingTextLineHeight.current
     val imgMargin: Int = LocalReadingImageHorizontalPadding.current
@@ -104,11 +109,14 @@ fun RYWebView(
                 Log.i("RLog", "readingFont: ${context.filesDir.absolutePath}")
                 Log.i("RLog", "CustomWebView: ${content}")
                 settings.defaultFontSize = fontSize
+                val wrappedContent = LanguageTextWrapper.wrapHtml(content)
                 loadDataWithBaseURL(
                     null,
                     WebViewHtml.HTML.format(
                         WebViewStyle.get(
                             fontSize = fontSize,
+                            chineseFontSize = chineseFontSize,
+                            englishFontSize = englishFontSize,
                             fontPath = fontPath,
                             lineHeight = lineHeight,
                             letterSpacing = letterSpacing,
@@ -129,7 +137,7 @@ fun RYWebView(
                             selectionBgColor = selectionBgColor,
                         ),
                         url,
-                        content,
+                        wrappedContent,
                         WebViewScript.get(boldCharacters.value),
                     ),
                     "text/HTML",

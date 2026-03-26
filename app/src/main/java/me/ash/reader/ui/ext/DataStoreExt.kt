@@ -167,6 +167,8 @@ sealed interface PreferencesKey {
         const val readingBoldCharacters = "readingBoldCharacters"
         const val readingPageTonalElevation = "readingPageTonalElevation"
         const val readingTextFontSize = "readingTextFontSize"
+        const val readingChineseFontSize = "readingChineseFontSize"
+        const val readingEnglishFontSize = "readingEnglishFontSize"
         const val readingTextLineHeight = "readingTextLineHeight"
         const val readingTextLetterSpacing = "readingTextLetterSpacing"
         const val readingTextHorizontalPadding = "readingTextHorizontalPadding"
@@ -244,6 +246,8 @@ sealed interface PreferencesKey {
                 BooleanKey(readingBoldCharacters),
                 IntKey(readingPageTonalElevation),
                 IntKey(readingTextFontSize),
+                IntKey(readingChineseFontSize),
+                IntKey(readingEnglishFontSize),
                 FloatKey(readingTextLineHeight),
                 FloatKey(readingTextLetterSpacing),
                 IntKey(readingTextHorizontalPadding),
@@ -329,6 +333,8 @@ data class DataStoreKey<T>(val key: Preferences.Key<T>, val type: Class<T>) {
         const val readingBoldCharacters = "readingBoldCharacters"
         const val readingPageTonalElevation = "readingPageTonalElevation"
         const val readingTextFontSize = "readingTextFontSize"
+        const val readingChineseFontSize = "readingChineseFontSize"
+        const val readingEnglishFontSize = "readingEnglishFontSize"
         const val readingTextLineHeight = "readingTextLineHeight"
         const val readingTextLetterSpacing = "readingTextLetterSpacing"
         const val readingTextHorizontalPadding = "readingTextHorizontalPadding"
@@ -452,6 +458,10 @@ data class DataStoreKey<T>(val key: Preferences.Key<T>, val type: Class<T>) {
                     DataStoreKey(intPreferencesKey(readingPageTonalElevation), Int::class.java),
                 readingTextFontSize to
                     DataStoreKey(intPreferencesKey(readingTextFontSize), Int::class.java),
+                readingChineseFontSize to
+                    DataStoreKey(intPreferencesKey(readingChineseFontSize), Int::class.java),
+                readingEnglishFontSize to
+                    DataStoreKey(intPreferencesKey(readingEnglishFontSize), Int::class.java),
                 readingTextLineHeight to
                     DataStoreKey(floatPreferencesKey(readingTextLineHeight), Float::class.java),
                 readingTextLetterSpacing to

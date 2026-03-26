@@ -236,6 +236,18 @@ fun boldStyle(): TextStyle =
 
 @Stable
 @Composable
+@ReadOnlyComposable
+fun chineseFontSizeSpanStyle(): SpanStyle =
+    SpanStyle(fontSize = LocalReadingChineseFontSize.current.sp)
+
+@Stable
+@Composable
+@ReadOnlyComposable
+fun englishFontSizeSpanStyle(): SpanStyle =
+    SpanStyle(fontSize = LocalReadingEnglishFontSize.current.sp)
+
+@Stable
+@Composable
 fun codeInlineStyle(): TextStyle =
     MaterialTheme.typography.titleSmall.merge(
         color = bodyForeground(),

@@ -43,6 +43,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -50,8 +51,11 @@ import androidx.compose.ui.text.style.BaselineShift
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import java.io.InputStream
 import me.ash.reader.R
+import me.ash.reader.infrastructure.preference.LocalReadingChineseFontSize
+import me.ash.reader.infrastructure.preference.LocalReadingEnglishFontSize
 import me.ash.reader.infrastructure.preference.LocalReadingImageMaximize
 import me.ash.reader.ui.ext.requiresBidi
 import me.ash.reader.ui.theme.applyTextDirection
@@ -196,18 +200,18 @@ private fun TextComposer.appendTextChildren(
         when (node) {
             is TextNode -> {
                 if (preFormatted) {
-                    append(node.wholeText)
+                    appendWithLanguageSpans(node.wholeText)
                 } else {
                     if (endsWithWhitespace) {
                         node.text().trimStart().let { trimmed ->
                             if (trimmed.isNotEmpty()) {
-                                append(trimmed)
+                                appendWithLanguageSpans(trimmed)
                             }
                         }
                     } else {
                         node.text().let { text ->
                             if (text.isNotEmpty()) {
-                                append(text)
+                                appendWithLanguageSpans(text)
                             }
                         }
                     }
@@ -709,6 +713,130 @@ private fun TextComposer.appendTextChildren(
         }
 
         node = node.nextSibling()
+    }
+}
+
+/**
+ * Determines if a Unicode code point is a CJK (Chinese/Japanese/Korean) character.
+ */
+private fun isCJKCodePoint(codePoint: Int): Boolean {
+    return codePoint in 0x4E00..0x9FFF ||
+            codePoint in 0x3400..0x4DBF ||
+            codePoint in 0x20000..0x2A6DF ||
+            codePoint in 0xF900..0xFAFF ||
+            codePoint in 0x2E80..0x2EFF ||
+            codePoint in 0x2F00..0x2FDF ||
+            codePoint in 0x3000..0x303F ||
+            codePoint in 0x3040..0x309F ||
+            codePoint in 0x30A0..0x30FF ||
+            codePoint in 0x3100..0x312F ||
+            codePoint in 0xAC00..0xD7AF ||
+            codePoint in 0xFF00..0xFFEF
+}
+
+/**
+ * Checks if a character is meaningful for language classification (not whitespace/punctuation).
+ */
+private fun isClassifiableCodePoint(codePoint: Int): Boolean {
+    if (Character.isWhitespace(codePoint)) return false
+    val ch = codePoint.toChar()
+    if (codePoint < 0x80 && !ch.isLetterOrDigit()) return false
+    return true
+}
+
+/**
+ * Represents a run of text classified by language.
+ * @param text The text content
+ * @param isCJK true for Chinese/CJK, false for English/Latin, null for unclassified (whitespace/punctuation only)
+ */
+private data class LanguageRun(val text: String, val isCJK: Boolean?)
+
+/**
+ * Splits a string into runs of CJK and non-CJK text.
+ * Whitespace and punctuation are attached to the adjacent classified run.
+ */
+private fun splitTextByLanguage(text: String): List<LanguageRun> {
+    if (text.isEmpty()) return emptyList()
+
+    val runs = mutableListOf<LanguageRun>()
+    var currentBuilder = StringBuilder()
+    var currentIsCJK: Boolean? = null // null = neutral (not yet classified)
+
+    var i = 0
+    while (i < text.length) {
+        val codePoint = text.codePointAt(i)
+        val charCount = Character.charCount(codePoint)
+
+        if (!isClassifiableCodePoint(codePoint)) {
+            // Neutral character - append to current run
+            currentBuilder.appendCodePoint(codePoint)
+        } else {
+            val charIsCJK = isCJKCodePoint(codePoint)
+            if (currentIsCJK == null) {
+                // First classifiable char - assign language
+                currentIsCJK = charIsCJK
+                currentBuilder.appendCodePoint(codePoint)
+            } else if (charIsCJK == currentIsCJK) {
+                // Same language - continue
+                currentBuilder.appendCodePoint(codePoint)
+            } else {
+                // Language switch - save current run and start new one
+                if (currentBuilder.isNotEmpty()) {
+                    runs.add(LanguageRun(currentBuilder.toString(), currentIsCJK))
+                }
+                currentBuilder = StringBuilder()
+                currentIsCJK = charIsCJK
+                currentBuilder.appendCodePoint(codePoint)
+            }
+        }
+        i += charCount
+    }
+
+    // Add remaining text
+    if (currentBuilder.isNotEmpty()) {
+        runs.add(LanguageRun(currentBuilder.toString(), currentIsCJK))
+    }
+
+    return runs
+}
+
+/**
+ * Appends text to the TextComposer with language-specific font size SpanStyles.
+ * Chinese/CJK text gets the Chinese font size, Latin/English text gets the English font size.
+ * Uses withComposableStyle which defers the @Composable font size lookup to composition time.
+ */
+private fun TextComposer.appendWithLanguageSpans(text: String) {
+    val runs = splitTextByLanguage(text)
+
+    if (runs.isEmpty()) return
+
+    // If there's only one run with no language classification, just append normally
+    if (runs.size == 1 && runs[0].isCJK == null) {
+        append(runs[0].text)
+        return
+    }
+
+    for (run in runs) {
+        when (run.isCJK) {
+            true -> {
+                withComposableStyle(style = {
+                    TextStyle(fontSize = LocalReadingChineseFontSize.current.sp)
+                }) {
+                    append(run.text)
+                }
+            }
+            false -> {
+                withComposableStyle(style = {
+                    TextStyle(fontSize = LocalReadingEnglishFontSize.current.sp)
+                }) {
+                    append(run.text)
+                }
+            }
+            null -> {
+                // Neutral text (only whitespace/punctuation) - append without language styling
+                append(run.text)
+            }
+        }
     }
 }
 
