@@ -110,6 +110,8 @@ class SettingsProvider @Inject constructor(
             LocalReadingPageTonalElevation provides settings.readingPageTonalElevation,
             LocalReadingAutoHideToolbar provides settings.readingAutoHideToolbar,
             LocalReadingTextFontSize provides settings.readingTextFontSize,
+            LocalReadingChineseFontSize provides settings.readingChineseFontSize,
+            LocalReadingEnglishFontSize provides settings.readingEnglishFontSize,
             LocalReadingTextLineHeight provides settings.readingTextLineHeight,
             LocalReadingTextLetterSpacing provides settings.readingLetterSpacing,
             LocalReadingTextHorizontalPadding provides settings.readingTextHorizontalPadding,

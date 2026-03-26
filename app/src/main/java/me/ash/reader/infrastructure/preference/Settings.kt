@@ -51,6 +51,8 @@ data class Settings(
     val readingPageTonalElevation: ReadingPageTonalElevationPreference = ReadingPageTonalElevationPreference.default,
     val readingAutoHideToolbar: ReadingAutoHideToolbarPreference = ReadingAutoHideToolbarPreference.default,
     val readingTextFontSize: Int = ReadingTextFontSizePreference.default,
+    val readingChineseFontSize: Int = ReadingChineseFontSizePreference.default,
+    val readingEnglishFontSize: Int = ReadingEnglishFontSizePreference.default,
     val readingTextLineHeight: Float = ReadingTextLineHeightPreference.default,
     val readingLetterSpacing: Float = ReadingTextLetterSpacingPreference.default,
     val readingTextHorizontalPadding: Int = ReadingTextHorizontalPaddingPreference.default,

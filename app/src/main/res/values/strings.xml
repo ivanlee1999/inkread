@@ -202,6 +202,8 @@
     <string name="touch_to_play_video">Tap to play a video</string>
     <string name="text">Text</string>
     <string name="font_size">Font size</string>
+    <string name="chinese_font_size">Chinese font size</string>
+    <string name="english_font_size">English font size</string>
     <string name="letter_spacing">Letter spacing</string>
     <string name="line_spacing">Line spacing</string>
     <string name="alignment">Alignment</string>
