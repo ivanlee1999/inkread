@@ -23,5 +23,5 @@ object ReadingEnglishFontSizePreference {
     }
 
     fun fromPreferences(preferences: Preferences) =
-        preferences[DataStoreKey.keys[readingEnglishFontSize]?.key as Preferences.Key<Int>] ?: default
+        preferences[(DataStoreKey.keys[readingEnglishFontSize]?.key as? Preferences.Key<Int>) ?: return default] ?: default
 }

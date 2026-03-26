@@ -220,7 +220,7 @@ fun ReadingTextPage(
             chineseFontSizeDialogVisible = false
         },
         onConfirm = {
-            ReadingChineseFontSizePreference.put(context, scope, chineseFontSizeValue ?: 0)
+            ReadingChineseFontSizePreference.put(context, scope, chineseFontSizeValue ?: chineseFontSize)
             ReadingThemePreference.Custom.put(context, scope)
             chineseFontSizeDialogVisible = false
         }
@@ -238,7 +238,7 @@ fun ReadingTextPage(
             englishFontSizeDialogVisible = false
         },
         onConfirm = {
-            ReadingEnglishFontSizePreference.put(context, scope, englishFontSizeValue ?: 0)
+            ReadingEnglishFontSizePreference.put(context, scope, englishFontSizeValue ?: englishFontSize)
             ReadingThemePreference.Custom.put(context, scope)
             englishFontSizeDialogVisible = false
         }
