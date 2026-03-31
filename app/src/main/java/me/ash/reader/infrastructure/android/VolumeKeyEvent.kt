@@ -1,5 +1,6 @@
 package me.ash.reader.infrastructure.android
 
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -20,14 +21,11 @@ enum class VolumeKeyPriority {
 }
 
 object VolumeKeyEventBus {
-    private val _events = MutableSharedFlow<VolumeKeyEvent>(
+    private var _events = MutableSharedFlow<VolumeKeyEvent>(
         replay = 0,
-        extraBufferCapacity = 1,
-        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+        extraBufferCapacity = 8,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
-
-    private var lastEmitTime = 0L
-    private const val DEBOUNCE_MS = 200L
 
     /**
      * Tracks active consumers by priority. Events are delivered only to the
@@ -66,12 +64,24 @@ object VolumeKeyEventBus {
         }
     }
 
+    /**
+     * Emit a volume key event to all collectors. No debounce — every valid
+     * press is delivered. The buffer (capacity 8) absorbs short bursts during
+     * e-ink refresh without building an unbounded queue.
+     */
     fun emit(event: VolumeKeyEvent) {
-        val now = System.currentTimeMillis()
-        if (now - lastEmitTime >= DEBOUNCE_MS) {
-            if (_events.tryEmit(event)) {
-                lastEmitTime = now
-            }
-        }
+        _events.tryEmit(event)
+    }
+
+    /**
+     * Reset all internal state. Intended for use in tests only.
+     */
+    fun resetForTest() {
+        synchronized(activeConsumers) { activeConsumers.clear() }
+        _events = MutableSharedFlow(
+            replay = 0,
+            extraBufferCapacity = 8,
+            onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        )
     }
 }
