@@ -92,6 +92,7 @@ import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import me.ash.reader.infrastructure.android.VolumeKeyEvent
 import me.ash.reader.infrastructure.android.VolumeKeyEventBus
@@ -345,50 +346,47 @@ fun FlowPage(
     var pagingItems: LazyPagingItems<ArticleFlowItem>? by remember { mutableStateOf(null) }
 
     if (isTwoPane) {
-        LaunchedEffect(readerState.articleId, pagingItems) {
-            if (readerState.articleId != null) {
-                val articleId = readerState.articleId
-
-                val itemList = pagingItems?.itemSnapshotList
-
-                val index =
-                    itemList?.indexOfFirst {
+        // Key only on articleId — snapshotFlow handles the case where the article isn't
+        // loaded yet, waiting reactively until it appears in the paging snapshot, then
+        // scrolling exactly once. This avoids re-scroll regressions from itemCount changes.
+        LaunchedEffect(readerState.articleId) {
+            val articleId = readerState.articleId ?: return@LaunchedEffect
+            snapshotFlow { pagingItems?.itemSnapshotList }
+                .first { snapshot ->
+                    val index = snapshot?.indexOfFirst {
                         it is ArticleFlowItem.Article && it.articleWithFeed.article.id == articleId
                     } ?: -1
-
-                if (index != -1) {
-                    if (einkMode) {
-                        snapAppBarToCollapsed()
-                        listState.scrollToItem(index, scrollOffset = -200)
-                    } else {
-                        scrollAppBarToCollapsed()
-                        listState.animateScrollToItem(index, scrollOffset = -200)
-                    }
+                    if (index != -1) {
+                        if (einkMode) {
+                            snapAppBarToCollapsed()
+                            listState.scrollToItem(index, scrollOffset = -200)
+                        } else {
+                            scrollAppBarToCollapsed()
+                            listState.animateScrollToItem(index, scrollOffset = -200)
+                        }
+                        true
+                    } else false
                 }
-            }
         }
     } else {
-        LaunchedEffect(readerState.articleId, pagingItems, einkItemsPerPage) {
-            if (readerState.articleId != null) {
-                val articleId = readerState.articleId
-
-                val itemList = pagingItems?.itemSnapshotList
-
-                val index =
-                    itemList?.indexOfFirst {
+        // Same one-shot snapshotFlow pattern — scroll to article exactly once when it loads.
+        LaunchedEffect(readerState.articleId, einkItemsPerPage) {
+            val articleId = readerState.articleId ?: return@LaunchedEffect
+            snapshotFlow { pagingItems?.itemSnapshotList }
+                .first { snapshot ->
+                    val index = snapshot?.indexOfFirst {
                         it is ArticleFlowItem.Article && it.articleWithFeed.article.id == articleId
                     } ?: -1
-
-                if (index != -1) {
-                    if (einkMode) {
-                        // Restore to the page containing this article
-                        einkCurrentPage = index / einkItemsPerPage
-                    } else {
-                        snapAppBarToCollapsed()
-                        listState.requestScrollToItem(index, scrollOffset = -400)
-                    }
+                    if (index != -1) {
+                        if (einkMode) {
+                            einkCurrentPage = index / einkItemsPerPage
+                        } else {
+                            snapAppBarToCollapsed()
+                            listState.requestScrollToItem(index, scrollOffset = -400)
+                        }
+                        true
+                    } else false
                 }
-            }
         }
     }
 
