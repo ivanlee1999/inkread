@@ -139,12 +139,6 @@ fun EInkPaginatedContent(
             ?.absolutePath
     }
 
-    // Stable (unkeyed) state so the JS bridge always writes to the same objects.
-    // Reset inline when htmlContent changes (same pattern as isInitialPaginationReady).
-    val currentPageState = rememberSaveable { mutableIntStateOf(0) }
-    var currentPage by currentPageState
-    val totalPagesState = rememberSaveable { mutableIntStateOf(0) }
-    var totalPages by totalPagesState
     // Track the last loaded HTML key to detect content/style changes in the update callback
     var lastLoadedHtmlKey by remember { mutableStateOf("") }
 
@@ -169,6 +163,55 @@ fun EInkPaginatedContent(
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
     val currentOnNextArticle by rememberUpdatedState(onNextArticle)
     val currentOnPrevArticle by rememberUpdatedState(onPrevArticle)
+
+    // Compose state wrappers that the navigation controller drives.
+    var currentPage by rememberSaveable { mutableIntStateOf(0) }
+    var totalPages by rememberSaveable { mutableIntStateOf(0) }
+
+    // Extracted navigation controller — keeps page-state decisions testable
+    // and queues volume key events received while pagination is resetting.
+    val navController = remember {
+        EInkPageNavigationController(
+            onPageChanged = { page, total ->
+                onPageChanged?.invoke(page, total)
+            },
+            onApplyPageToWebView = { page ->
+                webViewRef.value?.evaluateJavascript("goToPage($page)", null)
+            },
+            onNextArticle = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                currentOnNextArticle?.invoke()
+            },
+            onPrevArticle = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                currentOnPrevArticle?.invoke()
+            },
+            onBoundary = { message ->
+                coroutineScope.launch {
+                    showBoundaryText = message
+                    delay(1000)
+                    showBoundaryText = null
+                }
+            },
+            onPageTurnFeedback = { direction ->
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                when (direction) {
+                    VolumeKeyEvent.NEXT -> coroutineScope.launch {
+                        showRightArrow = true
+                        delay(500)
+                        showRightArrow = false
+                    }
+                    VolumeKeyEvent.PREV -> coroutineScope.launch {
+                        showLeftArrow = true
+                        delay(500)
+                        showLeftArrow = false
+                    }
+                }
+            },
+            hasNextArticle = { currentOnNextArticle != null },
+            hasPrevArticle = { currentOnPrevArticle != null },
+        )
+    }
 
     // Clean up WebView when leaving composition to prevent memory leaks
     DisposableEffect(Unit) {
@@ -205,6 +248,7 @@ fun EInkPaginatedContent(
     if (lastHtmlContentForReady.value != htmlContent) {
         lastHtmlContentForReady.value = htmlContent
         isInitialPaginationReady = false
+        navController.onContentReset()
         currentPage = 0
         totalPages = 0
     }
@@ -216,69 +260,32 @@ fun EInkPaginatedContent(
         if (!isInitialPaginationReady) {
             Log.w("InkRead", "isInitialPaginationReady timeout — forcing true (totalPages=$totalPages)")
             isInitialPaginationReady = true
-            if (totalPages == 0) totalPages = 1
+            navController.forceReady()
+            totalPages = navController.totalPages
+            currentPage = navController.currentPage
         }
     }
 
     fun nextPage() {
-        // Block during true loading (before any JS callback). Once totalPages > 0,
-        // allow navigation even if onInitialPaginationReady was somehow missed.
-        if (!isInitialPaginationReady && totalPages == 0) return
-        if (currentPage < totalPages - 1) {
-            currentPage++
-            Log.d("InkRead", "nextPage -> currentPage=$currentPage totalPages=$totalPages")
-            webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
-            onPageChanged?.invoke(currentPage + 1, totalPages)
-            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-            coroutineScope.launch {
-                showRightArrow = true
-                delay(500)
-                showRightArrow = false
-            }
-        } else if (onNextArticle != null) {
-            Log.d("InkRead", "nextPage -> last page, switching to next article")
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            onNextArticle.invoke()
-        } else {
-            // No more articles - show boundary feedback
-            coroutineScope.launch {
-                showBoundaryText = "No more articles"
-                delay(1000)
-                showBoundaryText = null
-            }
-        }
+        Log.d("InkRead", "nextPage -> delegating to navController")
+        navController.handleNavigation(VolumeKeyEvent.NEXT)
+        // Sync Compose state from controller
+        currentPage = navController.currentPage
+        totalPages = navController.totalPages
     }
 
     fun prevPage() {
-        if (!isInitialPaginationReady && totalPages == 0) return
-        if (currentPage > 0) {
-            currentPage--
-            Log.d("InkRead", "prevPage -> currentPage=$currentPage totalPages=$totalPages")
-            webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
-            onPageChanged?.invoke(currentPage + 1, totalPages)
-            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-            coroutineScope.launch {
-                showLeftArrow = true
-                delay(500)
-                showLeftArrow = false
-            }
-        } else if (onPrevArticle != null) {
-            Log.d("InkRead", "prevPage -> first page, switching to previous article")
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            onPrevArticle.invoke()
-        } else {
-            // No previous articles - show boundary feedback
-            coroutineScope.launch {
-                showBoundaryText = "No previous articles"
-                delay(1000)
-                showBoundaryText = null
-            }
-        }
+        Log.d("InkRead", "prevPage -> delegating to navController")
+        navController.handleNavigation(VolumeKeyEvent.PREV)
+        // Sync Compose state from controller
+        currentPage = navController.currentPage
+        totalPages = navController.totalPages
     }
 
     LaunchedEffect(Unit) {
         volumeKeyFlow.collect { event ->
             if (VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.HIGH)) {
+                Log.d("InkRead", "Volume key event received: $event")
                 when (event) {
                     VolumeKeyEvent.NEXT -> nextPage()
                     VolumeKeyEvent.PREV -> prevPage()
@@ -363,21 +370,17 @@ fun EInkPaginatedContent(
                             EInkJsInterface(
                                 onTotalPages = { pages ->
                                     Handler(Looper.getMainLooper()).post {
-                                        totalPages = maxOf(1, pages)
-                                        // Clamp currentPage if totalPages decreased (e.g. after image load recount)
-                                        if (currentPage >= totalPages) {
-                                            currentPage = totalPages - 1
-                                            webViewRef.value?.evaluateJavascript("goToPage($currentPage)", null)
-                                        }
-                                        onPageChanged?.invoke(currentPage + 1, totalPages)
+                                        navController.onTotalPagesUpdated(pages)
+                                        totalPages = navController.totalPages
+                                        currentPage = navController.currentPage
                                     }
                                 },
                                 onInitialPaginationReady = { pages ->
                                     Handler(Looper.getMainLooper()).post {
-                                        totalPages = maxOf(1, pages)
-                                        currentPage = 0
+                                        navController.onPaginationReady(pages)
                                         isInitialPaginationReady = true
-                                        onPageChanged?.invoke(currentPage + 1, totalPages)
+                                        totalPages = navController.totalPages
+                                        currentPage = navController.currentPage
                                     }
                                 },
                             ),

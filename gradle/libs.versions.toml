@@ -42,6 +42,7 @@ junitExt = "1.1.5"
 mockitoCore = "5.11.0"
 mockitoJUnitJupiter = "5.11.0"
 mockitoKotlin = "5.2.1"
+kotlinxCoroutinesTest = "1.9.0"
 okhttp = "5.0.0-alpha.12"
 opmlParser = "3.1.0"
 readability4j = "1.0.8"
@@ -148,6 +149,7 @@ espresso = { group = "androidx.test.espresso", name = "espresso-core", version.r
 mockito-core = { group = "org.mockito", name = "mockito-core", version.ref = "mockitoCore" }
 mockito-junit-jupiter = { group = "org.mockito", name = "mockito-junit-jupiter", version.ref = "mockitoJUnitJupiter" }
 mockito-kotlin = { group = "org.mockito.kotlin", name = "mockito-kotlin", version.ref = "mockitoKotlin" }
+kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "kotlinxCoroutinesTest" }
 compose-bom-stable = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBomStable" }
 androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
 androidx-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
