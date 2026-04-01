@@ -3,10 +3,13 @@ package me.ash.reader.ui.page.adaptive
 import android.os.Parcelable
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
@@ -43,6 +46,7 @@ import me.ash.reader.ui.component.reader.LocalTextContentWidth
 import me.ash.reader.ui.component.reader.MediumContentWidth
 import me.ash.reader.ui.page.home.flow.FlowPage
 import me.ash.reader.ui.page.home.reading.ReadingPage
+import me.ash.reader.ui.theme.isEInkMode
 import timber.log.Timber
 
 @Parcelize data class ArticleData(val articleId: String, val listIndex: Int? = null) : Parcelable
@@ -61,6 +65,7 @@ fun ArticleListReaderPage(
 ) {
 
     val scope = rememberCoroutineScope()
+    val einkMode = isEInkMode
 
     val backBehavior = BackNavigationBehavior.PopUntilScaffoldValueChange
 
@@ -76,7 +81,8 @@ fun ArticleListReaderPage(
             initialAnchoredIndex = 1,
             anchors = listOf(hiddenAnchor, expandedAnchor),
             anchoringAnimationSpec =
-                spring(dampingRatio = 1f, stiffness = 380f, visibilityThreshold = 1f),
+                if (einkMode) snap()
+                else spring(dampingRatio = 1f, stiffness = 380f, visibilityThreshold = 1f),
         )
 
     val isTwoPane =
@@ -84,6 +90,8 @@ fun ArticleListReaderPage(
             get(ListDetailPaneScaffoldRole.List) == PaneAdaptedValue.Expanded &&
                 get(ListDetailPaneScaffoldRole.Detail) == PaneAdaptedValue.Expanded
         }
+
+    val disablePaneAnimations = einkMode && isTwoPane
 
     val navigationAction =
         if (isTwoPane) {
@@ -114,8 +122,10 @@ fun ArticleListReaderPage(
             NavigationAction.ExpandList -> ExpandedContentWidth
         }
 
-    val animatedContentWidth by animateDpAsState(contentWidth)
-    val animatedListAlpha by animateFloatAsState(listAlpha)
+    val animatedContentWidthState by animateDpAsState(contentWidth)
+    val resolvedContentWidth = if (disablePaneAnimations) contentWidth else animatedContentWidthState
+    val animatedListAlphaState by animateFloatAsState(listAlpha)
+    val resolvedListAlpha = if (disablePaneAnimations) listAlpha else animatedListAlphaState
 
     NavigableListDetailPaneScaffold(
         navigator = navigator,
@@ -131,14 +141,18 @@ fun ArticleListReaderPage(
                 }
             }
             AnimatedPane(
-                enterTransition = motionDataProvider.calculateEnterTransition(paneRole),
-                exitTransition = motionDataProvider.calculateExitTransition(paneRole),
+                enterTransition =
+                    if (disablePaneAnimations) EnterTransition.None
+                    else motionDataProvider.calculateEnterTransition(paneRole),
+                exitTransition =
+                    if (disablePaneAnimations) ExitTransition.None
+                    else motionDataProvider.calculateExitTransition(paneRole),
             ) {
                 CompositionLocalProvider(
                     LocalBackgroundTextMeasurementExecutor provides
                         Executors.newSingleThreadExecutor()
                 ) {
-                    Box(modifier = Modifier.alpha(animatedListAlpha)) {
+                    Box(modifier = Modifier.alpha(resolvedListAlpha)) {
                         FlowPage(
                             sharedTransitionScope = sharedTransitionScope,
                             animatedVisibilityScope = animatedVisibilityScope,
@@ -160,8 +174,12 @@ fun ArticleListReaderPage(
         },
         detailPane = {
             AnimatedPane(
-                enterTransition = motionDataProvider.calculateEnterTransition(paneRole),
-                exitTransition = motionDataProvider.calculateExitTransition(paneRole),
+                enterTransition =
+                    if (disablePaneAnimations) EnterTransition.None
+                    else motionDataProvider.calculateEnterTransition(paneRole),
+                exitTransition =
+                    if (disablePaneAnimations) ExitTransition.None
+                    else motionDataProvider.calculateExitTransition(paneRole),
             ) {
                 val contentKey = navigator.currentDestination?.contentKey
                 LaunchedEffect(contentKey) {
@@ -176,7 +194,7 @@ fun ArticleListReaderPage(
                     }
                 }
 
-                CompositionLocalProvider(LocalTextContentWidth provides animatedContentWidth) {
+                CompositionLocalProvider(LocalTextContentWidth provides resolvedContentWidth) {
                     ReadingPage(
                         viewModel = viewModel,
                         navigationAction = navigationAction,

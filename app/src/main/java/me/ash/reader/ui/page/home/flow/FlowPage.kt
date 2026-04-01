@@ -345,7 +345,7 @@ fun FlowPage(
     var pagingItems: LazyPagingItems<ArticleFlowItem>? by remember { mutableStateOf(null) }
 
     if (isTwoPane) {
-        LaunchedEffect(readerState) {
+        LaunchedEffect(readerState.articleId, pagingItems) {
             if (readerState.articleId != null) {
                 val articleId = readerState.articleId
 
@@ -357,8 +357,13 @@ fun FlowPage(
                     } ?: -1
 
                 if (index != -1) {
-                    scrollAppBarToCollapsed()
-                    listState.animateScrollToItem(index, scrollOffset = -200)
+                    if (einkMode) {
+                        snapAppBarToCollapsed()
+                        listState.scrollToItem(index, scrollOffset = -200)
+                    } else {
+                        scrollAppBarToCollapsed()
+                        listState.animateScrollToItem(index, scrollOffset = -200)
+                    }
                 }
             }
         }
