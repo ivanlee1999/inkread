@@ -810,7 +810,12 @@ function goToPage(n) {
     // Clamp to valid range
     if (n < 0) n = 0;
     if (n >= _totalPages) n = _totalPages - 1;
-    document.body.style.transform = 'translateX(-' + (n * _vw) + 'px)';
+    // Offset by half the column gap to center content within the viewport.
+    // With body padding and column-gap, the raw n*_vw translation doesn't
+    // account for the gap/padding offset, causing unequal left/right margins.
+    var padding = ${horizontalPadding};
+    var offset = padding + padding; // columnGap = 2 * horizontalPadding
+    document.body.style.transform = 'translateX(-' + (n * _vw + offset / 2) + 'px)';
 }
 function finishInitialPagination() {
     if (_didFinishInitialPagination) return;
