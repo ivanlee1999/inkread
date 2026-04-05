@@ -827,6 +827,8 @@ function finishInitialPagination() {
         var padding = ${horizontalPadding};
         document.body.style.columnWidth = (_vw - padding * 2) + 'px';
         recountPages();
+        // Measure actual column stride from DOM to handle WebView viewport quirks
+        _vw = document.body.scrollWidth / _totalPages;
         goToPage(0);
         document.body.style.visibility = 'visible';
     } catch (e) {
