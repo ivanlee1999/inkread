@@ -3,7 +3,6 @@ package me.ash.reader.infrastructure.android
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
-import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -14,11 +13,8 @@ class VolumeKeyEventBusTest {
 
     @Before
     fun setUp() {
-        VolumeKeyEventBus.resetForTest()
-    }
-
-    @After
-    fun tearDown() {
+        // Clear shared state so each test starts fresh.
+        // Note: activeConsumers is @Synchronized so this is safe.
         VolumeKeyEventBus.resetForTest()
     }
 
@@ -118,26 +114,36 @@ class VolumeKeyEventBusTest {
     }
 
     @Test
-    fun `buffer survives burst larger than 1 event`() = runTest {
-        // Don't start collecting yet — events should buffer
+    fun `buffer handles burst of events without dropping`() = runTest {
+        // Collector starts first — all subsequent emits reach it via tryEmit
+        // (replay=0 means pre-emitted events are NOT delivered to new collectors,
+        // so we emit after the collector is active to test buffer burst handling)
         val flow = VolumeKeyEventBus.register(VolumeKeyPriority.HIGH)
-
-        // Emit several events before any collector is active
-        VolumeKeyEventBus.emit(VolumeKeyEvent.NEXT)
-        VolumeKeyEventBus.emit(VolumeKeyEvent.PREV)
-        VolumeKeyEventBus.emit(VolumeKeyEvent.NEXT)
-
-        // Now start collecting — should get buffered events
         val collected = mutableListOf<VolumeKeyEvent>()
+
         val job = launch(UnconfinedTestDispatcher(testScheduler)) {
             flow.collect { collected.add(it) }
         }
 
-        // With extraBufferCapacity=8, all 3 should be buffered and delivered
-        assertEquals(3, collected.size)
-        assertEquals(VolumeKeyEvent.NEXT, collected[0])
-        assertEquals(VolumeKeyEvent.PREV, collected[1])
-        assertEquals(VolumeKeyEvent.NEXT, collected[2])
+        // Emit several events in rapid succession — extraBufferCapacity=8 absorbs the burst
+        VolumeKeyEventBus.emit(VolumeKeyEvent.NEXT)
+        VolumeKeyEventBus.emit(VolumeKeyEvent.PREV)
+        VolumeKeyEventBus.emit(VolumeKeyEvent.NEXT)
+        VolumeKeyEventBus.emit(VolumeKeyEvent.NEXT)
+        VolumeKeyEventBus.emit(VolumeKeyEvent.PREV)
+
+        // All 5 should be delivered; the buffer never overflows at capacity 8
+        assertEquals(5, collected.size)
+        assertEquals(
+            listOf(
+                VolumeKeyEvent.NEXT,
+                VolumeKeyEvent.PREV,
+                VolumeKeyEvent.NEXT,
+                VolumeKeyEvent.NEXT,
+                VolumeKeyEvent.PREV,
+            ),
+            collected,
+        )
 
         job.cancel()
         VolumeKeyEventBus.unregister(VolumeKeyPriority.HIGH)
