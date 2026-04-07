@@ -802,8 +802,14 @@ function recountPages() {
                 n = n - 1;
             }
         }
+        var prevTotal = _totalPages;
         _totalPages = Math.max(1, n);
         Android.onTotalPages(_totalPages);
+        // Recalculate _vw from actual DOM stride on every recount.
+        // This keeps the stride correct even after images load and change _totalPages.
+        if (_totalPages > 1 && _totalPages !== prevTotal) {
+            _vw = sw / _totalPages;
+        }
     } catch (e) {
         _totalPages = 1;
         try { Android.onTotalPages(_totalPages); } catch (e2) {}
@@ -827,8 +833,6 @@ function finishInitialPagination() {
         var padding = ${horizontalPadding};
         document.body.style.columnWidth = (_vw - padding * 2) + 'px';
         recountPages();
-        // Measure actual column stride from DOM to handle WebView viewport quirks
-        _vw = document.body.scrollWidth / _totalPages;
         goToPage(0);
         document.body.style.visibility = 'visible';
     } catch (e) {
