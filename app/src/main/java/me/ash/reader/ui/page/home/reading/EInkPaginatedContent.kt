@@ -783,33 +783,27 @@ iframe, video, embed, object {
 }
 </style>
 <script>
-var _vw, _totalPages = 1, _didFinishInitialPagination = false;
+var _vw = 0, _pageStride = 0, _totalPages = 1, _didFinishInitialPagination = false;
 function recountPages() {
     try {
         var sw = document.body.scrollWidth;
-        if (!sw || !_vw || _vw <= 0 || !isFinite(sw) || !isFinite(_vw)) {
+        if (!sw || !_pageStride || _pageStride <= 0 || !isFinite(sw) || !isFinite(_pageStride)) {
             _totalPages = 1;
             Android.onTotalPages(_totalPages);
             return;
         }
-        var n = Math.max(1, Math.round(sw / _vw));
-        // Sanity cap: no article should exceed 500 pages.
+        var n = Math.max(1, Math.round(sw / _pageStride));
+        // Sanity cap: no article should exceed ${EInkPaginationMath.MAX_REASONABLE_PAGES} pages.
         // If it does, scrollWidth is wrong (wide content, layout not settled).
-        if (n > 500) n = 1;
+        if (n > ${EInkPaginationMath.MAX_REASONABLE_PAGES}) n = 1;
         if (n > 1) {
-            var lastPageStart = (n - 1) * _vw;
-            if (sw <= lastPageStart + 1) {
+            var lastPageStart = (n - 1) * _pageStride;
+            if (sw <= lastPageStart + ${EInkPaginationMath.TRAILING_SLACK_TOLERANCE_PX}) {
                 n = n - 1;
             }
         }
-        var prevTotal = _totalPages;
         _totalPages = Math.max(1, n);
         Android.onTotalPages(_totalPages);
-        // Recalculate _vw from actual DOM stride on every recount.
-        // This keeps the stride correct even after images load and change _totalPages.
-        if (_totalPages > 1 && _totalPages !== prevTotal) {
-            _vw = sw / _totalPages;
-        }
     } catch (e) {
         _totalPages = 1;
         try { Android.onTotalPages(_totalPages); } catch (e2) {}
@@ -819,7 +813,7 @@ function goToPage(n) {
     // Clamp to valid range
     if (n < 0) n = 0;
     if (n >= _totalPages) n = _totalPages - 1;
-    document.body.style.transform = 'translateX(-' + (n * _vw) + 'px)';
+    document.body.style.transform = 'translateX(-' + (n * _pageStride) + 'px)';
 }
 function finishInitialPagination() {
     if (_didFinishInitialPagination) return;
@@ -829,9 +823,11 @@ function finishInitialPagination() {
         var vh = window.innerHeight;
         if (!_vw || _vw <= 0) _vw = document.documentElement.clientWidth || 360;
         if (!vh || vh <= 0) vh = document.documentElement.clientHeight || 640;
+        _pageStride = _vw;
         document.body.style.height = vh + 'px';
         var padding = ${horizontalPadding};
-        document.body.style.columnWidth = (_vw - padding * 2) + 'px';
+        document.body.style.columnGap = (padding * 2) + 'px';
+        document.body.style.columnWidth = (_pageStride - padding * 2) + 'px';
         recountPages();
         goToPage(0);
         document.body.style.visibility = 'visible';
