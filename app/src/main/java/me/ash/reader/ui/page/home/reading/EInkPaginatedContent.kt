@@ -6,6 +6,7 @@ import android.util.Log
 import android.os.Looper
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
@@ -241,6 +242,7 @@ fun EInkPaginatedContent(
     DisposableEffect(articleHtmlDocument) {
         onDispose { articleHtmlDocument.file.delete() }
     }
+    val currentArticleHtmlDocument = rememberUpdatedState(articleHtmlDocument)
 
     // Track whether initial pagination is complete so we can hide WebView until ready.
     // Use a STABLE (unkeyed) state so the JS bridge callback always writes to the same object.
@@ -343,14 +345,8 @@ fun EInkPaginatedContent(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                         )
                         settings.javaScriptEnabled = true
-                        // Article HTML is streamed into a private cache file to avoid
-                        // holding a second giant HTML String in the app heap. Allow the
-                        // WebView to read that one file URL, but keep file-origin access
-                        // locked down so article JavaScript cannot read other local files.
-                        settings.allowFileAccess = true
+                        settings.allowFileAccess = false
                         settings.allowContentAccess = false
-                        settings.allowFileAccessFromFileURLs = false
-                        settings.allowUniversalAccessFromFileURLs = false
                         setBackgroundColor(android.graphics.Color.WHITE)
                         isHorizontalScrollBarEnabled = false
                         isVerticalScrollBarEnabled = false
@@ -370,12 +366,24 @@ fun EInkPaginatedContent(
                             override fun shouldOverrideUrlLoading(
                                 view: WebView?,
                                 url: String?,
-                            ): Boolean = true
+                            ): Boolean = url != currentArticleHtmlDocument.value.url
 
                             override fun shouldOverrideUrlLoading(
                                 view: WebView?,
                                 request: android.webkit.WebResourceRequest?,
-                            ): Boolean = true
+                            ): Boolean = request?.url?.toString() != currentArticleHtmlDocument.value.url
+
+                            override fun shouldInterceptRequest(
+                                view: WebView?,
+                                request: android.webkit.WebResourceRequest?,
+                            ): WebResourceResponse? {
+                                val document = currentArticleHtmlDocument.value
+                                return if (request?.url?.toString() == document.url && document.file.exists()) {
+                                    WebResourceResponse("text/html", "UTF-8", document.file.inputStream())
+                                } else {
+                                    super.shouldInterceptRequest(view, request)
+                                }
+                            }
                         }
                         addJavascriptInterface(
                             EInkJsInterface(
@@ -644,7 +652,7 @@ private data class EInkArticleHtmlDocument(
     val file: File,
     val cacheKey: String,
 ) {
-    val url: String = file.toURI().toString()
+    val url: String = "https://inkread.local/eink/${file.name}"
 }
 
 private fun buildArticleHtmlDocument(
@@ -989,27 +997,141 @@ document.addEventListener('keydown', function(e) {
  * - `javascript:` scheme including HTML-entity-encoded variants
  */
 internal fun appendSanitizedHtml(out: Appendable, html: String) {
-    var decoded = html
-        .replace(Regex("&#x[0-9a-fA-F]+;"), { m ->
-            val code = m.value.removePrefix("&#x").removeSuffix(";").toIntOrNull(16)
-            if (code != null) code.toChar().toString() else m.value
-        })
-        .replace(Regex("&#[0-9]+;"), { m ->
-            val code = m.value.removePrefix("&#").removeSuffix(";").toIntOrNull()
-            if (code != null) code.toChar().toString() else m.value
-        })
+    val buffer = StringBuilder(SANITIZED_HTML_BUFFER_SIZE)
 
-    decoded = decoded
-        // Strip <script> tags and all content between them (including nested / unclosed)
-        .replace(Regex("<script[\\s\\S]*?</script>", RegexOption.IGNORE_CASE), "")
-        .replace(Regex("<script[^>]*/?>", RegexOption.IGNORE_CASE), "")
-        // Strip quoted event handlers: onclick="..." / onclick='...'
-        .replace(Regex("\\bon\\w+\\s*=\\s*\"[^\"]*\"", RegexOption.IGNORE_CASE), "")
-        .replace(Regex("\\bon\\w+\\s*=\\s*'[^']*'", RegexOption.IGNORE_CASE), "")
-        // Strip unquoted event handlers: onclick=alert(1)  (value ends at space or >)
-        .replace(Regex("\\bon\\w+\\s*=\\s*[^\"'\\s>]+", RegexOption.IGNORE_CASE), "")
-        // Strip javascript: scheme (after entity decoding above)
-        .replace(Regex("javascript\\s*:", RegexOption.IGNORE_CASE), "")
+    fun flush() {
+        if (buffer.isNotEmpty()) {
+            out.append(buffer)
+            buffer.clear()
+        }
+    }
 
-    out.append(decoded)
+    fun appendChar(ch: Char) {
+        buffer.append(ch)
+        if (buffer.length >= SANITIZED_HTML_BUFFER_SIZE) flush()
+    }
+
+    var index = 0
+    var inTag = false
+    while (index < html.length) {
+        if (startsWithScriptTag(html, index)) {
+            flush()
+            index = skipScriptElement(html, index)
+            inTag = false
+            continue
+        }
+
+        val javascriptSchemeEnd = matchJavascriptSchemeEnd(html, index)
+        if (javascriptSchemeEnd != -1) {
+            index = javascriptSchemeEnd
+            continue
+        }
+
+        if (inTag && html[index].isWhitespace()) {
+            appendChar(html[index])
+            val attrStart = index + 1
+            val eventAttrEnd = skipEventHandlerAttribute(html, attrStart)
+            if (eventAttrEnd != -1) {
+                index = eventAttrEnd
+                continue
+            }
+            index++
+            continue
+        }
+
+        val decoded = decodeHtmlEntityAt(html, index)
+        if (decoded != null) {
+            appendChar(decoded.char)
+            index += decoded.length
+            continue
+        }
+
+        val ch = html[index]
+        appendChar(ch)
+        if (ch == '<') inTag = true else if (ch == '>') inTag = false
+        index++
+    }
+    flush()
+}
+
+private const val SANITIZED_HTML_BUFFER_SIZE = 4096
+
+private data class DecodedHtmlEntity(val char: Char, val length: Int)
+
+private fun decodeHtmlEntityAt(html: String, index: Int): DecodedHtmlEntity? {
+    if (html[index] != '&') return null
+
+    val semicolon = html.indexOf(';', startIndex = index + 1)
+    if (semicolon == -1 || semicolon - index > 12) return null
+
+    val entity = html.substring(index + 1, semicolon)
+    val decoded = when {
+        entity.startsWith("#x", ignoreCase = true) -> entity.drop(2).toIntOrNull(16)?.toChar()
+        entity.startsWith("#") -> entity.drop(1).toIntOrNull()?.toChar()
+        entity.equals("Tab", ignoreCase = true) -> '\t'
+        entity.equals("NewLine", ignoreCase = true) -> '\n'
+        else -> null
+    } ?: return null
+
+    return DecodedHtmlEntity(decoded, semicolon - index + 1)
+}
+
+private fun startsWithScriptTag(html: String, index: Int): Boolean {
+    if (!html.startsWith("<script", index, ignoreCase = true)) return false
+    val next = index + "<script".length
+    return next >= html.length || html[next].isWhitespace() || html[next] == '>' || html[next] == '/'
+}
+
+private fun skipScriptElement(html: String, index: Int): Int {
+    val closeStart = html.indexOf("</script", startIndex = index + "<script".length, ignoreCase = true)
+    if (closeStart == -1) return html.length
+    val closeEnd = html.indexOf('>', startIndex = closeStart)
+    return if (closeEnd == -1) html.length else closeEnd + 1
+}
+
+private fun skipEventHandlerAttribute(html: String, index: Int): Int {
+    if (index + 2 > html.length || !html.startsWith("on", index, ignoreCase = true)) return -1
+
+    var cursor = index + 2
+    while (cursor < html.length && (html[cursor].isLetterOrDigit() || html[cursor] == '_' || html[cursor] == '-')) {
+        cursor++
+    }
+    if (cursor == index + 2) return -1
+
+    while (cursor < html.length && html[cursor].isWhitespace()) cursor++
+    if (cursor >= html.length || html[cursor] != '=') return -1
+    cursor++
+    while (cursor < html.length && html[cursor].isWhitespace()) cursor++
+    if (cursor >= html.length) return cursor
+
+    val quote = html[cursor]
+    if (quote == '"' || quote == '\'') {
+        cursor++
+        while (cursor < html.length && html[cursor] != quote) cursor++
+        return if (cursor < html.length) cursor + 1 else cursor
+    }
+
+    while (cursor < html.length && !html[cursor].isWhitespace() && html[cursor] != '>') cursor++
+    return cursor
+}
+
+private fun matchJavascriptSchemeEnd(html: String, index: Int): Int {
+    val keyword = "javascript"
+    var cursor = index
+    for (expected in keyword) {
+        if (cursor >= html.length) return -1
+        val decoded = decodeHtmlEntityAt(html, cursor)
+        val ch = decoded?.char ?: html[cursor]
+        if (!ch.equals(expected, ignoreCase = true)) return -1
+        cursor += decoded?.length ?: 1
+    }
+
+    while (cursor < html.length) {
+        val decoded = decodeHtmlEntityAt(html, cursor)
+        val ch = decoded?.char ?: html[cursor]
+        if (!ch.isWhitespace()) break
+        cursor += decoded?.length ?: 1
+    }
+
+    return if (cursor < html.length && html[cursor] == ':') cursor + 1 else -1
 }
