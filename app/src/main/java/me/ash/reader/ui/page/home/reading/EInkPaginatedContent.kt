@@ -42,6 +42,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import java.io.File
+import java.io.Writer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -234,19 +235,22 @@ fun EInkPaginatedContent(
     DisposableEffect(Unit) {
         onDispose { VolumeKeyEventBus.unregister(VolumeKeyPriority.HIGH) }
     }
-    val htmlContent = remember(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate, horizontalPadding, lineHeight, letterSpacing, wordSpacing) {
-        buildArticleHtml(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate, horizontalPadding, lineHeight, letterSpacing, wordSpacing)
+    val articleHtmlDocument = remember(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate, horizontalPadding, lineHeight, letterSpacing, wordSpacing) {
+        buildArticleHtmlDocument(context.cacheDir, content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate, horizontalPadding, lineHeight, letterSpacing, wordSpacing)
+    }
+    DisposableEffect(articleHtmlDocument) {
+        onDispose { articleHtmlDocument.file.delete() }
     }
 
     // Track whether initial pagination is complete so we can hide WebView until ready.
     // Use a STABLE (unkeyed) state so the JS bridge callback always writes to the same object.
-    // Reset it via SideEffect when htmlContent changes so the placeholder shows immediately.
+    // Reset it when the article document changes so the placeholder shows immediately.
     val isInitialPaginationReadyState = remember { mutableStateOf(false) }
     var isInitialPaginationReady by isInitialPaginationReadyState
-    // Track the last htmlContent to detect changes and reset pagination ready state.
-    val lastHtmlContentForReady = remember { mutableStateOf(htmlContent) }
-    if (lastHtmlContentForReady.value != htmlContent) {
-        lastHtmlContentForReady.value = htmlContent
+    // Track the last article document to detect changes and reset pagination ready state.
+    val lastHtmlKeyForReady = remember { mutableStateOf(articleHtmlDocument.cacheKey) }
+    if (lastHtmlKeyForReady.value != articleHtmlDocument.cacheKey) {
+        lastHtmlKeyForReady.value = articleHtmlDocument.cacheKey
         isInitialPaginationReady = false
         navController.onContentReset()
         currentPage = 0
@@ -255,7 +259,7 @@ fun EInkPaginatedContent(
 
     // Safety net: if JS never calls onInitialPaginationReady (WebView failure,
     // JS error, etc.), force the flag so the user can at least swipe away.
-    LaunchedEffect(htmlContent) {
+    LaunchedEffect(articleHtmlDocument.cacheKey) {
         delay(5000L)
         if (!isInitialPaginationReady) {
             Log.w("InkRead", "isInitialPaginationReady timeout — forcing true (totalPages=$totalPages)")
@@ -339,7 +343,14 @@ fun EInkPaginatedContent(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                         )
                         settings.javaScriptEnabled = true
-                        settings.allowFileAccess = false
+                        // Article HTML is streamed into a private cache file to avoid
+                        // holding a second giant HTML String in the app heap. Allow the
+                        // WebView to read that one file URL, but keep file-origin access
+                        // locked down so article JavaScript cannot read other local files.
+                        settings.allowFileAccess = true
+                        settings.allowContentAccess = false
+                        settings.allowFileAccessFromFileURLs = false
+                        settings.allowUniversalAccessFromFileURLs = false
                         setBackgroundColor(android.graphics.Color.WHITE)
                         isHorizontalScrollBarEnabled = false
                         isVerticalScrollBarEnabled = false
@@ -387,18 +398,18 @@ fun EInkPaginatedContent(
                             "Android",
                         )
                         webViewRef.value = this
-                        lastLoadedHtmlKey = htmlContent
-                        loadDataWithBaseURL(null, htmlContent, "text/html", "UTF-8", null)
+                        lastLoadedHtmlKey = articleHtmlDocument.cacheKey
+                        loadUrl(articleHtmlDocument.url)
                     }
                 },
                 update = { webView ->
                     // Reload content when html changes (style/content change) without
                     // destroying and recreating the entire WebView composable.
                     // Note: isInitialPaginationReady is already reset synchronously via
-                    // remember(htmlContent) — no need to reset it here.
-                    if (htmlContent != lastLoadedHtmlKey) {
-                        lastLoadedHtmlKey = htmlContent
-                        webView.loadDataWithBaseURL(null, htmlContent, "text/html", "UTF-8", null)
+                    // remember(articleHtmlDocument.cacheKey) — no need to reset it here.
+                    if (articleHtmlDocument.cacheKey != lastLoadedHtmlKey) {
+                        lastLoadedHtmlKey = articleHtmlDocument.cacheKey
+                        webView.loadUrl(articleHtmlDocument.url)
                     }
                 },
                 modifier = Modifier
@@ -629,7 +640,15 @@ private class EInkJsInterface(
     fun onInitialPaginationReady(pages: Int) = onInitialPaginationReady.invoke(pages)
 }
 
-private fun buildArticleHtml(
+private data class EInkArticleHtmlDocument(
+    val file: File,
+    val cacheKey: String,
+) {
+    val url: String = file.toURI().toString()
+}
+
+private fun buildArticleHtmlDocument(
+    cacheDir: File,
     content: String,
     fontSize: Int,
     englishFont: Int,
@@ -644,7 +663,75 @@ private fun buildArticleHtml(
     lineHeight: Float,
     letterSpacing: Float,
     wordSpacing: Float,
-): String {
+): EInkArticleHtmlDocument {
+    val outputDir = File(cacheDir, "eink-articles").apply { mkdirs() }
+    deleteStaleArticleHtmlFiles(outputDir)
+
+    val cacheKey = listOf(
+        content.length,
+        content.hashCode(),
+        fontSize,
+        englishFont,
+        chineseFont,
+        englishFontFilePath.orEmpty(),
+        chineseFontFilePath.orEmpty(),
+        title,
+        feedName,
+        author.orEmpty(),
+        publishedDate.time,
+        horizontalPadding,
+        lineHeight,
+        letterSpacing,
+        wordSpacing,
+    ).joinToString(separator = "|")
+    val outputFile = File.createTempFile("article-", ".html", outputDir)
+
+    outputFile.bufferedWriter(Charsets.UTF_8).use { writer ->
+        writeArticleHtml(
+            writer = writer,
+            content = content,
+            fontSize = fontSize,
+            englishFont = englishFont,
+            chineseFont = chineseFont,
+            englishFontFilePath = englishFontFilePath,
+            chineseFontFilePath = chineseFontFilePath,
+            title = title,
+            feedName = feedName,
+            author = author,
+            publishedDate = publishedDate,
+            horizontalPadding = horizontalPadding,
+            lineHeight = lineHeight,
+            letterSpacing = letterSpacing,
+            wordSpacing = wordSpacing,
+        )
+    }
+
+    return EInkArticleHtmlDocument(file = outputFile, cacheKey = cacheKey)
+}
+
+private fun deleteStaleArticleHtmlFiles(outputDir: File) {
+    val cutoff = System.currentTimeMillis() - 24L * 60L * 60L * 1000L
+    outputDir.listFiles { file -> file.isFile && file.extension == "html" && file.lastModified() < cutoff }
+        ?.forEach { file -> runCatching { file.delete() } }
+}
+
+private fun writeArticleHtml(
+    writer: Writer,
+    content: String,
+    fontSize: Int,
+    englishFont: Int,
+    chineseFont: Int,
+    englishFontFilePath: String?,
+    chineseFontFilePath: String?,
+    title: String,
+    feedName: String,
+    author: String?,
+    publishedDate: Date,
+    horizontalPadding: Int,
+    lineHeight: Float,
+    letterSpacing: Float,
+    wordSpacing: Float,
+) {
     val dateStr = SimpleDateFormat("MMM d, yyyy · HH:mm", Locale.getDefault()).format(publishedDate)
     val metaLine = buildString {
         append(feedName)
@@ -686,7 +773,7 @@ private fun buildArticleHtml(
         englishFamilyCss
     }
 
-    return """<!DOCTYPE html>
+    writer.write("""<!DOCTYPE html>
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
@@ -879,14 +966,21 @@ document.addEventListener('keydown', function(e) {
   <h1>$escapedTitle</h1>
   <p class="eink-meta">$escapedMeta</p>
 </div>
-${sanitizeHtml(content)}
+""")
+    appendSanitizedHtml(writer, content)
+    writer.write("""
 </body>
-</html>"""
+</html>""")
 }
 
 /**
- * HTML sanitization to strip script injection vectors before
- * loading content into the WebView with JavaScript enabled.
+ * HTML sanitization to strip script injection vectors before loading content
+ * into the WebView with JavaScript enabled.
+ *
+ * This writes directly into the article HTML file instead of returning another
+ * full-size String. Large RSS entries can already be tens of MB; making a
+ * sanitized copy and then interpolating it into a second HTML String can exceed
+ * Android's 256 MB heap on e-ink devices.
  *
  * Handles:
  * - `<script>` tags and their content (including unclosed tags)
@@ -894,10 +988,8 @@ ${sanitizeHtml(content)}
  * - Unquoted event handlers: `onclick=alert(1)`
  * - `javascript:` scheme including HTML-entity-encoded variants
  */
-private fun sanitizeHtml(html: String): String {
-    // First decode common HTML entities that could hide "javascript:" scheme
-    // e.g. java&#x73;cript: , java&#115;cript: , java&Tab;script:
-    val decoded = html
+internal fun appendSanitizedHtml(out: Appendable, html: String) {
+    var decoded = html
         .replace(Regex("&#x[0-9a-fA-F]+;"), { m ->
             val code = m.value.removePrefix("&#x").removeSuffix(";").toIntOrNull(16)
             if (code != null) code.toChar().toString() else m.value
@@ -907,7 +999,7 @@ private fun sanitizeHtml(html: String): String {
             if (code != null) code.toChar().toString() else m.value
         })
 
-    return decoded
+    decoded = decoded
         // Strip <script> tags and all content between them (including nested / unclosed)
         .replace(Regex("<script[\\s\\S]*?</script>", RegexOption.IGNORE_CASE), "")
         .replace(Regex("<script[^>]*/?>", RegexOption.IGNORE_CASE), "")
@@ -918,4 +1010,6 @@ private fun sanitizeHtml(html: String): String {
         .replace(Regex("\\bon\\w+\\s*=\\s*[^\"'\\s>]+", RegexOption.IGNORE_CASE), "")
         // Strip javascript: scheme (after entity decoding above)
         .replace(Regex("javascript\\s*:", RegexOption.IGNORE_CASE), "")
+
+    out.append(decoded)
 }
