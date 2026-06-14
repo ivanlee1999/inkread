@@ -6,6 +6,9 @@ import okhttp3.Request
 import org.jsoup.Jsoup
 import java.net.URL
 
+private const val MAX_ICON_HTML_BYTES = 512L * 1024L
+private const val MAX_ICON_BYTES = 512L * 1024L
+
 class BestIconFinder(private val client: OkHttpClient) {
 
     private val defaultFormats = listOf("apple-touch-icon", "svg", "png", "ico", "gif", "jpg")
@@ -39,8 +42,14 @@ class BestIconFinder(private val client: OkHttpClient) {
 
     private suspend fun fetchHtml(url: String): String {
         val request = Request.Builder().url(url).build()
-        val response = client.newCall(request).execute()
-        return response.body.string()
+        return client.newCall(request).execute().use { response ->
+            response.body.source().use {
+                it.readStringLimited(
+                    response.body.contentType()?.charset() ?: Charsets.UTF_8,
+                    maxBytes = MAX_ICON_HTML_BYTES,
+                )
+            }
+        }
     }
 
     private fun findIconLinks(baseUrl: String, html: String): List<String> {
@@ -79,22 +88,26 @@ class BestIconFinder(private val client: OkHttpClient) {
     private fun fetchIconDetails(url: String): Icon? {
         try {
             val request = Request.Builder().url(url).build()
-            val response = client.newCall(request).execute()
-            val body = response.body.bytes()
-                .takeIf { it.isNotEmpty() } ?: return null
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return null
 
-            val contentType = response.header("Content-Type") ?: ""
-            val format = when {
-                url.contains("apple-touch-icon") -> "apple-touch-icon"
-                contentType.contains("svg") -> "svg"
-                contentType.contains("png") -> "png"
-                contentType.contains("ico") -> "ico"
-                contentType.contains("gif") -> "gif"
-                contentType.contains("jpeg") || contentType.contains("jpg") -> "jpg"
-                else -> return null
+                val body = response.body.source().use {
+                    it.readByteArrayLimited(MAX_ICON_BYTES)
+                }.takeIf { it.isNotEmpty() } ?: return null
+
+                val contentType = response.header("Content-Type") ?: ""
+                val format = when {
+                    url.contains("apple-touch-icon") -> "apple-touch-icon"
+                    contentType.contains("svg") -> "svg"
+                    contentType.contains("png") -> "png"
+                    contentType.contains("ico") -> "ico"
+                    contentType.contains("gif") -> "gif"
+                    contentType.contains("jpeg") || contentType.contains("jpg") -> "jpg"
+                    else -> return null
+                }
+
+                return Icon(url, format, body.size)
             }
-
-            return Icon(url, format, body.size)
         } catch (e: Exception) {
             return null
         }

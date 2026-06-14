@@ -3,6 +3,8 @@ package me.ash.reader.infrastructure.rss
 import android.content.Context
 import kotlinx.coroutines.CoroutineDispatcher
 import okhttp3.OkHttpClient
+import okio.Buffer
+import okio.IOException
 import org.junit.Assert
 import org.junit.Before
 import org.junit.Test
@@ -86,5 +88,30 @@ class RssHelperTest {
             <enclosure url="$imageUrlString" type="image/jpeg" length="0"/>
         """
         Assert.assertEquals(imageUrlString, rssHelper.findThumbnail(case))
+    }
+
+    @Test
+    fun testReadStringLimitedWithinLimit() {
+        val source = Buffer().writeString("hello", Charsets.UTF_8)
+
+        Assert.assertEquals("hello", source.readStringLimited(Charsets.UTF_8, maxBytes = 5))
+    }
+
+    @Test
+    fun testReadStringLimitedThrowsWhenOverLimit() {
+        val source = Buffer().writeString("hello!", Charsets.UTF_8)
+
+        Assert.assertThrows(IOException::class.java) {
+            source.readStringLimited(Charsets.UTF_8, maxBytes = 5)
+        }
+    }
+
+    @Test
+    fun testReadByteArrayLimitedThrowsWhenOverLimit() {
+        val source = Buffer().write(ByteArray(6))
+
+        Assert.assertThrows(IOException::class.java) {
+            source.readByteArrayLimited(maxBytes = 5)
+        }
     }
 }

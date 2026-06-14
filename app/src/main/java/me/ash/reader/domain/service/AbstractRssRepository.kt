@@ -484,6 +484,6 @@ abstract class AbstractRssRepository(
         }
     }
 
-    suspend fun queryUnreadFullContentArticles() =
-        articleDao.queryUnreadFullContentArticles(accountService.getCurrentAccountId())
+    suspend fun queryUnreadFullContentArticles(limit: Int) =
+        articleDao.queryUnreadFullContentArticles(accountService.getCurrentAccountId(), limit)
 }

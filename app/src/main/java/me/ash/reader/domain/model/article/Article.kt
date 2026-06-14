@@ -54,3 +54,9 @@ data class Article(
     @Ignore
     var dateString: String? = null
 }
+
+data class ArticleFullContentRequest(
+    val id: String,
+    val title: String,
+    val link: String,
+)

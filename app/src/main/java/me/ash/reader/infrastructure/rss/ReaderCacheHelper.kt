@@ -10,6 +10,7 @@ import javax.inject.Inject
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.withContext
 import me.ash.reader.domain.model.article.Article
+import me.ash.reader.domain.model.article.ArticleFullContentRequest
 import me.ash.reader.domain.service.AccountService
 import me.ash.reader.infrastructure.di.IODispatcher
 
@@ -61,6 +62,16 @@ constructor(
     }
 
     private suspend fun fetchFullContentInternal(article: Article): Result<String> {
+        return fetchFullContentInternal(
+            ArticleFullContentRequest(
+                id = article.id,
+                title = article.title,
+                link = article.link,
+            )
+        )
+    }
+
+    private suspend fun fetchFullContentInternal(article: ArticleFullContentRequest): Result<String> {
         return withContext(ioDispatcher) {
             runCatching {
                 val fullContent = rssHelper.parseFullContent(article.link, article.title)
@@ -83,7 +94,7 @@ constructor(
         }
     }
 
-    suspend fun checkOrFetchFullContent(article: Article): Boolean {
+    suspend fun checkOrFetchFullContent(article: ArticleFullContentRequest): Boolean {
         return withContext(ioDispatcher) {
             val file = currentCacheDir.resolve(getFileNameFor(article.id))
             try {

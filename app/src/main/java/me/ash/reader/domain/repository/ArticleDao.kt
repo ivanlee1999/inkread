@@ -12,6 +12,7 @@ import androidx.room.Transaction
 import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 import me.ash.reader.domain.model.article.Article
+import me.ash.reader.domain.model.article.ArticleFullContentRequest
 import me.ash.reader.domain.model.article.ArticleMeta
 import me.ash.reader.domain.model.article.ArticleWithFeed
 import me.ash.reader.domain.model.feed.Feed
@@ -663,17 +664,20 @@ interface ArticleDao {
 
     @Query(
         """
-        SELECT a.*
+        SELECT a.id, a.title, a.link
         FROM article AS a
         LEFT JOIN feed AS f ON a.feedId = f.id
         WHERE f.accountId = :accountId
         AND f.isFullContent = 1
         AND a.isUnread = 1
+        ORDER BY a.date DESC
+        LIMIT :limit
         """
     )
     suspend fun queryUnreadFullContentArticles(
         accountId: Int,
-    ): List<Article>
+        limit: Int,
+    ): List<ArticleFullContentRequest>
 
     @Transaction
     @Query(

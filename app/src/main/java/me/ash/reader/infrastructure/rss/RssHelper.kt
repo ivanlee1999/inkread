@@ -29,12 +29,17 @@ import me.ash.reader.ui.ext.spacerDollar
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.executeAsync
-import okhttp3.internal.commonIsSuccessful
 import okio.IOException
+import okio.Buffer
+import okio.BufferedSource
 import org.jsoup.Jsoup
 
 val enclosureRegex = """<enclosure\s+url="([^"]+)"\s+type=".*"\s*/>""".toRegex()
 val imgRegex = """img.*?src=(["'])((?!data).*?)\1""".toRegex(RegexOption.DOT_MATCHES_ALL)
+
+private const val FULL_CONTENT_MAX_BYTES = 2L * 1024L * 1024L
+private const val FULL_CONTENT_CHARSET_SNIFF_BYTES = 64L * 1024L
+private const val READ_BUFFER_BYTES = 8L * 1024L
 
 /** Some operations on RSS. */
 class RssHelper
@@ -48,20 +53,21 @@ constructor(
     @Throws(Exception::class)
     suspend fun searchFeed(feedLink: String): SyndFeed {
         return withContext(ioDispatcher) {
-            val response = response(okHttpClient, feedLink)
-            val contentType = response.header("Content-Type")
-            val httpContentType =
-                contentType?.let {
-                    if (it.contains("charset=", ignoreCase = true)) it
-                    else "$it; charset=UTF-8"
-                } ?: "text/xml; charset=UTF-8"
+            response(okHttpClient, feedLink).use { response ->
+                val contentType = response.header("Content-Type")
+                val httpContentType =
+                    contentType?.let {
+                        if (it.contains("charset=", ignoreCase = true)) it
+                        else "$it; charset=UTF-8"
+                    } ?: "text/xml; charset=UTF-8"
 
 
-            response.body.byteStream().use { inputStream ->
+                response.body.byteStream().use { inputStream ->
                     SyndFeedInput().build(XmlReader(inputStream, httpContentType)).also {
-                    it.icon = SyndImageImpl()
-                    it.icon.link = queryRssIconLink(feedLink)
-                    it.icon.url = it.icon.link
+                        it.icon = SyndImageImpl()
+                        it.icon.link = queryRssIconLink(feedLink)
+                        it.icon.url = it.icon.link
+                    }
                 }
             }
         }
@@ -70,40 +76,21 @@ constructor(
     @Throws(Exception::class)
     suspend fun parseFullContent(link: String, title: String): String {
         return withContext(ioDispatcher) {
-            val response = response(okHttpClient, link)
-            if (response.commonIsSuccessful) {
+            response(okHttpClient, link).use { response ->
+                if (!response.isSuccessful) throw IOException(response.message)
+
                 val responseBody = response.body
                 val charset = responseBody.contentType()?.charset()
                 val content =
                     responseBody.source().use {
                         if (charset != null) {
-                            return@use it.readString(charset)
+                            return@use it.readStringLimited(charset)
                         }
-
-                        val peekContent = it.peek().readString(Charsets.UTF_8)
 
                         val charsetFromMeta =
-                            runCatching {
-                                    val element =
-                                        Jsoup.parse(peekContent, link)
-                                            .selectFirst("meta[http-equiv=content-type]")
-                                    return@runCatching if (element == null) Charsets.UTF_8
-                                    else {
-                                        element
-                                            .attr("content")
-                                            .substringAfter("charset=")
-                                            .removeSurrounding("\"")
-                                            .lowercase()
-                                            .let { Charset.forName(it) }
-                                    }
-                                }
-                                .getOrDefault(Charsets.UTF_8)
+                            it.peekCharsetFromMeta(link)
 
-                        if (charsetFromMeta == Charsets.UTF_8) {
-                            peekContent
-                        } else {
-                            it.readString(charsetFromMeta)
-                        }
+                        it.readStringLimited(charsetFromMeta)
                     }
 
                 val articleContent = Readability.parseToElement(content, link)
@@ -114,7 +101,7 @@ constructor(
                     }
                     articleContent.toString()
                 } ?: throw IOException("articleContent is null")
-            } else throw IOException(response.message)
+            }
         }
     }
 
@@ -125,24 +112,25 @@ constructor(
     ): List<Article> =
         try {
             val accountId = context.currentAccountId
-            val response = response(okHttpClient, feed.url)
-            val contentType = response.header("Content-Type")
+            response(okHttpClient, feed.url).use { response ->
+                val contentType = response.header("Content-Type")
 
-            val httpContentType =
-                contentType?.let {
-                    if (it.contains("charset=", ignoreCase = true)) it
-                    else "$it; charset=UTF-8"
-                } ?: "text/xml; charset=UTF-8"
+                val httpContentType =
+                    contentType?.let {
+                        if (it.contains("charset=", ignoreCase = true)) it
+                        else "$it; charset=UTF-8"
+                    } ?: "text/xml; charset=UTF-8"
 
-            response.body.byteStream().use { inputStream ->
-                SyndFeedInput()
-                    .apply { isPreserveWireFeed = true }
-                    .build(XmlReader(inputStream, httpContentType))
-                    .entries
-                    .asSequence()
-                    .takeWhile { latestLink == null || latestLink != it.link }
-                    .map { buildArticleFromSyndEntry(feed, accountId, it, preDate) }
-                    .toList()
+                response.body.byteStream().use { inputStream ->
+                    SyndFeedInput()
+                        .apply { isPreserveWireFeed = true }
+                        .build(XmlReader(inputStream, httpContentType))
+                        .entries
+                        .asSequence()
+                        .takeWhile { latestLink == null || latestLink != it.link }
+                        .map { buildArticleFromSyndEntry(feed, accountId, it, preDate) }
+                        .toList()
+                }
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -252,4 +240,74 @@ constructor(
 
     private suspend fun response(client: OkHttpClient, url: String): okhttp3.Response =
         client.newCall(Request.Builder().url(url).build()).executeAsync()
+}
+
+internal fun BufferedSource.readStringLimited(
+    charset: Charset,
+    maxBytes: Long = FULL_CONTENT_MAX_BYTES,
+): String {
+    val buffer = Buffer()
+    var readBytes = 0L
+
+    while (true) {
+        val bytesToRead = minOf(READ_BUFFER_BYTES, maxBytes + 1L - readBytes)
+        val bytesRead = read(buffer, bytesToRead)
+        if (bytesRead == -1L) break
+
+        readBytes += bytesRead
+        if (readBytes > maxBytes) {
+            throw IOException("Response body exceeds ${maxBytes / 1024L} KiB")
+        }
+    }
+
+    return buffer.readString(charset)
+}
+
+internal fun BufferedSource.readByteArrayLimited(maxBytes: Long): ByteArray {
+    val buffer = Buffer()
+    var readBytes = 0L
+
+    while (true) {
+        val bytesToRead = minOf(READ_BUFFER_BYTES, maxBytes + 1L - readBytes)
+        val bytesRead = read(buffer, bytesToRead)
+        if (bytesRead == -1L) break
+
+        readBytes += bytesRead
+        if (readBytes > maxBytes) {
+            throw IOException("Response body exceeds ${maxBytes / 1024L} KiB")
+        }
+    }
+
+    return buffer.readByteArray()
+}
+
+private fun BufferedSource.peekCharsetFromMeta(baseUrl: String): Charset {
+    val peek = peek()
+    val buffer = Buffer()
+
+    while (buffer.size < FULL_CONTENT_CHARSET_SNIFF_BYTES) {
+        val bytesRead = peek.read(buffer, FULL_CONTENT_CHARSET_SNIFF_BYTES - buffer.size)
+        if (bytesRead == -1L) break
+    }
+
+    val peekContent = buffer.readString(Charsets.UTF_8)
+
+    return runCatching {
+        val element =
+            Jsoup.parse(peekContent, baseUrl)
+                .selectFirst("meta[http-equiv=content-type], meta[charset]")
+        when {
+            element == null -> Charsets.UTF_8
+            element.hasAttr("charset") -> Charset.forName(element.attr("charset"))
+            else ->
+                element
+                    .attr("content")
+                    .substringAfter("charset=")
+                    .substringBefore(";")
+                    .removeSurrounding("\"")
+                    .trim()
+                    .lowercase()
+                    .let { Charset.forName(it) }
+        }
+    }.getOrDefault(Charsets.UTF_8)
 }
