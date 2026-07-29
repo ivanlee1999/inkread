@@ -199,6 +199,7 @@
     <string name="tips_article_list_tonal_elevation">Tonal elevation for the article list is only available in the light theme</string>
     <string name="tips_group_list_tonal_elevation">Tonal elevation for the group list is only available in the light theme</string>
     <string name="share">Share</string>
+    <string name="open_in_browser">Open in browser</string>
     <string name="touch_to_play_video">Tap to play a video</string>
     <string name="text">Text</string>
     <string name="font_size">Font size</string>

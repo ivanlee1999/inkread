@@ -51,6 +51,7 @@ import me.ash.reader.infrastructure.preference.LocalPullToSwitchArticle
 import me.ash.reader.infrastructure.preference.LocalReadingAutoHideToolbar
 import me.ash.reader.infrastructure.preference.LocalReadingBoldCharacters
 import me.ash.reader.infrastructure.preference.LocalReadingTextLineHeight
+import me.ash.reader.infrastructure.preference.LocalSharedContent
 import me.ash.reader.infrastructure.preference.not
 import me.ash.reader.ui.ext.collectAsStateValue
 import me.ash.reader.ui.ext.openURL
@@ -79,6 +80,7 @@ fun ReadingPage(
     val openLink = LocalOpenLink.current
     val openLinkSpecificBrowser = LocalOpenLinkSpecificBrowser.current
     val isPullToSwitchArticleEnabled = LocalPullToSwitchArticle.current.value
+    val sharedContent = LocalSharedContent.current
     val readingUiState = viewModel.readingUiState.collectAsStateValue()
     val readerState = viewModel.readerStateStateFlow.collectAsStateValue()
     val boldCharacters = LocalReadingBoldCharacters.current
@@ -129,6 +131,7 @@ fun ReadingPage(
                 if (readerState.articleId != null) {
                     if (isEInkMode) {
                         // E-Ink paginated content reader
+                        val einkArticleId: String = readerState.articleId
                         if (readerState.content is ReaderState.Loading) {
                             // Show plain white placeholder while content is still loading
                             Box(
@@ -152,6 +155,7 @@ fun ReadingPage(
                         ) {
                             EInkPaginatedContent(
                                 contentPadding = paddings,
+                                articleId = einkArticleId,
                                 content = readerState.content.text ?: "",
                                 feedName = readerState.feedName,
                                 title = readerState.title.orEmpty(),
@@ -180,6 +184,66 @@ fun ReadingPage(
                                 onNavigateToStylePage = onNavigateToStylePage,
                                 currentArticleIndex = readerState.articleOrdinal,
                                 totalArticleCount = readerState.totalArticleCount,
+                                isUnread = readingUiState.isUnread,
+                                isStarred = readingUiState.isStarred,
+                                isFullContent =
+                                    readerState.content is ReaderState.FullContent ||
+                                        readerState.content is ReaderState.Error,
+                                onToggleUnread = { viewModel.updateReadStatus(!readingUiState.isUnread) },
+                                onToggleStarred = { viewModel.updateStarredStatus(!readingUiState.isStarred) },
+                                onToggleFullContent = {
+                                    val isFullContent =
+                                        readerState.content is ReaderState.FullContent ||
+                                            readerState.content is ReaderState.Error
+                                    if (isFullContent) viewModel.renderDescriptionContent()
+                                    else viewModel.renderFullContent()
+                                },
+                                onShare = readerState.link?.let { articleLink ->
+                                    {
+                                        sharedContent.share(
+                                            context,
+                                            readerState.title,
+                                            articleLink,
+                                        )
+                                    }
+                                },
+                                onOpenInBrowser = readerState.link?.let { articleLink ->
+                                    {
+                                        context.openURL(
+                                            articleLink,
+                                            openLink,
+                                            openLinkSpecificBrowser,
+                                        )
+                                    }
+                                },
+                                ttsButton = {
+                                    TtsButton(
+                                        onClick = {
+                                            when (it) {
+                                                TextToSpeechManager.State.Error -> {
+                                                    context.showToast("TextToSpeech initialization failed")
+                                                }
+
+                                                TextToSpeechManager.State.Idle -> {
+                                                    viewModel.textToSpeechManager.readHtml(
+                                                        readerState.content.text ?: ""
+                                                    )
+                                                }
+
+                                                is TextToSpeechManager.State.Reading -> {
+                                                    viewModel.textToSpeechManager.stop()
+                                                }
+
+                                                TextToSpeechManager.State.Preparing -> {
+                                                    /* no-op */
+                                                }
+                                            }
+                                        },
+                                        state =
+                                            viewModel.textToSpeechManager.stateFlow
+                                                .collectAsStateValue(),
+                                    )
+                                },
                             )
                         }
                         }

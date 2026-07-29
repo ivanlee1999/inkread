@@ -10,16 +10,11 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.Text
@@ -64,14 +59,6 @@ import me.ash.reader.infrastructure.preference.LocalReadingTextHorizontalPadding
 import me.ash.reader.infrastructure.preference.LocalReadingTextLetterSpacing
 import me.ash.reader.infrastructure.preference.LocalReadingTextLineHeight
 import me.ash.reader.ui.page.home.flow.EInkPaginationBar
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.LinearProgressIndicator
@@ -97,6 +84,7 @@ private object FontBase64Cache {
 @Composable
 fun EInkPaginatedContent(
     modifier: Modifier = Modifier,
+    articleId: String,
     content: String,
     feedName: String,
     title: String,
@@ -112,6 +100,15 @@ fun EInkPaginatedContent(
     onNavigateToStylePage: (() -> Unit)? = null,
     currentArticleIndex: Int? = null,
     totalArticleCount: Int? = null,
+    isUnread: Boolean = false,
+    isStarred: Boolean = false,
+    isFullContent: Boolean = false,
+    onToggleUnread: (() -> Unit)? = null,
+    onToggleStarred: (() -> Unit)? = null,
+    onToggleFullContent: (() -> Unit)? = null,
+    onShare: (() -> Unit)? = null,
+    onOpenInBrowser: (() -> Unit)? = null,
+    ttsButton: (@Composable () -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -151,13 +148,14 @@ fun EInkPaginatedContent(
     var dragVisualTarget by remember { mutableFloatStateOf(0f) }
     val density = LocalDensity.current
     val maxDragPx = remember(density) { with(density) { 80.dp.toPx() } }
+    // Distance that switches articles. Expressed in dp so it feels the same on a
+    // 6" Palma and a 10.3" Note Air rather than scaling with pixel density.
+    val articleSwitchThresholdPx = remember(density) { with(density) { 56.dp.toPx() } }
 
-    // Bottom bar auto-hide state
+    // Bottom bar stays visible until the user taps the bottom strip again.
+    // No auto-hide timer — the user controls visibility explicitly.
     var bottomBarVisible by rememberSaveable { mutableStateOf(false) }
 
-    // Auto-hide the bottom bar after 3 seconds of no interaction
-    // Bottom bar stays visible until user taps the middle area to dismiss.
-    // No auto-hide timer — user controls visibility explicitly.
     val haptic = LocalHapticFeedback.current
     // Use direct state (not animated) — e-ink displays can't show smooth animation
     // and animateFloatAsState can leave stale offsets on e-ink refresh.
@@ -165,6 +163,9 @@ fun EInkPaginatedContent(
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
     val currentOnNextArticle by rememberUpdatedState(onNextArticle)
     val currentOnPrevArticle by rememberUpdatedState(onPrevArticle)
+    val currentOnLinkClick by rememberUpdatedState(onLinkClick)
+    val currentOnImageClick by rememberUpdatedState(onImageClick)
+    val currentOnNavigateToStylePage by rememberUpdatedState(onNavigateToStylePage)
 
     // Compose state wrappers that the navigation controller drives.
     var currentPage by rememberSaveable { mutableIntStateOf(0) }
@@ -212,7 +213,19 @@ fun EInkPaginatedContent(
             },
             hasNextArticle = { currentOnNextArticle != null },
             hasPrevArticle = { currentOnPrevArticle != null },
-        )
+        ).also { controller ->
+            // Resume where this article was last left off, on first composition.
+            EInkReadingPositionStore.get(articleId)?.let(controller::restoreInitialPosition)
+        }
+    }
+
+    // Persist the reading position whenever it moves. Guarded on totalPages so
+    // the transient zeroed state during an article switch never overwrites a
+    // real position with 0.
+    LaunchedEffect(articleId, currentPage, totalPages) {
+        if (totalPages > 0) {
+            EInkReadingPositionStore.save(articleId, currentPage.toFloat() / totalPages)
+        }
     }
 
     // Clean up WebView when leaving composition to prevent memory leaks
@@ -255,6 +268,12 @@ fun EInkPaginatedContent(
         lastHtmlKeyForReady.value = articleHtmlDocument.cacheKey
         isInitialPaginationReady = false
         navController.onContentReset()
+        // Restore the saved position for whatever is being paginated now. This
+        // covers both returning to an article and repaginating the current one
+        // after a font size / full-content change. onContentReset() has already
+        // recorded any explicit request (e.g. open-at-end when paging
+        // backwards), which restoreInitialPosition deliberately won't override.
+        EInkReadingPositionStore.get(articleId)?.let(navController::restoreInitialPosition)
         currentPage = 0
         totalPages = 0
     }
@@ -286,6 +305,53 @@ fun EInkPaginatedContent(
         // Sync Compose state from controller
         currentPage = navController.currentPage
         totalPages = navController.totalPages
+    }
+
+    /**
+     * Resolve a tap in the content area. Zones are resolved here rather than by
+     * stacking invisible clickable overlays, so exactly one handler decides what
+     * a tap means and the WebView hit-test result can veto a page turn.
+     */
+    fun handleTap(x: Float, y: Float, width: Float, height: Float) {
+        if (width <= 0f || height <= 0f) return
+
+        val turnPage = { if (x < width * PREV_PAGE_TAP_FRACTION) prevPage() else nextPage() }
+
+        // Bottom strip toggles the reader controls.
+        if (y > height * (1f - CONTROL_TAP_ZONE_FRACTION)) {
+            bottomBarVisible = !bottomBarVisible
+            return
+        }
+        // Upper centre opens reading style settings.
+        if (currentOnNavigateToStylePage != null &&
+            y < height * CONTROL_TAP_ZONE_FRACTION &&
+            x > width * 0.2f && x < width * 0.8f
+        ) {
+            currentOnNavigateToStylePage?.invoke()
+            return
+        }
+
+        val webView = webViewRef.value
+        val onLink = currentOnLinkClick
+        val onImage = currentOnImageClick
+        if (webView == null || !isInitialPaginationReady || (onLink == null && onImage == null)) {
+            turnPage()
+            return
+        }
+
+        // Ask the WebView what is under the finger. CSS pixels, so undo the
+        // device density; the viewport is locked to initial-scale=1.
+        val cssX = x / density.density
+        val cssY = y / density.density
+        webView.evaluateJavascript("hitTest($cssX,$cssY)") { rawResult ->
+            val hit = parseHitTestResult(rawResult)
+            when {
+                hit == null -> turnPage()
+                hit.type == HIT_LINK && onLink != null -> onLink(hit.url)
+                hit.type == HIT_IMAGE && onImage != null -> onImage(hit.url, hit.alt)
+                else -> turnPage()
+            }
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -402,6 +468,13 @@ fun EInkPaginatedContent(
                                         currentPage = navController.currentPage
                                     }
                                 },
+                                onRepaginated = { pages ->
+                                    Handler(Looper.getMainLooper()).post {
+                                        navController.onRepaginated(pages)
+                                        totalPages = navController.totalPages
+                                        currentPage = navController.currentPage
+                                    }
+                                },
                             ),
                             "Android",
                         )
@@ -428,24 +501,26 @@ fun EInkPaginatedContent(
                     },
             )
 
-            Row(
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .pointerInput(Unit) {
-                        // Use awaitEachGesture so each gesture starts fresh.
-                        // Only consume events after touch slop is crossed as a horizontal drag —
-                        // this lets child clickable tap zones still receive short taps for page turning.
+                        // One handler owns both taps and drags. Taps are only
+                        // recognised when the finger lifts without crossing touch
+                        // slop, so a page turn can never fire mid-swipe.
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
-                            // Do NOT consume the down yet — let child clickables see it too.
                             var totalDragX = 0f
                             var totalDragY = 0f
                             var isDragConfirmed = false
-                            var pointer = down
+                            var didLift = false
                             while (true) {
                                 val event = awaitPointerEvent()
                                 val dragChange = event.changes.firstOrNull { it.id == down.id } ?: break
-                                if (!dragChange.pressed) break // finger lifted
+                                if (!dragChange.pressed) {
+                                    didLift = true
+                                    break
+                                }
                                 val delta = dragChange.positionChange()
                                 totalDragX += delta.x
                                 totalDragY += delta.y
@@ -456,7 +531,7 @@ fun EInkPaginatedContent(
                                         // Confirmed horizontal drag — now start consuming
                                         isDragConfirmed = true
                                     } else if (distY > viewConfiguration.touchSlop && distY > distX * 2f) {
-                                        // Clearly vertical intent — bail out, let child handle it
+                                        // Clearly vertical intent — bail out
                                         break
                                     }
                                 }
@@ -466,115 +541,64 @@ fun EInkPaginatedContent(
                                     dragVisualTarget = totalDragX.coerceIn(-maxDragPx, maxDragPx)
                                 }
                             }
-                            // Gesture ended — switch article if pagination is ready or
-                            // page count is known (totalPages > 0 means JS ran successfully)
-                            if (isDragConfirmed && (isInitialPaginationReady || totalPages > 0)) {
-                                if (totalDragX < -100f && currentOnNextArticle != null) {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    currentOnNextArticle?.invoke()
-                                } else if (totalDragX > 100f && currentOnPrevArticle != null) {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    currentOnPrevArticle?.invoke()
+                            if (isDragConfirmed) {
+                                // Gesture ended — switch article if pagination is ready or
+                                // page count is known (totalPages > 0 means JS ran successfully)
+                                if (isInitialPaginationReady || totalPages > 0) {
+                                    if (totalDragX < -articleSwitchThresholdPx && currentOnNextArticle != null) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        currentOnNextArticle?.invoke()
+                                    } else if (totalDragX > articleSwitchThresholdPx && currentOnPrevArticle != null) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        currentOnPrevArticle?.invoke()
+                                    }
                                 }
+                            } else if (didLift &&
+                                kotlin.math.abs(totalDragX) <= viewConfiguration.touchSlop &&
+                                kotlin.math.abs(totalDragY) <= viewConfiguration.touchSlop
+                            ) {
+                                handleTap(
+                                    down.position.x,
+                                    down.position.y,
+                                    size.width.toFloat(),
+                                    size.height.toFloat(),
+                                )
                             }
                             horizontalDrag = 0f
                             dragVisualTarget = 0f
                         }
                     },
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .weight(0.4f)
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                        ) { prevPage() },
-                    contentAlignment = Alignment.Center,
-                ) {}
-                Box(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .weight(0.6f)
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                        ) { nextPage() },
-                    contentAlignment = Alignment.Center,
-                ) {}
-            }
+            )
 
-            // Left arrow overlay - page turn feedback
-            androidx.compose.animation.AnimatedVisibility(
-                visible = showLeftArrow,
-                enter = fadeIn(animationSpec = tween(200)),
-                exit = fadeOut(animationSpec = tween(300)),
-                modifier = Modifier.align(Alignment.CenterStart).padding(start = 16.dp),
-            ) {
+            // Page turn / boundary feedback. Shown and hidden instantly: a fade
+            // on e-ink is several partial refreshes that smear rather than blend.
+            if (showLeftArrow) {
                 Text(
                     text = "←",
                     fontSize = 48.sp,
-                    color = Color.Black.copy(alpha = 0.5f),
+                    color = Color.Black,
+                    modifier = Modifier.align(Alignment.CenterStart).padding(start = 16.dp),
                 )
             }
 
-            // Right arrow overlay - page turn feedback
-            androidx.compose.animation.AnimatedVisibility(
-                visible = showRightArrow,
-                enter = fadeIn(animationSpec = tween(200)),
-                exit = fadeOut(animationSpec = tween(300)),
-                modifier = Modifier.align(Alignment.CenterEnd).padding(end = 16.dp),
-            ) {
+            if (showRightArrow) {
                 Text(
                     text = "→",
                     fontSize = 48.sp,
-                    color = Color.Black.copy(alpha = 0.5f),
+                    color = Color.Black,
+                    modifier = Modifier.align(Alignment.CenterEnd).padding(end = 16.dp),
                 )
             }
 
-            // Boundary indicator - no more articles
-            androidx.compose.animation.AnimatedVisibility(
-                visible = showBoundaryText != null,
-                enter = fadeIn(animationSpec = tween(200)),
-                exit = fadeOut(animationSpec = tween(300)),
-                modifier = Modifier.align(Alignment.Center),
-            ) {
+            showBoundaryText?.let { boundaryText ->
                 Text(
-                    text = showBoundaryText ?: "",
+                    text = boundaryText,
                     fontSize = 16.sp,
-                    color = Color.Black.copy(alpha = 0.4f),
+                    color = Color.Black,
+                    modifier = Modifier.align(Alignment.Center),
                 )
             }
 
-            // Tap detector on upper center 15% of content area to open reading style settings
-            if (onNavigateToStylePage != null) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth(0.6f)
-                        .fillMaxHeight(0.15f)
-                        .align(Alignment.TopCenter)
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                        ) {
-                            onNavigateToStylePage.invoke()
-                        },
-                )
-            }
-
-            // Tap detector on bottom 15% of content area to toggle bottom bar
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.15f)
-                    .align(Alignment.BottomCenter)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                    ) {
-                        bottomBarVisible = !bottomBarVisible
-                    },
-            )
         }
 
         val progress = if (totalPages > 0) ((currentPage + 1) * 100 / totalPages) else 0
@@ -589,28 +613,31 @@ fun EInkPaginatedContent(
             )
         }
 
-        // Full bottom bar — hidden by default, shown on tap, auto-hides after 3s
-        // Also hidden when pagination is not yet ready (totalPages == 0)
-        AnimatedVisibility(
-            visible = bottomBarVisible && totalPages > 0,
-            enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(animationSpec = tween(200)),
-            exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(animationSpec = tween(200)),
-        ) {
+        // Reader controls — hidden by default, toggled by tapping the bottom
+        // strip. Shown without animation; a slide-in costs several e-ink
+        // refreshes and leaves ghosting behind the bar.
+        if (bottomBarVisible && totalPages > 0) {
+            if (onToggleUnread != null && onToggleStarred != null && onToggleFullContent != null) {
+                EInkReaderActionsBar(
+                    isUnread = isUnread,
+                    isStarred = isStarred,
+                    isFullContent = isFullContent,
+                    onToggleUnread = onToggleUnread,
+                    onToggleStarred = onToggleStarred,
+                    onToggleFullContent = onToggleFullContent,
+                    onShare = onShare,
+                    onOpenInBrowser = onOpenInBrowser,
+                    ttsButton = ttsButton,
+                )
+            }
             EInkPaginationBar(
                 currentPage = currentPage + 1,
                 totalPages = totalPages,
-                onPrev = {
-                    prevPage()
-                    bottomBarVisible = true // Reset auto-hide timer on interaction
-                },
-                onNext = {
-                    nextPage()
-                    bottomBarVisible = true // Reset auto-hide timer on interaction
-                },
+                onPrev = { prevPage() },
+                onNext = { nextPage() },
                 canDecreaseFontSize = fontSizeIndex > 0,
                 canIncreaseFontSize = fontSizeIndex < EInkFontSizePreference.values.lastIndex,
                 onDecreaseFontSize = {
-                    bottomBarVisible = true // Reset auto-hide timer
                     if (fontSizeIndex > 0) {
                         EInkFontSizePreference.put(
                             context, coroutineScope,
@@ -619,7 +646,6 @@ fun EInkPaginatedContent(
                     }
                 },
                 onIncreaseFontSize = {
-                    bottomBarVisible = true // Reset auto-hide timer
                     if (fontSizeIndex < EInkFontSizePreference.values.lastIndex) {
                         EInkFontSizePreference.put(
                             context, coroutineScope,
@@ -637,22 +663,32 @@ fun EInkPaginatedContent(
     }
 }
 
+/** Fraction of the content width, from the left edge, that pages backwards. */
+private const val PREV_PAGE_TAP_FRACTION = 0.4f
+
+/** Height fraction of the top/bottom strips reserved for reader controls. */
+private const val CONTROL_TAP_ZONE_FRACTION = 0.15f
+
 private class EInkJsInterface(
     private val onTotalPages: (Int) -> Unit,
     private val onInitialPaginationReady: (Int) -> Unit,
+    private val onRepaginated: (Int) -> Unit,
 ) {
     @JavascriptInterface
     fun onTotalPages(pages: Int) = onTotalPages.invoke(pages)
 
     @JavascriptInterface
     fun onInitialPaginationReady(pages: Int) = onInitialPaginationReady.invoke(pages)
+
+    @JavascriptInterface
+    fun onRepaginated(pages: Int) = onRepaginated.invoke(pages)
 }
 
 private data class EInkArticleHtmlDocument(
     val file: File,
     val cacheKey: String,
 ) {
-    val url: String = "https://inkread.local/eink/${file.name}"
+    val url: String = "${EINK_DOCUMENT_ORIGIN}eink/${file.name}"
 }
 
 private fun buildArticleHtmlDocument(
@@ -879,12 +915,12 @@ iframe, video, embed, object {
 </style>
 <script>
 var _vw = 0, _pageStride = 0, _totalPages = 1, _didFinishInitialPagination = false;
-function recountPages() {
+var _lastLayoutWidth = 0, _lastLayoutHeight = 0, _resizeTimer = null;
+function computePages() {
     try {
         var sw = document.body.scrollWidth;
         if (!sw || !_pageStride || _pageStride <= 0 || !isFinite(sw) || !isFinite(_pageStride)) {
             _totalPages = 1;
-            Android.onTotalPages(_totalPages);
             return;
         }
         var n = Math.max(1, Math.round(sw / _pageStride));
@@ -898,11 +934,13 @@ function recountPages() {
             }
         }
         _totalPages = Math.max(1, n);
-        Android.onTotalPages(_totalPages);
     } catch (e) {
         _totalPages = 1;
-        try { Android.onTotalPages(_totalPages); } catch (e2) {}
     }
+}
+function recountPages() {
+    computePages();
+    try { Android.onTotalPages(_totalPages); } catch (e) {}
 }
 function goToPage(n) {
     // Clamp to valid range
@@ -910,20 +948,25 @@ function goToPage(n) {
     if (n >= _totalPages) n = _totalPages - 1;
     document.body.style.transform = 'translateX(-' + (n * _pageStride) + 'px)';
 }
+function applyLayout() {
+    _vw = window.innerWidth;
+    var vh = window.innerHeight;
+    if (!_vw || _vw <= 0) _vw = document.documentElement.clientWidth || 360;
+    if (!vh || vh <= 0) vh = document.documentElement.clientHeight || 640;
+    _lastLayoutWidth = _vw;
+    _lastLayoutHeight = vh;
+    _pageStride = _vw;
+    document.body.style.height = vh + 'px';
+    var padding = ${horizontalPadding};
+    document.body.style.columnGap = (padding * 2) + 'px';
+    document.body.style.columnWidth = (_pageStride - padding * 2) + 'px';
+    computePages();
+}
 function finishInitialPagination() {
     if (_didFinishInitialPagination) return;
     _didFinishInitialPagination = true;
     try {
-        _vw = window.innerWidth;
-        var vh = window.innerHeight;
-        if (!_vw || _vw <= 0) _vw = document.documentElement.clientWidth || 360;
-        if (!vh || vh <= 0) vh = document.documentElement.clientHeight || 640;
-        _pageStride = _vw;
-        document.body.style.height = vh + 'px';
-        var padding = ${horizontalPadding};
-        document.body.style.columnGap = (padding * 2) + 'px';
-        document.body.style.columnWidth = (_pageStride - padding * 2) + 'px';
-        recountPages();
+        applyLayout();
         goToPage(0);
         document.body.style.visibility = 'visible';
     } catch (e) {
@@ -947,6 +990,46 @@ function finishInitialPagination() {
         });
     } catch (e) {}
 }
+// Re-paginate when the WebView is re-laid-out: rotation, split screen, or a
+// system bar appearing. The stride captured at load time is stale afterwards,
+// which used to leave page turns jumping to the wrong offsets. Kotlin owns
+// restoring the reading position, so this only reports the new page count.
+function handleResize() {
+    if (!_didFinishInitialPagination) return;
+    var w = window.innerWidth || document.documentElement.clientWidth || 0;
+    var h = window.innerHeight || document.documentElement.clientHeight || 0;
+    if (w === _lastLayoutWidth && h === _lastLayoutHeight) return;
+    try {
+        applyLayout();
+        Android.onRepaginated(_totalPages);
+    } catch (e) {}
+}
+window.addEventListener('resize', function() {
+    if (_resizeTimer) clearTimeout(_resizeTimer);
+    _resizeTimer = setTimeout(handleResize, 150);
+});
+// Report what sits under a tap so Kotlin can open a link or an image instead
+// of turning the page. Returns 'type|url|alt' with the url and alt percent
+// encoded, or '' for a miss.
+function hitTest(x, y) {
+    try {
+        var el = document.elementFromPoint(x, y);
+        var depth = 0;
+        while (el && el !== document.body && depth < 12) {
+            var tag = el.tagName ? el.tagName.toLowerCase() : '';
+            if (tag === 'img' && el.src) {
+                return 'image|' + encodeURIComponent(el.src) +
+                    '|' + encodeURIComponent(el.getAttribute('alt') || '');
+            }
+            if (tag === 'a' && el.href) {
+                return 'link|' + encodeURIComponent(el.href) + '|';
+            }
+            el = el.parentElement;
+            depth++;
+        }
+    } catch (e) {}
+    return '';
+}
 function scheduleInitialPagination() {
     window.requestAnimationFrame(function() {
         finishInitialPagination();
@@ -963,10 +1046,10 @@ document.addEventListener('keydown', function(e) {
         e.stopPropagation();
     }
 });
-// Note: Image and link tap-to-open is intentionally disabled in E-Ink mode.
-// The full-screen overlay captures all taps for page turning, so WebView
-// never receives touch events. Links and images are displayed but not
-// interactive.
+// Note: the WebView itself never receives touch events — the Compose overlay
+// captures every tap so page turning stays reliable. Links and images are
+// still interactive: the overlay hit-tests through `hitTest` above and only
+// turns the page when the tap landed on plain content.
 </script>
 </head>
 <body>

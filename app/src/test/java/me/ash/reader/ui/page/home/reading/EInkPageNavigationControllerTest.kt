@@ -248,6 +248,127 @@ class EInkPageNavigationControllerTest {
     }
 
     @Test
+    fun `paging back into the previous article opens it on its last page`() {
+        hasPrev = true
+        controller.onPaginationReady(3)
+
+        controller.handleNavigation(VolumeKeyEvent.PREV)
+        assertTrue(prevArticleCalled)
+
+        // The previous article loads and paginates.
+        controller.onContentReset()
+        controller.onPaginationReady(7)
+
+        assertEquals(6, controller.currentPage)
+        assertTrue(pagesApplied.contains(6))
+    }
+
+    @Test
+    fun `paging forward into the next article opens it at the start`() {
+        hasNext = true
+        controller.onPaginationReady(1)
+
+        controller.handleNavigation(VolumeKeyEvent.NEXT)
+        assertTrue(nextArticleCalled)
+
+        controller.onContentReset()
+        controller.onPaginationReady(7)
+
+        assertEquals(0, controller.currentPage)
+    }
+
+    @Test
+    fun `open-at-end request only survives a single content reset`() {
+        hasPrev = true
+        controller.onPaginationReady(3)
+        controller.handleNavigation(VolumeKeyEvent.PREV)
+
+        controller.onContentReset()
+        controller.onPaginationReady(7)
+        assertEquals(6, controller.currentPage)
+
+        // A later article must not inherit the stale request.
+        controller.onContentReset()
+        controller.onPaginationReady(7)
+        assertEquals(0, controller.currentPage)
+    }
+
+    @Test
+    fun `restored position maps by fraction, not page index`() {
+        controller.onContentReset()
+        // Halfway through an article that was 10 pages long when it was read.
+        controller.restoreInitialPosition(0.5f)
+
+        // It now paginates to 20 pages because the font size shrank.
+        controller.onPaginationReady(20)
+
+        assertEquals(10, controller.currentPage)
+        assertTrue(pagesApplied.contains(10))
+    }
+
+    @Test
+    fun `restored position does not override an open-at-end request`() {
+        hasPrev = true
+        controller.onPaginationReady(3)
+        controller.handleNavigation(VolumeKeyEvent.PREV)
+        controller.onContentReset()
+
+        controller.restoreInitialPosition(0.5f)
+        controller.onPaginationReady(10)
+
+        assertEquals(9, controller.currentPage)
+    }
+
+    @Test
+    fun `restored position is consumed after one pagination`() {
+        controller.onContentReset()
+        controller.restoreInitialPosition(0.5f)
+        controller.onPaginationReady(10)
+        assertEquals(5, controller.currentPage)
+
+        controller.onContentReset()
+        controller.onPaginationReady(10)
+        assertEquals(0, controller.currentPage)
+    }
+
+    @Test
+    fun `progressFraction tracks position and is zero before pagination`() {
+        assertEquals(0f, controller.progressFraction, 0.0001f)
+
+        controller.onPaginationReady(10)
+        repeat(3) { controller.handleNavigation(VolumeKeyEvent.NEXT) }
+
+        assertEquals(0.3f, controller.progressFraction, 0.0001f)
+    }
+
+    @Test
+    fun `repagination keeps the reading position and re-applies it`() {
+        controller.onPaginationReady(10)
+        repeat(4) { controller.handleNavigation(VolumeKeyEvent.NEXT) }
+        assertEquals(4, controller.currentPage)
+        pagesApplied.clear()
+
+        // Rotated to landscape: same content, half as many pages.
+        controller.onRepaginated(5)
+
+        assertEquals(5, controller.totalPages)
+        assertEquals(2, controller.currentPage)
+        // Always re-applied — the stride changed, so the old transform is stale.
+        assertTrue(pagesApplied.contains(2))
+    }
+
+    @Test
+    fun `repagination clamps into range and never reports zero pages`() {
+        controller.onPaginationReady(10)
+        repeat(9) { controller.handleNavigation(VolumeKeyEvent.NEXT) }
+
+        controller.onRepaginated(0)
+
+        assertEquals(1, controller.totalPages)
+        assertEquals(0, controller.currentPage)
+    }
+
+    @Test
     fun `pending queue is bounded`() {
         // Queue more events than MAX_PENDING
         repeat(EInkPageNavigationController.MAX_PENDING + 5) {

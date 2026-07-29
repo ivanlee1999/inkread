@@ -2,7 +2,9 @@ package me.ash.reader.ui.theme
 
 import android.os.Build
 import android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MotionScheme
@@ -21,7 +23,7 @@ import me.ash.reader.ui.theme.palette.dynamic.extractTonalPalettesFromUserWallpa
 import me.ash.reader.ui.theme.palette.dynamicDarkColorScheme
 import me.ash.reader.ui.theme.palette.dynamicLightColorScheme
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun AppTheme(
     useDarkTheme: Boolean,
@@ -48,12 +50,17 @@ fun AppTheme(
     }
 
     if (isEInkMode) {
-        MaterialTheme(
-            colorScheme = EInkColorScheme,
-            typography = EInkTypography.applyTextDirection(),
-            shapes = Shapes,
-            content = content,
-        )
+        // Ripple is a fading grey overlay: on an e-ink panel it resolves as a
+        // smear that outlives the tap it was meant to acknowledge. Haptics and
+        // the redrawn control carry the feedback instead.
+        CompositionLocalProvider(LocalRippleConfiguration provides null) {
+            MaterialTheme(
+                colorScheme = EInkColorScheme,
+                typography = EInkTypography.applyTextDirection(),
+                shapes = Shapes,
+                content = content,
+            )
+        }
     } else {
         val themeIndex = LocalThemeIndex.current
 
