@@ -42,8 +42,8 @@ android {
         applicationId = "me.ash.reader"
         minSdk = 26
         targetSdk = 34
-        versionCode = 47
-        versionName = "0.16.2"
+        versionCode = 48
+        versionName = "0.16.3-inkread"
 
         buildConfigField(
             "String",
@@ -95,7 +95,7 @@ android {
     applicationVariants.all {
         outputs.all {
             (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl).outputFileName =
-                "ReadYou-${defaultConfig.versionName}-${gitCommitHash}.apk"
+                "InkRead-${defaultConfig.versionName}-${gitCommitHash}.apk"
         }
     }
     kotlinOptions {
@@ -128,12 +128,10 @@ dependencies {
     implementation(platform(libs.compose.bom.alpha))
     implementation(libs.androidx.ui.graphics)
     androidTestImplementation(platform(libs.compose.bom.stable))
-    implementation(libs.compose.animation.graphics)
     implementation(libs.compose.ui)
     implementation(libs.compose.ui.util)
     implementation(libs.compose.material)
     implementation(libs.compose.material.icons.extended)
-    implementation(libs.compose.ui.tooling)
     implementation(libs.compose.ui.tooling.preview)
     androidTestImplementation(libs.compose.ui.test.junit4)
     implementation(libs.compose.material3)
@@ -183,9 +181,8 @@ dependencies {
     implementation(libs.activity.compose)
     implementation(libs.appcompat)
     implementation(libs.glance.appwidget)
-    implementation(libs.glance.appwidget.preview)
     implementation(libs.glance.material3)
-    implementation(libs.glance.preview)
+    compileOnly(libs.glance.preview)
 
     implementation(libs.navigation3.runtime)
     implementation(libs.navigation3.ui)

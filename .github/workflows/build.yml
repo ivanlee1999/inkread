@@ -2,6 +2,11 @@ name: Build APK
 
 on:
   workflow_dispatch:
+    inputs:
+      publish-release:
+        description: Publish this branch commit as an InkRead release
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths-ignore:
@@ -9,64 +14,74 @@ on:
       - '.github/**'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
-      
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
-      
-      - name: Build debug APK
-        run: ./gradlew assembleGithubDebug
-      
-      - name: Get version info
-        id: version
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install build packages
+        run: sdkmanager --install "platforms;android-36" "build-tools;35.0.0"
+      - name: Validate and build optimized APK
+        run: ./gradlew --no-daemon --max-workers=2 testGithubDebugUnitTest lintGithubRelease assembleGithubRelease
+      - name: Verify APK and write checksum
         run: |
-          COMMIT=$(git rev-parse --short HEAD)
-          echo "commit=$COMMIT" >> $GITHUB_OUTPUT
-          APK=$(find . -path "*/github/debug/*.apk" -type f)
-          echo "apk=$APK" >> $GITHUB_OUTPUT
-      
+          APK=$(find app/build/outputs/apk/github/release -name '*.apk' -type f)
+          test -n "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify "$APK"
+          (cd "$(dirname "$APK")" && sha256sum "$(basename "$APK")" > "$(basename "$APK").sha256")
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: inkread-debug
-          path: app/build/outputs/apk/github/debug/*.apk
+          name: inkread-release-${{ github.sha }}
+          path: |
+            app/build/outputs/apk/github/release/*.apk
+            app/build/outputs/apk/github/release/*.sha256
           retention-days: 30
+      - name: Upload validation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inkread-validation-${{ github.sha }}
+          path: |
+            app/build/reports/tests/**
+            app/build/reports/lint-results-*
+          if-no-files-found: ignore
 
   release:
     needs: build
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || inputs.publish-release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Download APK
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: inkread-debug
+          name: inkread-release-${{ github.sha }}
           path: ./apk
-      
-      - name: Create Release
+      - name: Publish verified branch build
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           COMMIT=$(git rev-parse --short HEAD)
-          TAG="v$(date +%Y%m%d-%H%M)-${COMMIT}"
-          APK=$(find ./apk -name "*.apk" -type f | head -1)
-          gh release create "$TAG" \
-            --title "InkRead $TAG" \
-            --notes "Auto-built from commit $COMMIT" \
-            "$APK"
-          echo "RELEASE_URL=https://github.com/ivanlee1999/inkread/releases/tag/$TAG" >> $GITHUB_ENV
-          echo "Release: https://github.com/ivanlee1999/inkread/releases/tag/$TAG"
+          TAG="v$(date -u +%Y%m%d-%H%M)-${COMMIT}"
+          cat > release-notes.md <<EOF_NOTES
+          Built by GitHub Actions from commit ${{ github.sha }}.
+
+          InkRead 0.16.3: ReadYou 0.16.2 upstream integration, lighter e-ink rendering, streamed fonts, responsive page controls, and reader/cache reliability fixes.
+
+          Uses the existing application ID and repository signing identity. No database migration is required. Native Android emulator tests cover narrow and tablet reading flows; physical BOOX refresh behavior still needs device verification.
+          EOF_NOTES
+          gh release create "$TAG" --target "${{ github.sha }}" --title "InkRead $TAG" --notes-file release-notes.md ./apk/*.apk ./apk/*.sha256
