@@ -59,20 +59,26 @@ constructor(
     @Throws(Exception::class)
     suspend fun searchFeed(feedLink: String): SearchFeedResult {
         return withContext(ioDispatcher) {
-            val (directBody, directHttpContentType) = response(okHttpClient, feedLink).use {
+            val (directBody, directHttpContentType, directFeedLink) = response(okHttpClient, feedLink).use {
                 if (!it.isSuccessful) throw IOException(it.message)
-                it.body.bytes() to toHttpContentType(it.header("Content-Type"))
+                Triple(
+                    it.body.bytes(),
+                    toHttpContentType(it.header("Content-Type")),
+                    it.request.url.toString(),
+                )
             }
             val parsedDirectFeed = runCatching { parseFeed(directBody, directHttpContentType) }.getOrNull()
-            val resolvedFeedLink =
-                if (parsedDirectFeed != null) feedLink
-                else discoverFeedLink(feedLink, directBody)
-                    ?: throw IOException("Unable to detect RSS feed URL")
-
-            val feed = parsedDirectFeed ?: response(okHttpClient, resolvedFeedLink).use {
-                if (!it.isSuccessful) throw IOException(it.message)
-                parseFeed(it.body.bytes(), toHttpContentType(it.header("Content-Type")))
-            }
+            val (feed, resolvedFeedLink) =
+                if (parsedDirectFeed != null) parsedDirectFeed to directFeedLink
+                else {
+                    val discoveredFeedLink = discoverFeedLink(directFeedLink, directBody)
+                        ?: throw IOException("Unable to detect RSS feed URL")
+                    response(okHttpClient, discoveredFeedLink).use {
+                        if (!it.isSuccessful) throw IOException(it.message)
+                        parseFeed(it.body.bytes(), toHttpContentType(it.header("Content-Type"))) to
+                            it.request.url.toString()
+                    }
+                }
 
             feed.also {
                 it.icon = SyndImageImpl()

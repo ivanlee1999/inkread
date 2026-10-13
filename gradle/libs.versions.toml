@@ -103,6 +103,7 @@ telephoto = { group = "me.saket.telephoto", name = "zoomable", version.ref = "te
 swipe = { group = "me.saket.swipe", name = "swipe", version.ref = "swipe" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 okhttp-coroutines = { group = "com.squareup.okhttp3", name = "okhttp-coroutines-jvm", version.ref = "okhttp" }
+okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
 retrofit = { group = "com.squareup.retrofit2", name = "retrofit", version.ref = "retrofit2" }
 retrofit-gson = { group = "com.squareup.retrofit2", name = "converter-gson", version.ref = "retrofit2" }
 profileinstaller = { group = "androidx.profileinstaller", name = "profileinstaller", version.ref = "profileinstaller" }
