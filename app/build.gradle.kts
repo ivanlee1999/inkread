@@ -43,7 +43,7 @@ android {
         minSdk = 26
         targetSdk = 34
         versionCode = 48
-        versionName = "0.16.3-inkread"
+        versionName = "0.16.3"
 
         buildConfigField(
             "String",
