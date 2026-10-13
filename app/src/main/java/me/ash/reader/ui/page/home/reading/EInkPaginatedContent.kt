@@ -53,6 +53,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.launch
 import me.ash.reader.infrastructure.android.VolumeKeyEvent
 import me.ash.reader.infrastructure.android.VolumeKeyEventBus
@@ -211,7 +212,7 @@ fun EInkPaginatedContent(
     val fontResources = remember(englishFontFilePath, chineseFontFilePath) {
         listOfNotNull(englishFontFilePath, chineseFontFilePath).map { EInkFontResource(File(it)) }
     }
-    val currentFontResources = rememberUpdatedState(fontResources)
+    val activeFontResources = remember { AtomicReference<List<EInkFontResource>>(emptyList()) }
     val articleHtmlDocument by produceState<EInkArticleHtmlDocument?>(null, documentGeneration) {
         // Complete file creation even if navigation cancels this producer, then clean up.
         val document = withContext(Dispatchers.IO + NonCancellable) {
@@ -229,7 +230,9 @@ fun EInkPaginatedContent(
             throw failure
         }
     }
-    val currentArticleHtmlDocument = rememberUpdatedState(articleHtmlDocument)
+    // WebView requests run on another thread. Publish the resources before loadUrl,
+    // rather than reading a Compose snapshot that may still contain the previous document.
+    val activeArticleHtmlDocument = remember { AtomicReference<EInkArticleHtmlDocument?>() }
 
     // Track whether initial pagination is complete so we can hide WebView until ready.
     // Use a STABLE (unkeyed) state so the JS bridge callback always writes to the same object.
@@ -351,23 +354,25 @@ fun EInkPaginatedContent(
                             override fun shouldOverrideUrlLoading(
                                 view: WebView?,
                                 url: String?,
-                            ): Boolean = url != currentArticleHtmlDocument.value?.url
+                            ): Boolean = url != activeArticleHtmlDocument.get()?.url
 
                             override fun shouldOverrideUrlLoading(
                                 view: WebView?,
                                 request: android.webkit.WebResourceRequest?,
-                            ): Boolean = request?.url?.toString() != currentArticleHtmlDocument.value?.url
+                            ): Boolean = request?.url?.toString() != activeArticleHtmlDocument.get()?.url
 
                             override fun shouldInterceptRequest(
                                 view: WebView?,
                                 request: android.webkit.WebResourceRequest?,
                             ): WebResourceResponse? {
-                                val document = currentArticleHtmlDocument.value
+                                val document = activeArticleHtmlDocument.get()
                                 return if (document != null && request?.url?.toString() == document.url && document.file.exists()) {
-                                    WebResourceResponse("text/html", "UTF-8", document.file.inputStream())
+                                    val stream = runCatching { document.file.inputStream() }.getOrNull()
+                                    if (stream != null) WebResourceResponse("text/html", "UTF-8", stream)
+                                    else WebResourceResponse("text/plain", "UTF-8", java.io.ByteArrayInputStream(ByteArray(0)))
                                 } else {
                                     val url = request?.url?.toString().orEmpty()
-                                    val font = currentFontResources.value.firstOrNull { it.url == url }
+                                    val font = activeFontResources.get().firstOrNull { it.url == url }
                                     val stream = runCatching { font?.open(url) }.getOrNull()
                                     if (stream != null) WebResourceResponse(font!!.mimeType, null, stream)
                                     else if (request?.url?.host == "inkread.local")
@@ -408,6 +413,8 @@ fun EInkPaginatedContent(
                         )
                         webViewRef.value = this
                         articleHtmlDocument?.takeIf { it.cacheKey == documentGeneration }?.let {
+                            activeArticleHtmlDocument.set(it)
+                            activeFontResources.set(fontResources)
                             lastLoadedHtmlKey = it.cacheKey
                             loadUrl(it.url)
                         }
@@ -421,6 +428,8 @@ fun EInkPaginatedContent(
                     articleHtmlDocument?.takeIf {
                         it.cacheKey == documentGeneration && it.cacheKey != lastLoadedHtmlKey
                     }?.let {
+                        activeArticleHtmlDocument.set(it)
+                        activeFontResources.set(fontResources)
                         lastLoadedHtmlKey = it.cacheKey
                         webView.loadUrl(it.url)
                     }
