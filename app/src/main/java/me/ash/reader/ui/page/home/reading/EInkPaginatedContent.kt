@@ -761,7 +761,9 @@ $englishFontFace
 $chineseFontFace
 * { box-sizing: border-box; }
 *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
-html, body { margin: 0; padding: 0; }
+html, body { margin: 0; padding: 0; background: #fff !important; }
+body * { color: #000 !important; background-color: transparent !important; }
+a, a:visited { color: #000 !important; text-decoration: underline; }
 body {
     padding: ${horizontalPadding}px;
     font-family: $fontFamilyCss;
