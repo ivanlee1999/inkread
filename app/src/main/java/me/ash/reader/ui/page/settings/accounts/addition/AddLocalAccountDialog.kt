@@ -12,7 +12,7 @@ import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.RssFeed
-import androidx.compose.material3.CircularProgressIndicator
+import me.ash.reader.ui.component.base.RYLoadingIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -81,7 +81,7 @@ fun AddLocalAccountDialog(
         },
         icon = {
             if (accountUiState.isLoading) {
-                CircularProgressIndicator(
+                RYLoadingIndicator(
                     modifier = Modifier.size(24.dp),
                     color = MaterialTheme.colorScheme.onSurface,
                 )

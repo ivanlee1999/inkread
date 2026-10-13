@@ -97,6 +97,11 @@ fun TipsAndSupportPage(
     navigateToLicenseList: () -> Unit,
 ) {
     val context = LocalContext.current
+    val checkingUpdatesText = stringResource(R.string.checking_updates)
+    val latestVersionText = stringResource(R.string.is_latest_version)
+    val githubUrl = stringResource(R.string.github_link)
+    val telegramUrl = stringResource(R.string.telegram_link)
+    val wikiUrl = stringResource(R.string.wiki_link)
     val view = LocalView.current
     val scope = rememberCoroutineScope()
     var currentVersion by remember { mutableStateOf("") }
@@ -165,7 +170,7 @@ fun TipsAndSupportPage(
             ) {
                 item {
                     Column(
-                        modifier = Modifier.pointerInput(Unit) {
+                        modifier = Modifier.pointerInput(checkingUpdatesText, latestVersionText) {
                             detectTapGestures(
                                 onPress = {
                                     view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
@@ -178,7 +183,7 @@ fun TipsAndSupportPage(
                                 onTap = {
                                     updateViewModel.checkUpdate(
                                         {
-                                            context.showToast(context.getString(R.string.checking_updates))
+                                            context.showToast(checkingUpdatesText)
                                             context.dataStore.put(
                                                 DataStoreKey.skipVersionNumber,
                                                 ""
@@ -187,7 +192,7 @@ fun TipsAndSupportPage(
                                         {
                                             if (!it) {
                                                 context.showToast(
-                                                    context.getString(R.string.is_latest_version)
+                                                    latestVersionText
                                                 )
                                             }
                                         }
@@ -265,7 +270,7 @@ fun TipsAndSupportPage(
                                 view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                                 view.playSoundEffect(SoundEffectConstants.CLICK)
                                 context.openURL(
-                                    context.getString(R.string.github_link),
+                                    githubUrl,
                                     OpenLinkPreference.AutoPreferCustomTabs
                                 )
                             })
@@ -279,7 +284,7 @@ fun TipsAndSupportPage(
                                 view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                                 view.playSoundEffect(SoundEffectConstants.CLICK)
                                 context.openURL(
-                                    context.getString(R.string.telegram_link),
+                                    telegramUrl,
                                     OpenLinkPreference.AutoPreferCustomTabs
                                 )
                             })
@@ -293,7 +298,7 @@ fun TipsAndSupportPage(
                                 view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                                 view.playSoundEffect(SoundEffectConstants.CLICK)
                                 context.openURL(
-                                    context.getString(R.string.wiki_link),
+                                    wikiUrl,
                                     OpenLinkPreference.AutoPreferCustomTabs
                                 )
                             })

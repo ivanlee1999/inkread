@@ -29,6 +29,7 @@ fun LicenseListPage(
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
+    val githubUrl = stringResource(R.string.github_link)
 
     RYScaffold(
         containerColor = MaterialTheme.colorScheme.surface onLight MaterialTheme.colorScheme.inverseOnSurface,
@@ -48,7 +49,7 @@ fun LicenseListPage(
                 tint = MaterialTheme.colorScheme.onSurface
             ) {
                 context.openURL(
-                    url = context.getString(R.string.github_link) + "/blob/main/LICENSE",
+                    url = githubUrl + "/blob/main/LICENSE",
                     openLink = OpenLinkPreference.AutoPreferCustomTabs,
                 )
             }

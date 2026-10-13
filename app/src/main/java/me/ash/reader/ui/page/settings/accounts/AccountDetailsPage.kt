@@ -82,6 +82,10 @@ fun AccountDetailsPage(
 ) {
     val uiState = viewModel.accountUiState.collectAsStateValue()
     val context = LocalContext.current
+    val clearArticlesToast = stringResource(R.string.clear_all_articles_toast)
+    val deleteAccountToast = stringResource(R.string.delete_account_toast)
+    val includeAdditionalInfo = stringResource(R.string.include_additional_info)
+    val excludeAdditionalInfo = stringResource(R.string.exclude)
 
     val selectedAccount = uiState.selectedAccount.collectAsStateValue(initial = null)
 
@@ -354,7 +358,7 @@ fun AccountDetailsPage(
                         viewModel.clear(it) {
                             viewModel.hideClearDialog()
                             context.showToastLong(
-                                context.getString(R.string.clear_all_articles_toast)
+                                clearArticlesToast
                             )
                         }
                     }
@@ -387,7 +391,7 @@ fun AccountDetailsPage(
                     selectedAccount?.id?.let {
                         viewModel.delete(it) {
                             onBack()
-                            context.showToastLong(context.getString(R.string.delete_account_toast))
+                            context.showToastLong(deleteAccountToast)
                         }
                     }
                 }
@@ -421,13 +425,13 @@ fun AccountDetailsPage(
                 items(
                     listOf(
                         RadioDialogOption(
-                            text = context.getString(R.string.include_additional_info),
+                            text = includeAdditionalInfo,
                             selected = uiState.exportOPMLMode == ExportOPMLMode.ATTACH_INFO,
                         ) {
                             viewModel.changeExportOPMLMode(ExportOPMLMode.ATTACH_INFO)
                         },
                         RadioDialogOption(
-                            text = context.getString(R.string.exclude),
+                            text = excludeAdditionalInfo,
                             selected = uiState.exportOPMLMode == ExportOPMLMode.NO_ATTACH,
                         ) {
                             viewModel.changeExportOPMLMode(ExportOPMLMode.NO_ATTACH)

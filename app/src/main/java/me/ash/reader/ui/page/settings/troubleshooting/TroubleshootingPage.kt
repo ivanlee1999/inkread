@@ -74,6 +74,7 @@ import me.ash.reader.ui.theme.palette.onLight
 @Composable
 fun TroubleshootingPage(onBack: () -> Unit, viewModel: TroubleshootingViewModel = hiltViewModel()) {
     val context = LocalContext.current
+    val issueTracerUrl = stringResource(R.string.issue_tracer_url)
     val hapticFeedback = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     val uiState = viewModel.troubleshootingUiState.collectAsStateValue()
@@ -142,7 +143,7 @@ fun TroubleshootingPage(onBack: () -> Unit, viewModel: TroubleshootingViewModel 
                         },
                     ) {
                         context.openURL(
-                            context.getString(R.string.issue_tracer_url),
+                            issueTracerUrl,
                             OpenLinkPreference.AutoPreferCustomTabs,
                         )
                     }

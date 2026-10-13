@@ -9,7 +9,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.CircularProgressIndicator
+import me.ash.reader.ui.component.base.RYLoadingIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -50,6 +50,7 @@ fun AddFeverAccountDialog(
     accountViewModel: AccountViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
+    val accountName = stringResource(R.string.fever)
     val focusManager = LocalFocusManager.current
     val uiState = viewModel.additionUiState.collectAsStateValue()
     val accountUiState = accountViewModel.accountUiState.collectAsStateValue()
@@ -70,7 +71,7 @@ fun AddFeverAccountDialog(
         },
         icon = {
             if (accountUiState.isLoading) {
-                CircularProgressIndicator(
+                RYLoadingIndicator(
                     modifier = Modifier.size(24.dp),
                     color = MaterialTheme.colorScheme.onSurface,
                 )
@@ -144,7 +145,7 @@ fun AddFeverAccountDialog(
                     accountViewModel.addAccount(
                         Account(
                             type = AccountType.Fever,
-                            name = context.getString(R.string.fever),
+                            name = accountName,
                             securityKey =
                                 FeverSecurityKey(
                                         serverUrl = feverServerUrl,
