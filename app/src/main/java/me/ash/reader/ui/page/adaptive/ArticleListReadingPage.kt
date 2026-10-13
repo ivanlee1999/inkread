@@ -25,6 +25,7 @@ import androidx.compose.material3.adaptive.layout.rememberPaneExpansionState
 import androidx.compose.material3.adaptive.navigation.BackNavigationBehavior
 import androidx.compose.material3.adaptive.navigation.NavigableListDetailPaneScaffold
 import androidx.compose.material3.adaptive.navigation.ThreePaneScaffoldNavigator
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -65,6 +66,10 @@ fun ArticleListReaderPage(
 ) {
 
     val scope = rememberCoroutineScope()
+    val textMeasurementExecutor = remember { Executors.newSingleThreadExecutor() }
+    DisposableEffect(textMeasurementExecutor) {
+        onDispose { textMeasurementExecutor.shutdown() }
+    }
     val einkMode = isEInkMode
 
     val backBehavior = BackNavigationBehavior.PopUntilScaffoldValueChange
@@ -147,8 +152,7 @@ fun ArticleListReaderPage(
                     else motionDataProvider.calculateExitTransition(paneRole),
             ) {
                 CompositionLocalProvider(
-                    LocalBackgroundTextMeasurementExecutor provides
-                        Executors.newSingleThreadExecutor()
+                    LocalBackgroundTextMeasurementExecutor provides textMeasurementExecutor
                 ) {
                     Box(modifier = Modifier.alpha(resolvedListAlpha)) {
                         FlowPage(
