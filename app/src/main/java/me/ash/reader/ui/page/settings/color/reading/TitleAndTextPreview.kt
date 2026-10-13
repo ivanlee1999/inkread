@@ -7,9 +7,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.derivedStateOf
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -35,23 +32,14 @@ fun TitleAndTextPreview() {
     val subtitleAlign = LocalReadingSubheadAlign.current
 
 
-    val titleUpperCaseString by remember {
-        derivedStateOf {
-            context.getString(R.string.title).uppercase()
-        }
-    }
-
-    val subheadUpperCaseString by remember {
-        derivedStateOf {
-            context.getString(R.string.subhead).uppercase()
-        }
-    }
+    val title = stringResource(R.string.title)
+    val subhead = stringResource(R.string.subhead)
     Column(modifier = Modifier.padding(24.dp)) {
         Text(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = textHorizontalPadding().dp),
-            text = if (titleUpperCase.value) titleUpperCaseString else stringResource(id = R.string.title),
+            text = if (titleUpperCase.value) title.uppercase() else title,
             color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.headlineLarge.copy(
                 fontFamily = LocalReadingFonts.current.asFontFamily(context),
@@ -61,7 +49,7 @@ fun TitleAndTextPreview() {
         )
         Spacer(modifier = Modifier.height(20.dp))
         Text(
-            text = if (subheadUpperCase.value) subheadUpperCaseString else stringResource(id = R.string.subhead),
+            text = if (subheadUpperCase.value) subhead.uppercase() else subhead,
             style = h3Style().copy(textAlign = bodyStyle().textAlign),
             modifier = Modifier
                 .fillMaxWidth()

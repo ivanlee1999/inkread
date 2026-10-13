@@ -11,7 +11,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.RssFeed
-import androidx.compose.material3.CircularProgressIndicator
+import me.ash.reader.ui.component.base.RYLoadingIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -51,6 +51,7 @@ fun AddGoogleReaderAccountDialog(
     accountViewModel: AccountViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
+    val accountName = stringResource(R.string.google_reader)
     val focusManager = LocalFocusManager.current
     val uiState = viewModel.additionUiState.collectAsStateValue()
     val accountUiState = accountViewModel.accountUiState.collectAsStateValue()
@@ -71,7 +72,7 @@ fun AddGoogleReaderAccountDialog(
         },
         icon = {
             if (accountUiState.isLoading) {
-                CircularProgressIndicator(
+                RYLoadingIndicator(
                     modifier = Modifier.size(24.dp),
                     color = MaterialTheme.colorScheme.onSurface,
                 )
@@ -148,7 +149,7 @@ fun AddGoogleReaderAccountDialog(
                     accountViewModel.addAccount(
                         Account(
                             type = AccountType.GoogleReader,
-                            name = context.getString(R.string.google_reader),
+                            name = accountName,
                             securityKey =
                                 GoogleReaderSecurityKey(
                                         serverUrl = googleReaderServerUrl,

@@ -664,7 +664,7 @@ interface ArticleDao {
 
     @Query(
         """
-        SELECT a.id, a.title, a.link
+        SELECT a.accountId, a.id, a.title, a.link
         FROM article AS a
         LEFT JOIN feed AS f ON a.feedId = f.id
         WHERE f.accountId = :accountId

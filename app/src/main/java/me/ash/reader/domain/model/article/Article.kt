@@ -56,6 +56,7 @@ data class Article(
 }
 
 data class ArticleFullContentRequest(
+    val accountId: Int,
     val id: String,
     val title: String,
     val link: String,

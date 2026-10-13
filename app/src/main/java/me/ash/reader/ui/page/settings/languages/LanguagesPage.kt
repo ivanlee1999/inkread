@@ -36,6 +36,7 @@ fun LanguagesPage(
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
+    val translatableUrl = stringResource(R.string.translatable_url)
     val currentLocale = Locale.getDefault()
 
     val languages = LocalLanguages.current.run {
@@ -71,7 +72,7 @@ fun LanguagesPage(
                         },
                     ) {
                         context.openURL(
-                            context.getString(R.string.translatable_url),
+                            translatableUrl,
                             OpenLinkPreference.AutoPreferCustomTabs
                         )
                     }

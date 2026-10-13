@@ -5,6 +5,7 @@
     <plurals name="starred_desc">
         <item quantity="one">%1$d obľúbená položka</item>
         <item quantity="few">%1$d obľúbené položky</item>
+        <item quantity="many">%1$d obľúbených položiek</item>
         <item quantity="other">%1$d obľúbených položiek</item>
     </plurals>
     <string name="feeds">Informačné kanály</string>
@@ -80,6 +81,7 @@
     <plurals name="all_desc">
         <item quantity="one">%1$d archivovaná položka</item>
         <item quantity="few">%1$d archivované položky</item>
+        <item quantity="many">%1$d archivovaných položiek</item>
         <item quantity="other">%1$d archivovaných položiek</item>
     </plurals>
     <string name="confirm">Potvrdiť</string>
@@ -89,6 +91,7 @@
     <plurals name="unread_desc">
         <item quantity="one">%1$d neprečítaná položka</item>
         <item quantity="few">%1$d neprečítané položky</item>
+        <item quantity="many">%1$d neprečítaných položiek</item>
         <item quantity="other">%1$d neprečítaných položiek</item>
     </plurals>
     <string name="clear_articles_group_tips">Vymazať všetky archivované články v skupine \"%1$s\"</string>

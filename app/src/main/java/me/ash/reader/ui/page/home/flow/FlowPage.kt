@@ -7,13 +7,8 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animate
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.togetherWith
@@ -72,7 +67,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
@@ -460,29 +454,14 @@ fun FlowPage(
                                         color = MaterialTheme.colorScheme.onSurface,
                                     )
                                 }
-                                // E-Ink sync/refresh button — only animate while syncing
-                                val syncAngle = if (isSyncing) {
-                                    val infiniteTransition = rememberInfiniteTransition(label = "sync")
-                                    val angle by infiniteTransition.animateFloat(
-                                        initialValue = 0f,
-                                        targetValue = 360f,
-                                        animationSpec = infiniteRepeatable(
-                                            animation = tween(1000, easing = LinearEasing),
-                                            repeatMode = RepeatMode.Restart
-                                        ),
-                                        label = "syncRotation"
-                                    )
-                                    angle
-                                } else 0f
+                                // Static busy state avoids continuous e-ink refreshes and repeated sync taps.
                                 FeedbackIconButton(
-                                    modifier = Modifier.rotate(syncAngle),
                                     imageVector = Icons.Rounded.Refresh,
                                     contentDescription = stringResource(R.string.refresh),
-                                    tint = if (isSyncing) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.onSurface,
-                                ) {
-                                    viewModel.sync()
-                                }
+                                    enabled = !isSyncing,
+                                    showBadge = isSyncing,
+                                    tint = MaterialTheme.colorScheme.onSurface,
+                                ) { viewModel.sync() }
                                 RYExtensibleVisibility(visible = !filterUiState.filter.isStarred()) {
                                     FeedbackIconButton(
                                         imageVector = Icons.Rounded.DoneAll,

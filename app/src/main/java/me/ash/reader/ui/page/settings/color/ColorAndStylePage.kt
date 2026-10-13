@@ -33,7 +33,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Palette
-import androidx.compose.material3.CircularProgressIndicator
+import me.ash.reader.ui.component.base.RYLoadingIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -299,7 +299,7 @@ fun ColorAndStylePage(
                         onClick = { englishFontDialogVisible = true },
                     ) {
                         if (englishDownloading) {
-                            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                            RYLoadingIndicator(modifier = Modifier.size(24.dp))
                         }
                     }
                     // Chinese font — shows download status, opens dialog
@@ -317,7 +317,7 @@ fun ColorAndStylePage(
                         onClick = { chineseFontDialogVisible = true },
                     ) {
                         if (chineseDownloading) {
-                            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                            RYLoadingIndicator(modifier = Modifier.size(24.dp))
                         }
                     }
                     SettingItem(

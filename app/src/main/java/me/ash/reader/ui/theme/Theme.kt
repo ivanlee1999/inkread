@@ -2,6 +2,8 @@ package me.ash.reader.ui.theme
 
 import android.os.Build
 import android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
@@ -21,11 +23,11 @@ import me.ash.reader.ui.theme.palette.dynamic.extractTonalPalettesFromUserWallpa
 import me.ash.reader.ui.theme.palette.dynamicDarkColorScheme
 import me.ash.reader.ui.theme.palette.dynamicLightColorScheme
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun AppTheme(
     useDarkTheme: Boolean,
-    wallpaperPalettes: List<TonalPalettes> = extractTonalPalettesFromUserWallpaper(),
+    wallpaperPalettes: List<TonalPalettes>? = null,
     content: @Composable () -> Unit,
 ) {
     val view = LocalView.current
@@ -48,13 +50,16 @@ fun AppTheme(
     }
 
     if (isEInkMode) {
-        MaterialTheme(
-            colorScheme = EInkColorScheme,
-            typography = EInkTypography.applyTextDirection(),
-            shapes = Shapes,
-            content = content,
-        )
+        CompositionLocalProvider(LocalRippleConfiguration provides null) {
+            MaterialTheme(
+                colorScheme = EInkColorScheme,
+                typography = EInkTypography.applyTextDirection(),
+                shapes = Shapes,
+                content = content,
+            )
+        }
     } else {
+        val wallpaperPalettes = wallpaperPalettes ?: extractTonalPalettesFromUserWallpaper()
         val themeIndex = LocalThemeIndex.current
 
         val tonalPalettes =

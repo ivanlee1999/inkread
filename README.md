@@ -20,13 +20,13 @@
 
 InkRead is a fork of [ReadYou](https://github.com/ReadYouApp/ReadYou) with an **E-Ink optimized mode** for a book-like reading experience on E-Ink Android devices.
 
-It keeps all of ReadYou's features (Material You design, FreshRSS/Fever/Google Reader API support, local RSS) and adds an E-Ink mode you can toggle on/off.
+It preserves the reading and library features (FreshRSS/Fever/Google Reader API support, local RSS, OPML, offline full content, starring, and TTS) and provides an E-Ink mode you can toggle on/off.
 
 ## E-Ink Features
 
 ### 🖤 Pure B&W Theme
 - Pure white (#FFFFFF) background, pure black (#000000) text
-- No animations, gradients, or gray tones
+- Instant reader/list transitions, static sync/loading feedback, and no e-ink ripples or image crossfades
 - High contrast for E-Ink clarity at 300 PPI
 
 ### 📖 KOReader-Style Pagination
@@ -36,9 +36,11 @@ It keeps all of ReadYou's features (Material You design, FreshRSS/Fever/Google R
 - **Volume buttons**: Volume Up/Down for page navigation (with debounce for E-Ink refresh)
 - No content overlap or gaps between pages
 - Images never split across pages
+- Controls fit narrow screens with 48dp touch targets; viewport changes repaginate while retaining relative position
+- No speculative downloads of the next five articles; full content is fetched on demand and retained in the existing account-specific disk cache
 
 ### 🔤 Downloadable Fonts
-Fonts download on first use — not bundled in the APK.
+Fonts download on first use — not bundled in the APK. Selected fonts stream through restricted local HTTPS URLs instead of being copied into each article as base64. Article HTML is prepared off the UI thread.
 
 **English:**
 - System Serif (default)
@@ -84,10 +86,14 @@ InkRead supports the same sync backends as ReadYou:
 
 ```bash
 # Requires JDK 17
-./gradlew assembleDebug
+./gradlew testGithubDebugUnitTest lintGithubRelease assembleGithubRelease
 ```
 
-APK output: `app/build/outputs/apk/github/debug/`
+Optimized APK output: `app/build/outputs/apk/github/release/`.
+
+Native reader regression: `./gradlew connectedGithubDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=me.ash.reader.ui.page.home.reading.EInkReaderUiTest`. Run on narrow and tablet emulator sizes. Emulator results do not verify physical BOOX refresh speed or ghosting.
+
+The **Build APK** GitHub Actions workflow validates, builds, verifies signing, and optionally publishes the selected branch commit using the existing signing identity.
 
 ## Credits & Acknowledgments
 

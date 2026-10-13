@@ -26,10 +26,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -48,6 +48,12 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.launch
 import me.ash.reader.infrastructure.android.VolumeKeyEvent
 import me.ash.reader.infrastructure.android.VolumeKeyEventBus
@@ -65,13 +71,6 @@ import me.ash.reader.infrastructure.preference.LocalReadingTextLetterSpacing
 import me.ash.reader.infrastructure.preference.LocalReadingTextLineHeight
 import me.ash.reader.ui.page.home.flow.EInkPaginationBar
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.LinearProgressIndicator
@@ -81,23 +80,12 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
 
-/** Cache for base64-encoded font data keyed by file path, so font files are only read once per app session. */
-private object FontBase64Cache {
-    private val cache = HashMap<String, String>()
-
-    fun getOrPut(filePath: String): String = synchronized(cache) {
-        cache.getOrPut(filePath) {
-            val fontBytes = java.io.File(filePath).readBytes()
-            android.util.Base64.encodeToString(fontBytes, android.util.Base64.NO_WRAP)
-        }
-    }
-}
-
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun EInkPaginatedContent(
     modifier: Modifier = Modifier,
     content: String,
+    articleId: String? = null,
     feedName: String,
     title: String,
     author: String? = null,
@@ -144,13 +132,9 @@ fun EInkPaginatedContent(
     // Track the last loaded HTML key to detect content/style changes in the update callback
     var lastLoadedHtmlKey by remember { mutableStateOf("") }
 
-    var horizontalDrag by remember { mutableFloatStateOf(0f) }
-    var showLeftArrow by remember { mutableStateOf(false) }
-    var showRightArrow by remember { mutableStateOf(false) }
     var showBoundaryText by remember { mutableStateOf<String?>(null) }
-    var dragVisualTarget by remember { mutableFloatStateOf(0f) }
     val density = LocalDensity.current
-    val maxDragPx = remember(density) { with(density) { 80.dp.toPx() } }
+    val articleSwipeThreshold = remember(density) { with(density) { 56.dp.toPx() } }
 
     // Bottom bar auto-hide state
     var bottomBarVisible by rememberSaveable { mutableStateOf(false) }
@@ -159,10 +143,8 @@ fun EInkPaginatedContent(
     // Bottom bar stays visible until user taps the middle area to dismiss.
     // No auto-hide timer — user controls visibility explicitly.
     val haptic = LocalHapticFeedback.current
-    // Use direct state (not animated) — e-ink displays can't show smooth animation
-    // and animateFloatAsState can leave stale offsets on e-ink refresh.
-    val dragVisualOffset = dragVisualTarget
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
+    val currentOnPageChanged by rememberUpdatedState(onPageChanged)
     val currentOnNextArticle by rememberUpdatedState(onNextArticle)
     val currentOnPrevArticle by rememberUpdatedState(onPrevArticle)
 
@@ -175,7 +157,7 @@ fun EInkPaginatedContent(
     val navController = remember {
         EInkPageNavigationController(
             onPageChanged = { page, total ->
-                onPageChanged?.invoke(page, total)
+                currentOnPageChanged?.invoke(page, total)
             },
             onApplyPageToWebView = { page ->
                 webViewRef.value?.evaluateJavascript("goToPage($page)", null)
@@ -195,20 +177,8 @@ fun EInkPaginatedContent(
                     showBoundaryText = null
                 }
             },
-            onPageTurnFeedback = { direction ->
+            onPageTurnFeedback = {
                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                when (direction) {
-                    VolumeKeyEvent.NEXT -> coroutineScope.launch {
-                        showRightArrow = true
-                        delay(500)
-                        showRightArrow = false
-                    }
-                    VolumeKeyEvent.PREV -> coroutineScope.launch {
-                        showLeftArrow = true
-                        delay(500)
-                        showLeftArrow = false
-                    }
-                }
             },
             hasNextArticle = { currentOnNextArticle != null },
             hasPrevArticle = { currentOnPrevArticle != null },
@@ -236,13 +206,34 @@ fun EInkPaginatedContent(
     DisposableEffect(Unit) {
         onDispose { VolumeKeyEventBus.unregister(VolumeKeyPriority.HIGH) }
     }
-    val articleHtmlDocument = remember(content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate, horizontalPadding, lineHeight, letterSpacing, wordSpacing) {
-        buildArticleHtmlDocument(context.cacheDir, content, einkFontSize, einkEnglishFont, einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate, horizontalPadding, lineHeight, letterSpacing, wordSpacing)
+    val documentGeneration = remember(articleId, link, content, einkFontSize, einkEnglishFont, einkChineseFont,
+        englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate,
+        horizontalPadding, lineHeight, letterSpacing, wordSpacing) { UUID.randomUUID().toString() }
+    val currentGeneration = rememberUpdatedState(documentGeneration)
+    val fontResources = remember(englishFontFilePath, chineseFontFilePath) {
+        listOfNotNull(englishFontFilePath, chineseFontFilePath).map { EInkFontResource(File(it)) }
     }
-    DisposableEffect(articleHtmlDocument) {
-        onDispose { articleHtmlDocument.file.delete() }
+    val activeFontResources = remember { AtomicReference<List<EInkFontResource>>(emptyList()) }
+    val articleHtmlDocument by produceState<EInkArticleHtmlDocument?>(null, documentGeneration) {
+        // Complete file creation even if navigation cancels this producer, then clean up.
+        val document = withContext(Dispatchers.IO + NonCancellable) {
+            buildArticleHtmlDocument(context.cacheDir, content, einkFontSize, einkEnglishFont,
+                einkChineseFont, englishFontFilePath, chineseFontFilePath, title, feedName,
+                author, publishedDate, horizontalPadding, lineHeight, letterSpacing, wordSpacing,
+                documentGeneration)
+        }
+        try {
+            ensureActive()
+            value = document
+            awaitDispose { document.file.delete() }
+        } catch (failure: Throwable) {
+            document.file.delete()
+            throw failure
+        }
     }
-    val currentArticleHtmlDocument = rememberUpdatedState(articleHtmlDocument)
+    // WebView requests run on another thread. Publish the resources before loadUrl,
+    // rather than reading a Compose snapshot that may still contain the previous document.
+    val activeArticleHtmlDocument = remember { AtomicReference<EInkArticleHtmlDocument?>() }
 
     // Track whether initial pagination is complete so we can hide WebView until ready.
     // Use a STABLE (unkeyed) state so the JS bridge callback always writes to the same object.
@@ -250,9 +241,9 @@ fun EInkPaginatedContent(
     val isInitialPaginationReadyState = remember { mutableStateOf(false) }
     var isInitialPaginationReady by isInitialPaginationReadyState
     // Track the last article document to detect changes and reset pagination ready state.
-    val lastHtmlKeyForReady = remember { mutableStateOf(articleHtmlDocument.cacheKey) }
-    if (lastHtmlKeyForReady.value != articleHtmlDocument.cacheKey) {
-        lastHtmlKeyForReady.value = articleHtmlDocument.cacheKey
+    val lastHtmlKeyForReady = remember { mutableStateOf(documentGeneration) }
+    if (lastHtmlKeyForReady.value != documentGeneration) {
+        lastHtmlKeyForReady.value = documentGeneration
         isInitialPaginationReady = false
         navController.onContentReset()
         currentPage = 0
@@ -261,7 +252,7 @@ fun EInkPaginatedContent(
 
     // Safety net: if JS never calls onInitialPaginationReady (WebView failure,
     // JS error, etc.), force the flag so the user can at least swipe away.
-    LaunchedEffect(articleHtmlDocument.cacheKey) {
+    LaunchedEffect(documentGeneration) {
         delay(5000L)
         if (!isInitialPaginationReady) {
             Log.w("InkRead", "isInitialPaginationReady timeout — forcing true (totalPages=$totalPages)")
@@ -273,7 +264,6 @@ fun EInkPaginatedContent(
     }
 
     fun nextPage() {
-        Log.d("InkRead", "nextPage -> delegating to navController")
         navController.handleNavigation(VolumeKeyEvent.NEXT)
         // Sync Compose state from controller
         currentPage = navController.currentPage
@@ -281,7 +271,6 @@ fun EInkPaginatedContent(
     }
 
     fun prevPage() {
-        Log.d("InkRead", "prevPage -> delegating to navController")
         navController.handleNavigation(VolumeKeyEvent.PREV)
         // Sync Compose state from controller
         currentPage = navController.currentPage
@@ -366,36 +355,54 @@ fun EInkPaginatedContent(
                             override fun shouldOverrideUrlLoading(
                                 view: WebView?,
                                 url: String?,
-                            ): Boolean = url != currentArticleHtmlDocument.value.url
+                            ): Boolean = url != activeArticleHtmlDocument.get()?.url
 
                             override fun shouldOverrideUrlLoading(
                                 view: WebView?,
                                 request: android.webkit.WebResourceRequest?,
-                            ): Boolean = request?.url?.toString() != currentArticleHtmlDocument.value.url
+                            ): Boolean = request?.url?.toString() != activeArticleHtmlDocument.get()?.url
 
                             override fun shouldInterceptRequest(
                                 view: WebView?,
                                 request: android.webkit.WebResourceRequest?,
                             ): WebResourceResponse? {
-                                val document = currentArticleHtmlDocument.value
-                                return if (request?.url?.toString() == document.url && document.file.exists()) {
-                                    WebResourceResponse("text/html", "UTF-8", document.file.inputStream())
+                                val document = activeArticleHtmlDocument.get()
+                                return if (document != null && request?.url?.toString() == document.url && document.file.exists()) {
+                                    val stream = runCatching { document.file.inputStream() }.getOrNull()
+                                    if (stream != null) WebResourceResponse("text/html", "UTF-8", stream)
+                                    else WebResourceResponse("text/plain", "UTF-8", java.io.ByteArrayInputStream(ByteArray(0)))
                                 } else {
-                                    super.shouldInterceptRequest(view, request)
+                                    val url = request?.url?.toString().orEmpty()
+                                    val font = activeFontResources.get().firstOrNull { it.url == url }
+                                    val stream = runCatching { font?.open(url) }.getOrNull()
+                                    if (stream != null) WebResourceResponse(font!!.mimeType, null, stream)
+                                    else if (request?.url?.host == "inkread.local")
+                                        WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", emptyMap(), java.io.ByteArrayInputStream(ByteArray(0)))
+                                    else super.shouldInterceptRequest(view, request)
                                 }
                             }
                         }
                         addJavascriptInterface(
                             EInkJsInterface(
-                                onTotalPages = { pages ->
+                                onTotalPages = { generation, pages ->
                                     Handler(Looper.getMainLooper()).post {
+                                        if (generation != currentGeneration.value || webViewRef.value == null) return@post
                                         navController.onTotalPagesUpdated(pages)
                                         totalPages = navController.totalPages
                                         currentPage = navController.currentPage
                                     }
                                 },
-                                onInitialPaginationReady = { pages ->
+                                onRepaginated = { generation, pages, page ->
                                     Handler(Looper.getMainLooper()).post {
+                                        if (generation != currentGeneration.value || webViewRef.value == null) return@post
+                                        navController.onRepaginated(pages, page)
+                                        totalPages = navController.totalPages
+                                        currentPage = navController.currentPage
+                                    }
+                                },
+                                onInitialPaginationReady = { generation, pages ->
+                                    Handler(Looper.getMainLooper()).post {
+                                        if (generation != currentGeneration.value || webViewRef.value == null) return@post
                                         navController.onPaginationReady(pages)
                                         isInitialPaginationReady = true
                                         totalPages = navController.totalPages
@@ -406,8 +413,12 @@ fun EInkPaginatedContent(
                             "Android",
                         )
                         webViewRef.value = this
-                        lastLoadedHtmlKey = articleHtmlDocument.cacheKey
-                        loadUrl(articleHtmlDocument.url)
+                        articleHtmlDocument?.takeIf { it.cacheKey == documentGeneration }?.let {
+                            activeArticleHtmlDocument.set(it)
+                            activeFontResources.set(fontResources)
+                            lastLoadedHtmlKey = it.cacheKey
+                            loadUrl(it.url)
+                        }
                     }
                 },
                 update = { webView ->
@@ -415,15 +426,18 @@ fun EInkPaginatedContent(
                     // destroying and recreating the entire WebView composable.
                     // Note: isInitialPaginationReady is already reset synchronously via
                     // remember(articleHtmlDocument.cacheKey) — no need to reset it here.
-                    if (articleHtmlDocument.cacheKey != lastLoadedHtmlKey) {
-                        lastLoadedHtmlKey = articleHtmlDocument.cacheKey
-                        webView.loadUrl(articleHtmlDocument.url)
+                    articleHtmlDocument?.takeIf {
+                        it.cacheKey == documentGeneration && it.cacheKey != lastLoadedHtmlKey
+                    }?.let {
+                        activeArticleHtmlDocument.set(it)
+                        activeFontResources.set(fontResources)
+                        lastLoadedHtmlKey = it.cacheKey
+                        webView.loadUrl(it.url)
                     }
                 },
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
-                        translationX = dragVisualOffset
                         alpha = if (isInitialPaginationReady) 1f else 0f
                     },
             )
@@ -462,23 +476,19 @@ fun EInkPaginatedContent(
                                 }
                                 if (isDragConfirmed) {
                                     dragChange.consume()
-                                    horizontalDrag = totalDragX
-                                    dragVisualTarget = totalDragX.coerceIn(-maxDragPx, maxDragPx)
                                 }
                             }
                             // Gesture ended — switch article if pagination is ready or
                             // page count is known (totalPages > 0 means JS ran successfully)
                             if (isDragConfirmed && (isInitialPaginationReady || totalPages > 0)) {
-                                if (totalDragX < -100f && currentOnNextArticle != null) {
+                                if (totalDragX < -articleSwipeThreshold && currentOnNextArticle != null) {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     currentOnNextArticle?.invoke()
-                                } else if (totalDragX > 100f && currentOnPrevArticle != null) {
+                                } else if (totalDragX > articleSwipeThreshold && currentOnPrevArticle != null) {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     currentOnPrevArticle?.invoke()
                                 }
                             }
-                            horizontalDrag = 0f
-                            dragVisualTarget = 0f
                         }
                     },
             ) {
@@ -504,45 +514,17 @@ fun EInkPaginatedContent(
                 ) {}
             }
 
-            // Left arrow overlay - page turn feedback
-            androidx.compose.animation.AnimatedVisibility(
-                visible = showLeftArrow,
-                enter = fadeIn(animationSpec = tween(200)),
-                exit = fadeOut(animationSpec = tween(300)),
-                modifier = Modifier.align(Alignment.CenterStart).padding(start = 16.dp),
-            ) {
-                Text(
-                    text = "←",
-                    fontSize = 48.sp,
-                    color = Color.Black.copy(alpha = 0.5f),
-                )
-            }
-
-            // Right arrow overlay - page turn feedback
-            androidx.compose.animation.AnimatedVisibility(
-                visible = showRightArrow,
-                enter = fadeIn(animationSpec = tween(200)),
-                exit = fadeOut(animationSpec = tween(300)),
-                modifier = Modifier.align(Alignment.CenterEnd).padding(end = 16.dp),
-            ) {
-                Text(
-                    text = "→",
-                    fontSize = 48.sp,
-                    color = Color.Black.copy(alpha = 0.5f),
-                )
-            }
-
             // Boundary indicator - no more articles
             androidx.compose.animation.AnimatedVisibility(
                 visible = showBoundaryText != null,
-                enter = fadeIn(animationSpec = tween(200)),
-                exit = fadeOut(animationSpec = tween(300)),
+                enter = androidx.compose.animation.EnterTransition.None,
+                exit = androidx.compose.animation.ExitTransition.None,
                 modifier = Modifier.align(Alignment.Center),
             ) {
                 Text(
                     text = showBoundaryText ?: "",
                     fontSize = 16.sp,
-                    color = Color.Black.copy(alpha = 0.4f),
+                    color = Color.Black,
                 )
             }
 
@@ -589,28 +571,28 @@ fun EInkPaginatedContent(
             )
         }
 
-        // Full bottom bar — hidden by default, shown on tap, auto-hides after 3s
+        // Full bottom bar — shown and dismissed explicitly by the reader
         // Also hidden when pagination is not yet ready (totalPages == 0)
         AnimatedVisibility(
             visible = bottomBarVisible && totalPages > 0,
-            enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(animationSpec = tween(200)),
-            exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(animationSpec = tween(200)),
+            enter = androidx.compose.animation.EnterTransition.None,
+            exit = androidx.compose.animation.ExitTransition.None,
         ) {
             EInkPaginationBar(
                 currentPage = currentPage + 1,
                 totalPages = totalPages,
                 onPrev = {
                     prevPage()
-                    bottomBarVisible = true // Reset auto-hide timer on interaction
+                    bottomBarVisible = true
                 },
                 onNext = {
                     nextPage()
-                    bottomBarVisible = true // Reset auto-hide timer on interaction
+                    bottomBarVisible = true
                 },
                 canDecreaseFontSize = fontSizeIndex > 0,
                 canIncreaseFontSize = fontSizeIndex < EInkFontSizePreference.values.lastIndex,
                 onDecreaseFontSize = {
-                    bottomBarVisible = true // Reset auto-hide timer
+                    bottomBarVisible = true
                     if (fontSizeIndex > 0) {
                         EInkFontSizePreference.put(
                             context, coroutineScope,
@@ -619,7 +601,7 @@ fun EInkPaginatedContent(
                     }
                 },
                 onIncreaseFontSize = {
-                    bottomBarVisible = true // Reset auto-hide timer
+                    bottomBarVisible = true
                     if (fontSizeIndex < EInkFontSizePreference.values.lastIndex) {
                         EInkFontSizePreference.put(
                             context, coroutineScope,
@@ -638,14 +620,18 @@ fun EInkPaginatedContent(
 }
 
 private class EInkJsInterface(
-    private val onTotalPages: (Int) -> Unit,
-    private val onInitialPaginationReady: (Int) -> Unit,
+    private val onTotalPages: (String, Int) -> Unit,
+    private val onInitialPaginationReady: (String, Int) -> Unit,
+    private val onRepaginated: (String, Int, Int) -> Unit,
 ) {
     @JavascriptInterface
-    fun onTotalPages(pages: Int) = onTotalPages.invoke(pages)
+    fun onTotalPages(generation: String, pages: Int) = onTotalPages.invoke(generation, pages)
 
     @JavascriptInterface
-    fun onInitialPaginationReady(pages: Int) = onInitialPaginationReady.invoke(pages)
+    fun onRepaginated(generation: String, pages: Int, page: Int) = onRepaginated.invoke(generation, pages, page)
+
+    @JavascriptInterface
+    fun onInitialPaginationReady(generation: String, pages: Int) = onInitialPaginationReady.invoke(generation, pages)
 }
 
 private data class EInkArticleHtmlDocument(
@@ -671,27 +657,12 @@ private fun buildArticleHtmlDocument(
     lineHeight: Float,
     letterSpacing: Float,
     wordSpacing: Float,
+    generation: String,
 ): EInkArticleHtmlDocument {
     val outputDir = File(cacheDir, "eink-articles").apply { mkdirs() }
     deleteStaleArticleHtmlFiles(outputDir)
 
-    val cacheKey = listOf(
-        content.length,
-        content.hashCode(),
-        fontSize,
-        englishFont,
-        chineseFont,
-        englishFontFilePath.orEmpty(),
-        chineseFontFilePath.orEmpty(),
-        title,
-        feedName,
-        author.orEmpty(),
-        publishedDate.time,
-        horizontalPadding,
-        lineHeight,
-        letterSpacing,
-        wordSpacing,
-    ).joinToString(separator = "|")
+    val cacheKey = generation
     val outputFile = File.createTempFile("article-", ".html", outputDir)
 
     outputFile.bufferedWriter(Charsets.UTF_8).use { writer ->
@@ -711,6 +682,7 @@ private fun buildArticleHtmlDocument(
             lineHeight = lineHeight,
             letterSpacing = letterSpacing,
             wordSpacing = wordSpacing,
+            generation = generation,
         )
     }
 
@@ -739,6 +711,7 @@ private fun writeArticleHtml(
     lineHeight: Float,
     letterSpacing: Float,
     wordSpacing: Float,
+    generation: String,
 ) {
     val dateStr = SimpleDateFormat("MMM d, yyyy · HH:mm", Locale.getDefault()).format(publishedDate)
     val metaLine = buildString {
@@ -752,12 +725,11 @@ private fun writeArticleHtml(
 
     fun fontFaceBlock(cssName: String, filePath: String): String {
         val format = if (filePath.endsWith(".otf")) "opentype" else "truetype"
-        val mimeType = if (filePath.endsWith(".otf")) "font/otf" else "font/ttf"
-        val base64 = FontBase64Cache.getOrPut(filePath)
+        val url = EInkFontResource(File(filePath)).url
         return """
 @font-face {
     font-family: '$cssName';
-    src: url('data:$mimeType;base64,$base64') format('$format');
+    src: url('$url') format('$format');
     font-weight: normal;
     font-style: normal;
 }"""
@@ -789,7 +761,10 @@ private fun writeArticleHtml(
 $englishFontFace
 $chineseFontFace
 * { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; }
+*, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+html, body { margin: 0; padding: 0; background: #fff !important; }
+body * { color: #000 !important; background-color: transparent !important; }
+a, a:visited { color: #000 !important; text-decoration: underline; }
 body {
     padding: ${horizontalPadding}px;
     font-family: $fontFamilyCss;
@@ -878,13 +853,13 @@ iframe, video, embed, object {
 }
 </style>
 <script>
-var _vw = 0, _pageStride = 0, _totalPages = 1, _didFinishInitialPagination = false;
+var _vw = 0, _pageStride = 0, _totalPages = 1, _currentPage = 0, _didFinishInitialPagination = false;
 function recountPages() {
     try {
         var sw = document.body.scrollWidth;
         if (!sw || !_pageStride || _pageStride <= 0 || !isFinite(sw) || !isFinite(_pageStride)) {
             _totalPages = 1;
-            Android.onTotalPages(_totalPages);
+            Android.onTotalPages('$generation', _totalPages);
             return;
         }
         var n = Math.max(1, Math.round(sw / _pageStride));
@@ -898,31 +873,46 @@ function recountPages() {
             }
         }
         _totalPages = Math.max(1, n);
-        Android.onTotalPages(_totalPages);
+        Android.onTotalPages('$generation', _totalPages);
     } catch (e) {
         _totalPages = 1;
-        try { Android.onTotalPages(_totalPages); } catch (e2) {}
+        try { Android.onTotalPages('$generation', _totalPages); } catch (e2) {}
     }
 }
 function goToPage(n) {
     // Clamp to valid range
     if (n < 0) n = 0;
     if (n >= _totalPages) n = _totalPages - 1;
+    _currentPage = n;
     document.body.style.transform = 'translateX(-' + (n * _pageStride) + 'px)';
 }
+function layoutViewport() {
+    _vw = window.innerWidth || document.documentElement.clientWidth || 360;
+    var vh = window.innerHeight || document.documentElement.clientHeight || 640;
+    _pageStride = _vw;
+    document.body.style.height = vh + 'px';
+    var padding = ${horizontalPadding};
+    document.body.style.columnGap = (padding * 2) + 'px';
+    document.body.style.columnWidth = Math.max(1, _pageStride - padding * 2) + 'px';
+}
+var _resizeTimer;
+window.addEventListener('resize', function() {
+    clearTimeout(_resizeTimer);
+    _resizeTimer = setTimeout(function() {
+        if (!_didFinishInitialPagination) return;
+        var fraction = _totalPages > 1 ? _currentPage / (_totalPages - 1) : 0;
+        document.body.style.transform = 'none';
+        layoutViewport();
+        recountPages();
+        goToPage(Math.round(fraction * (_totalPages - 1)));
+        try { Android.onRepaginated('$generation', _totalPages, _currentPage); } catch (e) {}
+    }, 100);
+});
 function finishInitialPagination() {
     if (_didFinishInitialPagination) return;
     _didFinishInitialPagination = true;
     try {
-        _vw = window.innerWidth;
-        var vh = window.innerHeight;
-        if (!_vw || _vw <= 0) _vw = document.documentElement.clientWidth || 360;
-        if (!vh || vh <= 0) vh = document.documentElement.clientHeight || 640;
-        _pageStride = _vw;
-        document.body.style.height = vh + 'px';
-        var padding = ${horizontalPadding};
-        document.body.style.columnGap = (padding * 2) + 'px';
-        document.body.style.columnWidth = (_pageStride - padding * 2) + 'px';
+        layoutViewport();
         recountPages();
         goToPage(0);
         document.body.style.visibility = 'visible';
@@ -932,7 +922,7 @@ function finishInitialPagination() {
     }
     // ALWAYS fire — this is the call that unblocks Kotlin gesture handling.
     // Must be outside the try block so it executes even if setup failed.
-    try { Android.onInitialPaginationReady(_totalPages); } catch (e) {}
+    try { Android.onInitialPaginationReady('$generation', _totalPages); } catch (e) {}
     // Delayed recounts for image reflow — do NOT re-hide body
     setTimeout(recountPages, 500);
     setTimeout(recountPages, 1500);
@@ -948,8 +938,18 @@ function finishInitialPagination() {
     } catch (e) {}
 }
 function scheduleInitialPagination() {
-    window.requestAnimationFrame(function() {
-        finishInitialPagination();
+    // Wait for selected fonts, with a bounded fallback for old/broken WebViews.
+    var done = false;
+    function ready() {
+        if (done) return;
+        done = true;
+        window.requestAnimationFrame(finishInitialPagination);
+    }
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(ready, ready);
+    else ready();
+    setTimeout(ready, 1500);
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(function() {
+        if (_didFinishInitialPagination) recountPages();
     });
 }
 if (document.readyState === 'loading') {
@@ -1036,13 +1036,6 @@ internal fun appendSanitizedHtml(out: Appendable, html: String) {
                 continue
             }
             index++
-            continue
-        }
-
-        val decoded = decodeHtmlEntityAt(html, index)
-        if (decoded != null) {
-            appendChar(decoded.char)
-            index += decoded.length
             continue
         }
 

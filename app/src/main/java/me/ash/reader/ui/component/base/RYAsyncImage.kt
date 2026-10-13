@@ -4,6 +4,9 @@ import androidx.annotation.DrawableRes
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.LaunchedEffect
+import coil.compose.AsyncImagePainter
+import android.graphics.drawable.Animatable
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.ui.Modifier
@@ -18,6 +21,7 @@ import coil.request.ImageRequest
 import coil.size.Precision
 import coil.size.Scale
 import coil.size.Size
+import me.ash.reader.ui.theme.isEInkMode
 import me.ash.reader.ui.ext.extractDomain
 
 val SIZE_1000 = Size(1000, 1000)
@@ -34,6 +38,7 @@ fun RYAsyncImage(
     @DrawableRes placeholder: Int? = null,
     @DrawableRes error: Int? = null,
 ) {
+    val einkMode = isEInkMode
     val painter =
         rememberAsyncImagePainter(
             model =
@@ -48,13 +53,18 @@ fun RYAsyncImage(
                     .apply {
                         if (placeholder != null) placeholder(placeholder)
                         if (error != null) error(error)
-                        crossfade(true)
+                        crossfade(!einkMode)
                         scale(scale)
                         precision(precision)
                         size(size)
                     }
                     .build()
         )
+    LaunchedEffect(painter.state, einkMode) {
+        if (einkMode) {
+            ((painter.state as? AsyncImagePainter.State.Success)?.result?.drawable as? Animatable)?.stop()
+        }
+    }
     Image(
         painter = painter,
         contentDescription = contentDescription,
@@ -62,34 +72,7 @@ fun RYAsyncImage(
         modifier = modifier.background(MaterialTheme.colorScheme.surfaceContainer),
     )
 
-    //    coil.compose.AsyncImage(
-    //        modifier = modifier,
-    //        model = ImageRequest
-    //            .Builder(LocalContext.current)
-    //            .data(data)
-    //            .crossfade(true)
-    //            .scale(scale)
-    //            .precision(precision)
-    //            .size(size)
-    //            .build(),
-    //        contentDescription = contentDescription,
-    //        contentScale = contentScale,
-    //        imageLoader = LocalImageLoader.current,
-    //        placeholder = placeholder?.run {
-    //            forwardingPainter(
-    //                painter = painterResource(this),
-    //                colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.onSurfaceVariant),
-    //                alpha = 0.1f,
-    //            )
-    //        },
-    //        error = error?.run {
-    //            forwardingPainter(
-    //                painter = painterResource(this),
-    //                colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.onSurfaceVariant),
-    //                alpha = 0.1f,
-    //            )
-    //        },
-    //    )
+
 }
 
 // From: https://gist.github.com/colinrtwhite/c2966e0b8584b4cdf0a5b05786b20ae1

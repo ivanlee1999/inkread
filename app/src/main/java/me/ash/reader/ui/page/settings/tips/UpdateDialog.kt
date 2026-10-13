@@ -43,6 +43,7 @@ fun UpdateDialog(
     updateViewModel: UpdateViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
+    val githubUrl = stringResource(R.string.github_link)
     val updateUiState = updateViewModel.updateUiState.collectAsStateValue()
     val downloadState = updateUiState.downloadFlow.collectAsState(initial = Download.NotYet).value
     val scope = rememberCoroutineScope { Dispatchers.IO }
@@ -107,7 +108,7 @@ fun UpdateDialog(
         confirmButton = {
             TextButton(
                 onClick = {
-                    context.openURL("${context.getString(R.string.github_link)}/releases/latest", OpenLinkPreference.AutoPreferCustomTabs)
+                    context.openURL("${githubUrl}/releases/latest", OpenLinkPreference.AutoPreferCustomTabs)
                     // Disable automatic updates in F-Droid
 //                    if (downloadState !is Download.Progress) {
 //                        updateViewModel.dispatch(
