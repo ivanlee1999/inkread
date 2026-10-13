@@ -60,7 +60,7 @@ constructor(
     suspend fun searchFeed(feedLink: String): SearchFeedResult {
         return withContext(ioDispatcher) {
             val (directBody, directHttpContentType) = response(okHttpClient, feedLink).use {
-                if (!it.commonIsSuccessful) throw IOException(it.message)
+                if (!it.isSuccessful) throw IOException(it.message)
                 it.body.bytes() to toHttpContentType(it.header("Content-Type"))
             }
             val parsedDirectFeed = runCatching { parseFeed(directBody, directHttpContentType) }.getOrNull()
@@ -70,7 +70,7 @@ constructor(
                     ?: throw IOException("Unable to detect RSS feed URL")
 
             val feed = parsedDirectFeed ?: response(okHttpClient, resolvedFeedLink).use {
-                if (!it.commonIsSuccessful) throw IOException(it.message)
+                if (!it.isSuccessful) throw IOException(it.message)
                 parseFeed(it.body.bytes(), toHttpContentType(it.header("Content-Type")))
             }
 

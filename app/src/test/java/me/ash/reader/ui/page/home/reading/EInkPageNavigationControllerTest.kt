@@ -260,4 +260,36 @@ class EInkPageNavigationControllerTest {
         // Should have navigated at most MAX_PENDING pages
         assertEquals(EInkPageNavigationController.MAX_PENDING, controller.currentPage)
     }
+    @Test
+    fun `repeated queued and direct events trigger article navigation only once until reset`() {
+        var calls = 0
+        val navigation = EInkPageNavigationController(onNextArticle = { calls++ }, hasNextArticle = { true })
+        repeat(8) { navigation.handleNavigation(VolumeKeyEvent.NEXT) }
+        navigation.onPaginationReady(1)
+        repeat(8) { navigation.handleNavigation(VolumeKeyEvent.NEXT) }
+        assertEquals(1, calls)
+        navigation.onContentReset()
+        navigation.onPaginationReady(1)
+        navigation.handleNavigation(VolumeKeyEvent.NEXT)
+        assertEquals(2, calls)
+    }
+
+    @Test fun `recount before ready still queues navigation`() {
+        controller.onTotalPagesUpdated(5)
+        controller.handleNavigation(VolumeKeyEvent.NEXT)
+        assertTrue(pagesApplied.isEmpty())
+        controller.onPaginationReady(5)
+        assertEquals(1, controller.currentPage)
+    }
+
+    @Test fun `viewport repagination restores and clamps the logical page`() {
+        controller.onPaginationReady(10)
+        controller.onRepaginated(20, 8)
+        assertEquals(8, controller.currentPage)
+        assertEquals(20, controller.totalPages)
+        assertEquals(8, pagesApplied.last())
+        controller.onRepaginated(2, 99)
+        assertEquals(1, controller.currentPage)
+    }
+
 }

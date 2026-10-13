@@ -32,7 +32,7 @@ constructor(
             .sync(accountId = accountId, feedId = feedId, groupId = groupId)
             .also {
                 rssService.get().clearKeepArchivedArticles().forEach {
-                    readerCacheHelper.deleteCacheFor(articleId = it.id)
+                    readerCacheHelper.deleteCacheFor(articleId = it.id, accountId = it.accountId)
                 }
                 workManager
                     .beginUniqueWork(

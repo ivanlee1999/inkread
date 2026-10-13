@@ -21,12 +21,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -58,13 +52,6 @@ fun EInkPaginationBar(
     currentArticleIndex: Int? = null,
     totalArticleCount: Int? = null,
 ) {
-    var pageTextBold by remember { mutableStateOf(false) }
-    LaunchedEffect(currentPage) {
-        pageTextBold = true
-        delay(1000)
-        pageTextBold = false
-    }
-
     // Bottom bar: page controls, font size, article nav, progress
     Column(
         modifier = modifier
@@ -90,143 +77,50 @@ fun EInkPaginationBar(
                 trackColor = Color(0xFFE0E0E0),
             )
         }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(52.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        // Previous article
-        IconButton(
-            onClick = { onPrevArticle?.invoke() },
-            enabled = onPrevArticle != null,
-            modifier = Modifier.size(48.dp),
+        Row(
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = "⏮",
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold,
-                color = if (onPrevArticle != null) {
-                    MaterialTheme.colorScheme.onSurface
-                } else {
-                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
-                },
-            )
-        }
-
-        // Font size decrease
-        IconButton(
-            onClick = onDecreaseFontSize,
-            enabled = canDecreaseFontSize,
-            modifier = Modifier.size(48.dp),
-        ) {
-            Text(
-                text = "A↓",
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                color = if (canDecreaseFontSize) {
-                    MaterialTheme.colorScheme.onSurface
-                } else {
-                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
-                },
-            )
-        }
-
-        // Previous page
-        IconButton(
-            onClick = onPrev,
-            enabled = currentPage > 1,
-            modifier = Modifier.size(52.dp),
-        ) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                contentDescription = stringResource(R.string.previous_page),
-                tint = if (currentPage > 1) {
-                    MaterialTheme.colorScheme.onSurface
-                } else {
-                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
-                },
-            )
-        }
-
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                text = if (totalArticles != null) {
-                    "$currentPage / $totalPages · ${stringResource(R.string.articles_count, totalArticles)}"
-                } else if (progress != null) {
-                    "$currentPage / $totalPages ($progress%)"
-                } else {
-                    "$currentPage / $totalPages"
-                },
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    fontWeight = if (pageTextBold) FontWeight.Bold else FontWeight.Medium,
-                    fontSize = 14.sp,
-                ),
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            if (currentArticleIndex != null && totalArticleCount != null) {
+            IconButton(onClick = onPrev, enabled = currentPage > 1, modifier = Modifier.size(48.dp)) {
+                Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.previous_page), tint = Color.Black)
+            }
+            Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = "$currentArticleIndex/$totalArticleCount",
-                    fontSize = 11.sp,
-                    color = Color.Gray,
+                    text = if (progress != null) "$currentPage / $totalPages ($progress%)" else "$currentPage / $totalPages",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color.Black,
                 )
+                if (totalArticles != null) {
+                    Text(stringResource(R.string.articles_count, totalArticles), fontSize = 11.sp, color = Color.Black)
+                } else if (currentArticleIndex != null && totalArticleCount != null) {
+                    Text("$currentArticleIndex/$totalArticleCount", fontSize = 11.sp, color = Color.Black)
+                }
+            }
+            IconButton(onClick = onNext, enabled = currentPage < totalPages, modifier = Modifier.size(48.dp)) {
+                Icon(Icons.AutoMirrored.Rounded.ArrowForward, stringResource(R.string.next_page), tint = Color.Black)
             }
         }
-
-        // Next page
-        IconButton(
-            onClick = onNext,
-            enabled = currentPage < totalPages,
-            modifier = Modifier.size(52.dp),
-        ) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
-                contentDescription = stringResource(R.string.next_page),
-                tint = if (currentPage < totalPages) {
-                    MaterialTheme.colorScheme.onSurface
-                } else {
-                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
-                },
-            )
+        if (onPrevArticle != null || onNextArticle != null || canDecreaseFontSize || canIncreaseFontSize) {
+            Row(
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = { onPrevArticle?.invoke() }, enabled = onPrevArticle != null, modifier = Modifier.size(48.dp)) {
+                    Text("⏮", color = Color.Black)
+                }
+                IconButton(onClick = onDecreaseFontSize, enabled = canDecreaseFontSize, modifier = Modifier.size(48.dp)) {
+                    Text("A↓", color = Color.Black)
+                }
+                IconButton(onClick = onIncreaseFontSize, enabled = canIncreaseFontSize, modifier = Modifier.size(48.dp)) {
+                    Text("A↑", color = Color.Black)
+                }
+                IconButton(onClick = { onNextArticle?.invoke() }, enabled = onNextArticle != null, modifier = Modifier.size(48.dp)) {
+                    Text("⏭", color = Color.Black)
+                }
+            }
         }
-
-        // Font size increase
-        IconButton(
-            onClick = onIncreaseFontSize,
-            enabled = canIncreaseFontSize,
-            modifier = Modifier.size(48.dp),
-        ) {
-            Text(
-                text = "A↑",
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                color = if (canIncreaseFontSize) {
-                    MaterialTheme.colorScheme.onSurface
-                } else {
-                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
-                },
-            )
-        }
-
-        // Next article
-        IconButton(
-            onClick = { onNextArticle?.invoke() },
-            enabled = onNextArticle != null,
-            modifier = Modifier.size(48.dp),
-        ) {
-            Text(
-                text = "⏭",
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold,
-                color = if (onNextArticle != null) {
-                    MaterialTheme.colorScheme.onSurface
-                } else {
-                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
-                },
-            )
-        }
-    }
         if (lastSyncTime != null && lastSyncTime > 0L) {
             val elapsed = (System.currentTimeMillis() - lastSyncTime) / 1000
             val timeText = when {

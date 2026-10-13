@@ -25,6 +25,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import me.ash.reader.ui.theme.isEInkMode
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.StrokeCap
@@ -123,12 +124,12 @@ fun TtsButton(
 @Composable
 fun TtsProgressIndicator(progress: (() -> Float), modifier: Modifier = Modifier) {
 
-    val animatedProgress by animateFloatAsState(
+    val resolvedProgress = if (isEInkMode) progress() else animateFloatAsState(
         targetValue = progress(),
         animationSpec = ProgressIndicatorDefaults.ProgressAnimationSpec
-    )
+    ).value
     CircularProgressIndicator(
-        progress = { animatedProgress },
+        progress = { resolvedProgress },
         modifier = modifier.size(24.dp),
         gapSize = 0.dp,
         strokeCap = StrokeCap.Butt,

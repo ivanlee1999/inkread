@@ -105,6 +105,7 @@ fun ReaderImageViewer(
                 contentScale = ContentScale.Inside,
             )
 
+            val permissionDeniedMessage = stringResource(R.string.permission_denied)
             val launcher =
                 rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.RequestPermission(),
@@ -112,7 +113,7 @@ fun ReaderImageViewer(
                         if (result) {
                             onDownloadImage(imageData.imageUrl)
                         } else {
-                            context.showToast(context.getString(R.string.permission_denied))
+                            context.showToast(permissionDeniedMessage)
                         }
                     },
                 )

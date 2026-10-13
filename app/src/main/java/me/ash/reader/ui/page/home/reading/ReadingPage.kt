@@ -34,6 +34,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -407,6 +408,8 @@ fun ReadingPage(
             }
         },
     )
+    val imageSavedMessage = stringResource(R.string.image_saved)
+    val imageSaveFailedMessage = stringResource(R.string.image_save_failed)
     if (showFullScreenImageViewer) {
 
         ReaderImageViewer(
@@ -414,11 +417,11 @@ fun ReadingPage(
             onDownloadImage = {
                 viewModel.downloadImage(
                     it,
-                    onSuccess = { context.showToast(context.getString(R.string.image_saved)) },
+                    onSuccess = { context.showToast(imageSavedMessage) },
                     onFailure = { th ->
                         timber.log.Timber.e(th, "Image download failed")
                         context.showToast(
-                            context.getString(R.string.image_save_failed)
+                            imageSaveFailedMessage
                         )
                     },
                 )

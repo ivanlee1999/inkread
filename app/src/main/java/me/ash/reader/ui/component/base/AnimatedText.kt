@@ -6,6 +6,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import me.ash.reader.ui.theme.isEInkMode
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextLayoutResult
@@ -38,6 +39,14 @@ fun AnimatedText(
     onTextLayout: (TextLayoutResult) -> Unit = {},
     style: TextStyle = LocalTextStyle.current,
 ) {
+    if (isEInkMode) {
+        Text(text = text, modifier = modifier, color = color, fontSize = fontSize,
+            fontStyle = fontStyle, fontWeight = fontWeight, fontFamily = fontFamily,
+            letterSpacing = letterSpacing, textDecoration = textDecoration, textAlign = textAlign,
+            lineHeight = lineHeight, overflow = overflow, softWrap = softWrap, maxLines = maxLines,
+            onTextLayout = onTextLayout, style = style)
+        return
+    }
     AnimatedContent(
         targetState = text,
         transitionSpec = {

@@ -47,6 +47,16 @@ class EInkHtmlSanitizerTest {
         assertTrue(out.maxAppendLength < html.length)
     }
 
+    @Test
+    fun `escaped markup remains readable text and cannot become executable`() {
+        val escaped = "<p>&#60;script&#62;Android.onTotalPages(999)&#60;/script&#62; &amp; &#x3C;img onerror=evil()&#x3E;</p>"
+        val out = StringBuilder()
+        appendSanitizedHtml(out, escaped)
+        assertEquals(escaped, out.toString())
+        assertFalse(out.contains("<script"))
+        assertFalse(out.contains("<img"))
+    }
+
     private class TrackingAppendable : Appendable {
         private val delegate = StringBuilder()
         var maxAppendLength = 0

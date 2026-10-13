@@ -91,7 +91,7 @@ fun ArticleListReaderPage(
                 get(ListDetailPaneScaffoldRole.Detail) == PaneAdaptedValue.Expanded
         }
 
-    val disablePaneAnimations = einkMode && isTwoPane
+    val disablePaneAnimations = einkMode
 
     val navigationAction =
         if (isTwoPane) {
@@ -122,10 +122,8 @@ fun ArticleListReaderPage(
             NavigationAction.ExpandList -> ExpandedContentWidth
         }
 
-    val animatedContentWidthState by animateDpAsState(contentWidth)
-    val resolvedContentWidth = if (disablePaneAnimations) contentWidth else animatedContentWidthState
-    val animatedListAlphaState by animateFloatAsState(listAlpha)
-    val resolvedListAlpha = if (disablePaneAnimations) listAlpha else animatedListAlphaState
+    val resolvedContentWidth = if (einkMode) contentWidth else animateDpAsState(contentWidth).value
+    val resolvedListAlpha = if (einkMode) listAlpha else animateFloatAsState(listAlpha).value
 
     NavigableListDetailPaneScaffold(
         navigator = navigator,

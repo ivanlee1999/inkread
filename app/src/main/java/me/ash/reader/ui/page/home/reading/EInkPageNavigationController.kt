@@ -28,6 +28,8 @@ class EInkPageNavigationController(
     var isReady: Boolean = false
         private set
 
+    private var articleNavigationPending = false
+
     private val pendingQueue = ArrayDeque<VolumeKeyEvent>(MAX_PENDING)
 
     /**
@@ -36,7 +38,8 @@ class EInkPageNavigationController(
      * [onPaginationReady] is called.
      */
     fun handleNavigation(event: VolumeKeyEvent) {
-        if (!isReady && totalPages == 0) {
+        if (articleNavigationPending) return
+        if (!isReady) {
             enqueue(event)
             return
         }
@@ -69,6 +72,14 @@ class EInkPageNavigationController(
         onPageChanged(currentPage + 1, totalPages)
     }
 
+    /** Restore the logical position after a viewport resize changes the columns. */
+    fun onRepaginated(pages: Int, page: Int) {
+        totalPages = maxOf(1, pages)
+        currentPage = page.coerceIn(0, totalPages - 1)
+        onApplyPageToWebView(currentPage)
+        onPageChanged(currentPage + 1, totalPages)
+    }
+
     /**
      * Called when content/article changes. Resets all state and clears any
      * pending queued events to prevent stale navigation from carrying into
@@ -79,6 +90,7 @@ class EInkPageNavigationController(
         currentPage = 0
         totalPages = 0
         pendingQueue.clear()
+        articleNavigationPending = false
     }
 
     /**
@@ -114,6 +126,8 @@ class EInkPageNavigationController(
             onPageChanged(currentPage + 1, totalPages)
             onPageTurnFeedback(VolumeKeyEvent.NEXT)
         } else if (hasNextArticle()) {
+            articleNavigationPending = true
+            pendingQueue.clear()
             onNextArticle()
         } else {
             onBoundary("No more articles")
@@ -127,6 +141,8 @@ class EInkPageNavigationController(
             onPageChanged(currentPage + 1, totalPages)
             onPageTurnFeedback(VolumeKeyEvent.PREV)
         } else if (hasPrevArticle()) {
+            articleNavigationPending = true
+            pendingQueue.clear()
             onPrevArticle()
         } else {
             onBoundary("No previous articles")
