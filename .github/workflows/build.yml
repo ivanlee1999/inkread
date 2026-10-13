@@ -64,7 +64,7 @@ jobs:
 
   release:
     needs: build
-    if: github.event_name == 'push' || inputs.publish-release
+    if: github.event_name == 'workflow_dispatch' && inputs.publish-release
     runs-on: ubuntu-latest
     permissions:
       contents: write
