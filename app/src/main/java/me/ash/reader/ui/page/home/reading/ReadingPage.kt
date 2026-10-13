@@ -152,6 +152,7 @@ fun ReadingPage(
                                 }
                         ) {
                             EInkPaginatedContent(
+                                articleId = readerState.articleId,
                                 contentPadding = paddings,
                                 content = readerState.content.text ?: "",
                                 feedName = readerState.feedName,

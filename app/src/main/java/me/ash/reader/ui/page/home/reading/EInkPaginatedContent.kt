@@ -85,6 +85,7 @@ import androidx.compose.ui.unit.dp
 fun EInkPaginatedContent(
     modifier: Modifier = Modifier,
     content: String,
+    articleId: String? = null,
     feedName: String,
     title: String,
     author: String? = null,
@@ -205,7 +206,7 @@ fun EInkPaginatedContent(
     DisposableEffect(Unit) {
         onDispose { VolumeKeyEventBus.unregister(VolumeKeyPriority.HIGH) }
     }
-    val documentGeneration = remember(content, einkFontSize, einkEnglishFont, einkChineseFont,
+    val documentGeneration = remember(articleId, link, content, einkFontSize, einkEnglishFont, einkChineseFont,
         englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate,
         horizontalPadding, lineHeight, letterSpacing, wordSpacing) { UUID.randomUUID().toString() }
     val currentGeneration = rememberUpdatedState(documentGeneration)

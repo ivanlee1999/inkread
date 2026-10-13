@@ -73,6 +73,27 @@ class EInkReaderUiTest {
         compose.waitUntil(5_000) { page.get() == 2 }
     }
 
+    @Test fun identicalArticlesCanNavigateRepeatedly() {
+        val identity = mutableStateOf("article-0")
+        val navigations = AtomicInteger()
+        val count = AtomicInteger()
+        compose.setContent {
+            CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON) {
+                AppTheme(useDarkTheme = false) {
+                    EInkPaginatedContent(articleId = identity.value, content = "<p>Identical content</p>",
+                        title = "Identical title", feedName = "Identical feed", publishedDate = Date(0),
+                        onPageChanged = { _, total -> count.set(total) },
+                        onNextArticle = { identity.value = "article-${navigations.incrementAndGet()}" })
+                }
+            }
+        }
+        compose.waitUntil(15_000) { count.get() == 1 }
+        for (expected in 1..3) {
+            compose.onRoot().performTouchInput { click(Offset(width * .8f, height * .5f)) }
+            compose.waitUntil(5_000) { navigations.get() == expected }
+        }
+    }
+
     private fun findWebView(view: View): WebView? {
         if (view is WebView) return view
         if (view is ViewGroup) for (index in 0 until view.childCount) {
