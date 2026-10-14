@@ -48,12 +48,12 @@ class EInkPageNavigationController(
 
     /**
      * Called when the JS bridge reports initial pagination is ready.
-     * Sets page count, resets to page 0, marks ready, and flushes any
+     * Sets page count and restored page, marks ready, and flushes any
      * queued navigation events.
      */
-    fun onPaginationReady(pages: Int) {
+    fun onPaginationReady(pages: Int, restoredPage: Int = 0) {
         totalPages = maxOf(1, pages)
-        currentPage = 0
+        currentPage = restoredPage.coerceIn(0, totalPages - 1)
         isReady = true
         onPageChanged(currentPage + 1, totalPages)
         flushPending()
@@ -76,7 +76,7 @@ class EInkPageNavigationController(
     fun onRepaginated(pages: Int, page: Int) {
         totalPages = maxOf(1, pages)
         currentPage = page.coerceIn(0, totalPages - 1)
-        onApplyPageToWebView(currentPage)
+        // JavaScript already applied the page while preserving its content anchor.
         onPageChanged(currentPage + 1, totalPages)
     }
 
