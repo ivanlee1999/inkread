@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
+import android.view.inputmethod.InputMethodManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -213,42 +214,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        Log.d("InkRead", "dispatchKeyEvent: code=${event.keyCode} action=${event.action} repeat=${event.repeatCount}")
-        if (settingsProvider.settings.einkMode.isEInkMode()) {
-            when (event.keyCode) {
-                KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_UP -> {
-                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
-                        val direction = if (event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)
-                            VolumeKeyEvent.NEXT else VolumeKeyEvent.PREV
-                        Log.d("InkRead", "Volume key: emitting $direction")
-                        VolumeKeyEventBus.emit(direction)
-                    }
-                    return true
-                }
-                KeyEvent.KEYCODE_VOLUME_MUTE -> return true
-            }
+        if (!EInkHardwareKeyPolicy.isNavigationKey(event.keyCode)) return super.dispatchKeyEvent(event)
+        val decision = EInkHardwareKeyPolicy.action(
+            keyCode = event.keyCode,
+            action = event.action,
+            repeatCount = event.repeatCount,
+            einkEnabled = settingsProvider.settings.einkMode.isEInkMode(),
+            readerActive = VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.HIGH),
+            listActive = VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.LOW),
+            textInputActive = currentFocus?.onCheckIsTextEditor() == true ||
+                getSystemService(InputMethodManager::class.java)?.isAcceptingText == true,
+        )
+        when (decision) {
+            EInkKeyAction.PASS_THROUGH -> return super.dispatchKeyEvent(event)
+            EInkKeyAction.CONSUME -> return true
+            EInkKeyAction.NEXT -> VolumeKeyEventBus.emit(VolumeKeyEvent.NEXT)
+            EInkKeyAction.PREV -> VolumeKeyEventBus.emit(VolumeKeyEvent.PREV)
         }
-        return super.dispatchKeyEvent(event)
-    }
-
-    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        // Volume keys are already handled in dispatchKeyEvent; just consume them
-        // here to prevent any fallthrough (e.g. from WebView focus stealing).
-        if (settingsProvider.settings.einkMode.isEInkMode()) {
-            when (keyCode) {
-                KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_UP -> return true
-            }
-        }
-        return super.onKeyDown(keyCode, event)
-    }
-
-    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
-        if (settingsProvider.settings.einkMode.isEInkMode()) {
-            when (keyCode) {
-                KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_UP -> return true
-            }
-        }
-        return super.onKeyUp(keyCode, event)
+        return true
     }
 
     override fun onResume() {

@@ -23,6 +23,7 @@ import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -44,7 +45,11 @@ import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.unit.sp
 import kotlin.math.abs
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.SharedFlow
+import me.ash.reader.infrastructure.android.VolumeKeyEvent
 import me.ash.reader.R
+import me.ash.reader.infrastructure.android.VolumeKeyEventBus
+import me.ash.reader.infrastructure.android.VolumeKeyPriority
 import me.ash.reader.infrastructure.android.TextToSpeechManager
 import me.ash.reader.infrastructure.preference.LocalOpenLink
 import me.ash.reader.infrastructure.preference.LocalOpenLinkSpecificBrowser
@@ -89,6 +94,13 @@ fun ReadingPage(
     var showFullScreenImageViewer by remember { mutableStateOf(false) }
 
     var currentImageData by remember { mutableStateOf(ImageData()) }
+
+    // Own the reader keys for its whole visible lifetime, including content loading.
+    // A loading press must not page the library underneath a tablet reader.
+    val readerVolumeKeyFlow = rememberEInkReaderVolumeKeyFlow(
+        visible = isEInkMode && readerState.articleId != null,
+        loading = readerState.content is ReaderState.Loading,
+    )
 
     val isShowToolBar =
         if (LocalReadingAutoHideToolbar.current.value) {
@@ -153,6 +165,8 @@ fun ReadingPage(
                         ) {
                             EInkPaginatedContent(
                                 articleId = readerState.articleId,
+                                accountId = readerState.accountId,
+                                registeredVolumeKeyFlow = readerVolumeKeyFlow,
                                 contentPadding = paddings,
                                 content = readerState.content.text ?: "",
                                 feedName = readerState.feedName,
@@ -182,6 +196,9 @@ fun ReadingPage(
                                 onNavigateToStylePage = onNavigateToStylePage,
                                 currentArticleIndex = readerState.articleOrdinal,
                                 totalArticleCount = readerState.totalArticleCount,
+                                contentLabel = if (readerState.content is ReaderState.Description &&
+                                    readingUiState.articleWithFeed?.feed?.isFullContent == true)
+                                    stringResource(R.string.article_desc) else null,
                             )
                         }
                         }
@@ -430,4 +447,15 @@ fun ReadingPage(
             onDismissRequest = { showFullScreenImageViewer = false },
         )
     }
+}
+
+
+/** The reader keeps priority while loading; those presses must never reach its library pane. */
+@Composable
+internal fun rememberEInkReaderVolumeKeyFlow(visible: Boolean, loading: Boolean): SharedFlow<VolumeKeyEvent>? {
+    if (!visible) return null
+    val flow = remember { VolumeKeyEventBus.register(VolumeKeyPriority.HIGH) }
+    DisposableEffect(Unit) { onDispose { VolumeKeyEventBus.unregister(VolumeKeyPriority.HIGH) } }
+    if (loading) LaunchedEffect(flow) { flow.collect { /* Deliberately discard loading presses. */ } }
+    return flow
 }

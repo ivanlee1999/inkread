@@ -5,8 +5,10 @@ import androidx.paging.ItemSnapshotList
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import java.io.FileNotFoundException
+import java.io.IOException
 import java.util.Date
 import kotlin.coroutines.Continuation
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.intrinsics.startCoroutineUninterceptedOrReturn
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -42,6 +44,8 @@ import me.ash.reader.infrastructure.rss.ReaderCacheHelper
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.mockito.invocation.InvocationOnMock
@@ -186,6 +190,135 @@ class ArticleListReaderViewModelTest {
         assertEquals(ReaderState.FullContent("ready A"), fixture.viewModel.readerStateStateFlow.value.content)
     }
 
+    @Test fun `initial full content failure keeps persisted feed HTML readable`() = runTest(dispatcher) {
+        val summary = "<p>Persisted article text</p>"
+        val a = article("A", fullContent = true, description = summary)
+        val fixture = fixture(a)
+        whenever(fixture.cache.readOrFetchFullContent(a.article))
+            .thenReturn(Result.failure(IOException("Offline")))
+
+        fixture.viewModel.initData(a.article.id)
+        runCurrent()
+
+        assertEquals(a.article.id, fixture.viewModel.readerStateStateFlow.value.articleId)
+        assertEquals(ReaderState.Description(summary), fixture.viewModel.readerStateStateFlow.value.content)
+        verify(fixture.cache).readFullContent(a.article.id, a.article.accountId)
+        verify(fixture.cache).readOrFetchFullContent(a.article)
+    }
+
+    @Test fun `explicit full content failure falls back to persisted feed HTML`() = runTest(dispatcher) {
+        val a = article("A", description = "<p>Available offline</p>")
+        val fixture = fixture(a)
+        val fetched = CompletableDeferred<Result<String>>()
+        whenever(fixture.cache.readOrFetchFullContent(a.article)).thenSuspend { fetched.await() }
+        fixture.viewModel.initData(a.article.id)
+        runCurrent()
+
+        fixture.viewModel.renderFullContent()
+        advanceTimeBy(200)
+        runCurrent()
+        assertEquals(ReaderState.Loading, fixture.viewModel.readerStateStateFlow.value.content)
+        fetched.complete(Result.failure(IOException("Connection unavailable")))
+        runCurrent()
+
+        assertEquals(ReaderState.Description(a.article.rawDescription), fixture.viewModel.readerStateStateFlow.value.content)
+    }
+
+    @Test fun `full content failure with blank feed text retains error`() = runTest(dispatcher) {
+        val a = article("A", fullContent = true, description = " \n\t ")
+        val fixture = fixture(a)
+        whenever(fixture.cache.readOrFetchFullContent(a.article))
+            .thenReturn(Result.failure(IOException("Offline")))
+
+        fixture.viewModel.initData(a.article.id)
+        runCurrent()
+
+        assertEquals(ReaderState.Error("Offline"), fixture.viewModel.readerStateStateFlow.value.content)
+    }
+
+    @Test fun `cached full content remains preferred over offline summary without fetching`() = runTest(dispatcher) {
+        val a = article("A", fullContent = true)
+        val fixture = fixture(a)
+        whenever(fixture.cache.readFullContent(a.article.id, a.article.accountId))
+            .thenReturn(Result.success("<p>Cached full article</p>"))
+
+        fixture.viewModel.initData(a.article.id)
+        runCurrent()
+
+        assertEquals(ReaderState.FullContent("<p>Cached full article</p>"), fixture.viewModel.readerStateStateFlow.value.content)
+        verify(fixture.cache, never()).readOrFetchFullContent(any())
+    }
+
+    @Test fun `cancelled disk result propagates from initial rendering`() = runTest(dispatcher) {
+        val a = article("A", fullContent = true)
+        val fixture = fixture(a)
+        val cancellation = CancellationException("Reader closed")
+        whenever(fixture.cache.readFullContent(a.article.id, a.article.accountId))
+            .thenReturn(Result.failure(cancellation))
+
+        try {
+            with(fixture.viewModel) { ReaderState().renderContent(a) }
+            fail("Cancelled disk reads must propagate rather than fetch or fall back")
+        } catch (caught: CancellationException) {
+            assertSame(cancellation, caught)
+        }
+        verify(fixture.cache, never()).readOrFetchFullContent(any())
+    }
+
+    @Test fun `cancelled fetch result does not become offline fallback or an error`() = runTest(dispatcher) {
+        val a = article("A", fullContent = true)
+        val fixture = fixture(a)
+        whenever(fixture.cache.readOrFetchFullContent(a.article))
+            .thenReturn(Result.failure(CancellationException("Navigation interrupted")))
+
+        fixture.viewModel.initData(a.article.id)
+        runCurrent()
+        advanceTimeBy(200)
+        runCurrent()
+
+        assertEquals(ReaderState.Loading, fixture.viewModel.readerStateStateFlow.value.content)
+    }
+
+    @Test fun `failed old fetch cannot apply summary fallback after navigation`() = runTest(dispatcher) {
+        val a = article("A", fullContent = true)
+        val b = article("B")
+        val fixture = fixture(a, b)
+        val fetched = CompletableDeferred<Result<String>>()
+        whenever(fixture.cache.readOrFetchFullContent(a.article)).thenSuspend {
+            withContext(NonCancellable) { fetched.await() }
+        }
+        fixture.viewModel.initData(a.article.id)
+        runCurrent()
+        fixture.viewModel.initData(b.article.id)
+        runCurrent()
+        fetched.complete(Result.failure(IOException("Old request failed")))
+        runCurrent()
+
+        assertEquals(b.article.id, fixture.viewModel.readerStateStateFlow.value.articleId)
+        assertEquals(ReaderState.Description(b.article.rawDescription), fixture.viewModel.readerStateStateFlow.value.content)
+    }
+
+    @Test fun `reader account identity comes from the loaded article and clears with it`() = runTest(dispatcher) {
+        val a = article("A", accountId = 7)
+        val b = article("B", accountId = 9)
+        val fixture = fixture(a, b)
+        assertNull(fixture.viewModel.readerStateStateFlow.value.accountId)
+
+        fixture.viewModel.initData(a.article.id)
+        runCurrent()
+        assertEquals(a.article.id, fixture.viewModel.readerStateStateFlow.value.articleId)
+        assertEquals(7, fixture.viewModel.readerStateStateFlow.value.accountId)
+
+        fixture.viewModel.initData(b.article.id)
+        runCurrent()
+        assertEquals(b.article.id, fixture.viewModel.readerStateStateFlow.value.articleId)
+        assertEquals(9, fixture.viewModel.readerStateStateFlow.value.accountId)
+
+        fixture.viewModel.clearReadingData()
+        assertNull(fixture.viewModel.readerStateStateFlow.value.articleId)
+        assertNull(fixture.viewModel.readerStateStateFlow.value.accountId)
+    }
+
     private fun fixture(
         vararg articles: ArticleWithFeed,
         applicationScheduler: TestCoroutineScheduler = dispatcher.scheduler,
@@ -233,14 +366,19 @@ class ArticleListReaderViewModelTest {
         return Fixture(viewModel, cache, repository)
     }
 
-    private fun article(name: String, fullContent: Boolean = false): ArticleWithFeed = ArticleWithFeed(
+    private fun article(
+        name: String,
+        fullContent: Boolean = false,
+        description: String = "description $name",
+        accountId: Int = 1,
+    ): ArticleWithFeed = ArticleWithFeed(
         article = Article(
-            id = "1\u0024$name", date = Date(0), title = name, rawDescription = "description $name",
-            shortDescription = name, link = "https://example.com/$name", feedId = "1\u0024feed", accountId = 1,
+            id = "$accountId\u0024$name", date = Date(0), title = name, rawDescription = description,
+            shortDescription = name, link = "https://example.com/$name", feedId = "$accountId\u0024feed", accountId = accountId,
         ),
         feed = Feed(
-            id = "1\u0024feed", name = "Feed", url = "https://example.com/feed", groupId = "1\u0024group",
-            accountId = 1, isFullContent = fullContent,
+            id = "$accountId\u0024feed", name = "Feed", url = "https://example.com/feed", groupId = "$accountId\u0024group",
+            accountId = accountId, isFullContent = fullContent,
         ),
     )
 

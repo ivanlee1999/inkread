@@ -44,6 +44,17 @@ class EInkPageNavigationControllerTest {
     }
 
     @Test
+    fun `restored page becomes current before navigation`() {
+        controller.onPaginationReady(10, 6)
+        assertEquals(6, controller.currentPage)
+        assertEquals(7 to 10, pageChanges.last())
+        controller.handleNavigation(VolumeKeyEvent.PREV)
+        assertEquals(5, controller.currentPage)
+        controller.onPaginationReady(3, 100)
+        assertEquals(2, controller.currentPage)
+    }
+
+    @Test
     fun `NEXT increments page when ready`() {
         controller.onPaginationReady(5)
 
@@ -287,9 +298,11 @@ class EInkPageNavigationControllerTest {
         controller.onRepaginated(20, 8)
         assertEquals(8, controller.currentPage)
         assertEquals(20, controller.totalPages)
-        assertEquals(8, pagesApplied.last())
+        assertTrue(pagesApplied.isEmpty()) // JS already applied the anchored page.
         controller.onRepaginated(2, 99)
         assertEquals(1, controller.currentPage)
+        repeat(5) { controller.onRepaginated(20, 8) }
+        assertTrue(pagesApplied.isEmpty()) // Delayed/image recounts must not issue another goToPage.
     }
 
 }
