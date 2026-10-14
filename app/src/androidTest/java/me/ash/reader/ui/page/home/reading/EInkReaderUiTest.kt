@@ -15,6 +15,7 @@ import android.webkit.WebView
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
 import androidx.test.runner.lifecycle.Stage
 import java.util.concurrent.atomic.AtomicReference
+import org.json.JSONObject
 import me.ash.reader.infrastructure.preference.LocalEInkFontSize
 import me.ash.reader.infrastructure.preference.LocalEInkEnglishFont
 import androidx.compose.runtime.CompositionLocalProvider
@@ -141,8 +142,8 @@ class EInkReaderUiTest {
         compose.runOnIdle { fontSize.value = 28; page.set(0); count.set(0) }
         compose.waitUntil(15_000) { count.get() > 6 && page.get() > 1 }
         compose.waitUntil(5_000) { EInkReadingPositionStore(directory).load(812, identity)?.characterOffset == anchor }
-        val enlargedPage = page.get()
         assertAnchorAfterDelayedReflows(directory, identity, anchor)
+        val enlargedPage = page.get()
         compose.runOnIdle { fontSize.value = 20; page.set(0); count.set(0) }
         compose.waitUntil(15_000) { count.get() > 6 && page.get() == originalPage }
         assertAnchorAfterDelayedReflows(directory, identity, anchor)
@@ -150,21 +151,32 @@ class EInkReaderUiTest {
         compose.waitUntil(15_000) { count.get() > 6 && page.get() == enlargedPage }
         assertAnchorAfterDelayedReflows(directory, identity, anchor)
         // A real WebView viewport resize exercises the same layout path as rotation.
+        // Capture page/count from the same settled layout, rather than mixing an initial
+        // font callback with the count after delayed reflows.
         val originalCount = count.get()
+        val settledPage = page.get()
+        val originalWidth = readGeometry(anchor).getInt("viewWidth")
         compose.runOnIdle { viewportFraction.value = .75f }
         compose.waitUntil(10_000) { count.get() > originalCount }
         assertAnchorAfterDelayedReflows(directory, identity, anchor)
         compose.runOnIdle { viewportFraction.value = 1f }
-        compose.waitUntil(10_000) { count.get() == originalCount && page.get() == enlargedPage }
+        compose.waitUntil(10_000) { count.get() == originalCount }
         assertAnchorAfterDelayedReflows(directory, identity, anchor)
+        val returnedGeometry = readGeometry(anchor)
+        assertEquals(originalWidth, returnedGeometry.getInt("viewWidth"))
+        assertEquals(settledPage, page.get())
+        assertEquals(page.get(), returnedGeometry.getInt("page"))
+        assertEquals(count.get(), returnedGeometry.getInt("count"))
         compose.runOnIdle { displayed.value = false }
         compose.waitForIdle()
         compose.runOnIdle { displayed.value = true; page.set(0); count.set(0) }
-        compose.waitUntil(15_000) { count.get() > 6 && page.get() == enlargedPage }
+        compose.waitUntil(15_000) { count.get() > 6 && page.get() > 1 }
+        assertAnchorAfterDelayedReflows(directory, identity, anchor)
+        assertEquals(settledPage, page.get())
         assertEquals(anchor, EInkReadingPositionStore(directory).load(812, identity)!!.characterOffset)
         // Moving backwards stores the current location rather than furthest progress.
         compose.onRoot().performTouchInput { click(Offset(width * .2f, height * .5f)) }
-        compose.waitUntil(5_000) { page.get() == enlargedPage - 1 }
+        compose.waitUntil(5_000) { page.get() == settledPage - 1 }
         compose.waitUntil(5_000) { EInkReadingPositionStore(directory).load(812, identity)!!.characterOffset < anchor }
     }
 
@@ -205,6 +217,26 @@ class EInkReaderUiTest {
         }
     }
 
+    private fun readGeometry(anchor: Int): JSONObject {
+        val result = AtomicReference<JSONObject>()
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            val activity = ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED).first()
+            val webView = findWebView(activity.window.decorView)!!
+            webView.evaluateJavascript("""(function() {
+                var r = null;
+                for (var i = _textNodes.length - 1; i >= 0; i--) {
+                    if (_textStarts[i] <= $anchor) { r = characterRect(_textNodes[i], $anchor - _textStarts[i]); break; }
+                }
+                return { width: window.innerWidth, height: window.innerHeight, stride: _pageStride, page: _currentPage + 1,
+                    count: _totalPages, anchor: _anchorOffset, left: r && r.left, right: r && r.right,
+                    top: r && r.top, bottom: r && r.bottom,
+                    scrollWidth: document.body.scrollWidth };
+            })()""") { result.set(JSONObject(it).put("viewWidth", webView.width)) }
+        }
+        compose.waitUntil(5_000) { result.get() != null }
+        return result.get()
+    }
+
     private fun assertAnchorAfterDelayedReflows(directory: File, identity: String, anchor: Int) {
         val result = AtomicReference<String>()
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -227,6 +259,11 @@ class EInkReaderUiTest {
         }
         compose.waitUntil(5_000) { result.get() != null }
         assertEquals(anchor.toString(), result.get())
+        val geometry = readGeometry(anchor)
+        assertEquals(geometry.toString(), anchor, geometry.getInt("anchor"))
+        assertTrue("Reading anchor must remain visible after delayed reflows: $geometry",
+            geometry.getDouble("right") > 0 && geometry.getDouble("left") < geometry.getInt("width") &&
+                geometry.getDouble("bottom") > 0 && geometry.getDouble("top") < geometry.getInt("height"))
     }
 
     private fun findWebView(view: View): WebView? {

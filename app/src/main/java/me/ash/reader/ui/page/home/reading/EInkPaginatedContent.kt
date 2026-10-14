@@ -565,14 +565,17 @@ fun EInkPaginatedContent(
 
         val progress = if (totalPages > 0) ((currentPage + 1) * 100 / totalPages) else 0
 
-        // Thin progress bar — visible at the bottom only after pagination is ready
-        if (totalPages > 0) {
-            LinearProgressIndicator(
-                progress = { progress / 100f },
-                modifier = Modifier.fillMaxWidth().height(3.dp),
-                color = Color.Black,
-                trackColor = Color(0xFFE0E0E0),
-            )
+        // Reserve the progress strip before pagination. Adding its height after the first
+        // callback changes the WebView viewport and causes an avoidable reflow/repaint.
+        Box(Modifier.fillMaxWidth().height(3.dp)) {
+            if (totalPages > 0) {
+                LinearProgressIndicator(
+                    progress = { progress / 100f },
+                    modifier = Modifier.fillMaxSize(),
+                    color = Color.Black,
+                    trackColor = Color(0xFFE0E0E0),
+                )
+            }
         }
 
         // Full bottom bar — shown and dismissed explicitly by the reader
