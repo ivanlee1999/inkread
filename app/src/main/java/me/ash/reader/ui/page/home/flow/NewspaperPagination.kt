@@ -64,3 +64,17 @@ internal fun newspaperScrolledReadRange(
     val end = firstVisibleSource.coerceIn(start, sliceEnd.coerceAtLeast(start))
     return start until end
 }
+
+/** Capture concrete identities at the explicit turn, never defer source-index lookup. */
+internal fun <T : Any, R : Any> newspaperPageReadItems(
+    change: NewspaperPageChange,
+    snapshot: List<T?>?,
+    snapshotPager: Any?,
+    activePager: Any,
+    enabled: Boolean,
+    article: (T) -> R?,
+): List<R> {
+    if (!enabled || snapshot == null || snapshotPager !== activePager) return emptyList()
+    val range = change.readRange ?: return emptyList()
+    return range.mapNotNull { index -> snapshot.getOrNull(index)?.let(article) }
+}

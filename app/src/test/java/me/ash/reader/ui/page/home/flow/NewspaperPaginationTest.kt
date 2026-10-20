@@ -100,4 +100,69 @@ class NewspaperPaginationTest {
         assertNull(change.readRange)
         assertEquals(NewspaperPageChange(0, 0), newspaperPageForSource(-10, 8, 5, 2, -20) { false })
     }
+
+    @Test fun consecutiveForwardTurnsCaptureEverySliceWithoutAPendingSlot() {
+        val pager = Any()
+        val snapshot = (0 until 18).map { "article-$it" }
+        val marked = mutableListOf<String>()
+        var page = 1
+        repeat(2) {
+            val change = newspaperPageTurn(page, pageCount = 6, capacity = 3, forward = true)!!
+            marked += newspaperPageReadItems(change, snapshot, pager, pager, enabled = true) { it }
+            page = change.page
+        }
+        assertEquals(3, page)
+        assertEquals((3 until 9).map { "article-$it" }, marked)
+    }
+
+    @Test fun refreshOrReorderingCannotRetargetAlreadyCapturedArticleIdentities() {
+        val pager = Any()
+        val snapshot = (0 until 12).map { "original-$it" }.toMutableList()
+        val change = newspaperPageTurn(1, pageCount = 4, capacity = 3, forward = true)!!
+        val captured = newspaperPageReadItems(change, snapshot, pager, pager, enabled = true) { it }
+        snapshot.reverse()
+        snapshot[3] = "newly-synced-unseen-article"
+        assertEquals(listOf("original-3", "original-4", "original-5"), captured)
+        assertTrue("newly-synced-unseen-article" !in captured)
+    }
+
+    @Test fun changedOrMissingPagerNeverMarksAnOldFeedsArticles() {
+        data class Pager(val name: String)
+        val oldPager = Pager("same-name")
+        val newPager = Pager("same-name") // Equal values do not mean the same paging stream.
+        val change = newspaperPageTurn(0, pageCount = 4, capacity = 3, forward = true)!!
+        val snapshot = listOf("old-feed-0", "old-feed-1", "old-feed-2")
+        assertTrue(newspaperPageReadItems(change, snapshot, oldPager, newPager, true) { it }.isEmpty())
+        assertTrue(newspaperPageReadItems(change, snapshot, null, newPager, true) { it }.isEmpty())
+        assertTrue(newspaperPageReadItems<String, String>(change, null, newPager, newPager, true) { it }.isEmpty())
+    }
+
+    @Test fun disabledReadSettingOrNonUnreadFilterCannotApplyATurnReadRange() {
+        val pager = Any()
+        val change = newspaperPageTurn(0, pageCount = 4, capacity = 3, forward = true)!!
+        assertTrue(newspaperPageReadItems(change, listOf("a", "b", "c"), pager, pager, false) { it }.isEmpty())
+    }
+
+    @Test fun captureSkipsDatesPlaceholdersAndOutOfBoundsRatherThanGuessing() {
+        val pager = Any()
+        val change = newspaperPageTurn(1, pageCount = 4, capacity = 3, forward = true)!!
+        val snapshot = listOf("earlier-a", "earlier-b", "earlier-c", "date-header", null, "article-5")
+        assertEquals(listOf("article-5"), newspaperPageReadItems(change, snapshot, pager, pager, true) {
+            it.takeIf { it.startsWith("article-") }
+        })
+        assertTrue(newspaperPageReadItems(change, snapshot.take(3), pager, pager, true) { it }.isEmpty())
+    }
+
+    @Test fun backTurnsAndReaderOrResizeRemappingNeverCaptureReadIdentities() {
+        val pager = Any()
+        val snapshot = (0 until 12).map { "article-$it" }
+        val changes = listOf(
+            newspaperPageTurn(2, pageCount = 4, capacity = 3, forward = false)!!,
+            newspaperPageForSource(7, 12, 3, 1) { false },
+        )
+        changes.forEach { change ->
+            assertTrue(newspaperPageReadItems(change, snapshot, pager, pager, true) { it }.isEmpty())
+        }
+    }
+
 }
