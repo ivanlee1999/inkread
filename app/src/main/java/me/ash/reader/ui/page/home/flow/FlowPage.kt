@@ -89,10 +89,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import me.ash.reader.infrastructure.android.VolumeKeyEvent
-import me.ash.reader.infrastructure.android.VolumeKeyEventBus
-import me.ash.reader.infrastructure.android.VolumeKeyPriority
-import androidx.compose.runtime.DisposableEffect
 import me.ash.reader.R
 import me.ash.reader.domain.data.PagerData
 import me.ash.reader.domain.model.article.ArticleFlowItem
@@ -201,15 +197,7 @@ fun FlowPage(
         mutableStateOf<Pair<Any, LazyPagingItems<ArticleFlowItem>>?>(null)
     }
 
-    var previousPagerIdentity by remember { mutableStateOf<Any?>(null) }
-    LaunchedEffect(pagerData.pager) {
-        if (previousPagerIdentity != null && previousPagerIdentity !== pagerData.pager) {
-            if (einkMode) {
-                NewspaperPageChange(0, rowIndex = 0).applyTo(listState) { einkCurrentPage = it }
-            }
-        }
-        previousPagerIdentity = pagerData.pager
-    }
+    EInkPagerReset(pagerData.pager, einkMode, listState) { einkCurrentPage = it }
 
     val isTopBarElevated = topBarTonalElevation.value > 0
     val scrolledTopBarContainerColor =
@@ -332,47 +320,29 @@ fun FlowPage(
 
     // Buttons and hardware keys use exactly the same non-animated page/scroll change.
     val turnEinkPage: (Boolean) -> Boolean = { forward ->
-        val change = newspaperPageTurn(
-            einkCurrentPage, einkTotalPagesState, einkPageCapacity, forward,
-        )
-        if (change != null) {
-            val source = currentPagingItems
-            val articles = newspaperPageReadItems(
-                change = change,
-                snapshot = source?.second?.itemSnapshotList,
-                snapshotPager = source?.first,
-                activePager = pagerData.pager,
-                enabled = einkMode && markAsReadOnScroll && filterUiState.filter.isUnread(),
-            ) { (it as? ArticleFlowItem.Article)?.articleWithFeed }
-            // Resolve and apply concrete identities now, before navigation, with no suspension.
-            // A deferred range could be overwritten by fast keys or retargeted by a refresh.
-            if (articles.isNotEmpty()) {
+        val source = currentPagingItems
+        turnNewspaperPage(
+            currentPage = einkCurrentPage,
+            pageCount = einkTotalPagesState,
+            capacity = einkPageCapacity,
+            forward = forward,
+            listState = listState,
+            snapshot = source?.second?.itemSnapshotList,
+            snapshotPager = source?.first,
+            activePager = pagerData.pager,
+            markReadEnabled = einkMode && markAsReadOnScroll && filterUiState.filter.isUnread(),
+            article = { (it as? ArticleFlowItem.Article)?.articleWithFeed },
+            onMarkRead = { articles ->
                 viewModel.diffMapHolder.updateDiff(
                     articleWithFeed = articles.toTypedArray(), isUnread = false,
                 )
-            }
-            change.applyTo(listState) { einkCurrentPage = it }
-        }
-        change != null
+            },
+            onPageChange = { einkCurrentPage = it },
+        )
     }
-    val currentTurnEinkPage by rememberUpdatedState(turnEinkPage)
-
-    // Register as LOW-priority volume key consumer. In two-pane layouts,
-    // when ReadingPage (HIGH priority) is also active, events go there instead.
-    if (einkMode) {
-        val volumeKeyFlow = remember { VolumeKeyEventBus.register(VolumeKeyPriority.LOW) }
-        DisposableEffect(Unit) {
-            onDispose { VolumeKeyEventBus.unregister(VolumeKeyPriority.LOW) }
-        }
-        LaunchedEffect(volumeKeyFlow, listState) {
-            volumeKeyFlow.collect { event ->
-                if (VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.LOW) &&
-                    currentTurnEinkPage(event == VolumeKeyEvent.NEXT)
-                ) {
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                }
-            }
-        }
+    // ReadingPage's HIGH-priority consumer takes precedence in two-pane layouts.
+    EInkVolumePageKeys(einkMode, listState, turnEinkPage) {
+        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
     }
 
     val readerState = viewModel.readerStateStateFlow.collectAsStateValue()
@@ -747,41 +717,24 @@ fun FlowPage(
                             einkStartIndex ?: 0, einkEndIndex ?: itemSnapshot.size,
                         ) { itemSnapshot[it] is ArticleFlowItem.Date }
                     }
-                    val hasMeasuredPane = einkAvailableHeightPx > 0 && articlePaneWidthPx > 0
-                    LaunchedEffect(
-                        einkMode, einkItemsPerPage, newspaperColumns, hasMeasuredPane,
-                        pagingItems.itemCount, pagingItems.loadState.refresh,
-                    ) {
-                        // Do not reinterpret restored state before measurement/data are ready.
-                        if (!einkMode || !hasMeasuredPane ||
-                            (itemSnapshot.isEmpty() && pagingItems.loadState.refresh !is LoadState.NotLoading)
-                        ) return@LaunchedEffect
-                        if (einkPageCapacity != einkItemsPerPage || einkPageColumns != newspaperColumns) {
-                            // A reader/filter effect may have requested another page in this
-                            // same frame. Map its current page/row, not a captured old row plan.
-                            val previousStart = einkCurrentPage * einkPageCapacity
-                            val previousRows = newspaperRows(
-                                itemSnapshot.size, einkPageColumns, previousStart,
-                                previousStart + einkPageCapacity,
-                            ) { itemSnapshot[it] is ArticleFlowItem.Date }
-                            val sourceAnchor = previousRows
-                                .getOrNull(listState.firstVisibleItemIndex)?.indices?.firstOrNull()
-                                ?: previousStart
-                            val change = newspaperPageForSource(
-                                sourceAnchor, itemSnapshot.size, einkItemsPerPage, newspaperColumns,
-                                // Old pixel offsets can exceed the new row height and skip the anchor.
-                                scrollOffset = 0,
-                            ) { itemSnapshot[it] is ArticleFlowItem.Date }
-                            einkPageCapacity = einkItemsPerPage
-                            einkPageColumns = newspaperColumns
-                            change.applyTo(listState) { einkCurrentPage = it }
-                        } else if (einkCurrentPage >= einkTotalPages) {
-                            // Clamp in this same effect, never before source-based remapping:
-                            // page 9 at capacity 3 means source 27, not a clamped source 15.
-                            NewspaperPageChange(einkTotalPages - 1, rowIndex = 0)
-                                .applyTo(listState) { einkCurrentPage = it }
-                        }
-                    }
+                    EInkMeasuredPageLayout(
+                        enabled = einkMode,
+                        targetCapacity = einkItemsPerPage,
+                        targetColumns = newspaperColumns,
+                        hasMeasuredPane = einkAvailableHeightPx > 0 && articlePaneWidthPx > 0,
+                        itemCount = itemSnapshot.size,
+                        isRefreshComplete = pagingItems.loadState.refresh is LoadState.NotLoading,
+                        listState = listState,
+                        currentPage = { einkCurrentPage },
+                        currentCapacity = { einkPageCapacity },
+                        currentColumns = { einkPageColumns },
+                        isDate = { itemSnapshot[it] is ArticleFlowItem.Date },
+                        onLayoutChange = { capacity, columns ->
+                            einkPageCapacity = capacity
+                            einkPageColumns = columns
+                        },
+                        onPageChange = { einkCurrentPage = it },
+                    )
                     // Hoist pagination state up so bottomBar can access it
                     SideEffect {
                         einkTotalPagesState = einkTotalPages

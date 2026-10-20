@@ -42,6 +42,13 @@ import me.ash.reader.ui.page.home.flow.newspaperPageForSource
 import me.ash.reader.ui.page.home.flow.newspaperRows
 import me.ash.reader.ui.page.home.flow.applyTo
 import me.ash.reader.ui.page.home.flow.newspaperScrolledReadRange
+import me.ash.reader.ui.page.home.flow.EInkVolumePageKeys
+import me.ash.reader.ui.page.home.flow.EInkPagerReset
+import me.ash.reader.ui.page.home.flow.EInkMeasuredPageLayout
+import me.ash.reader.ui.page.home.flow.turnNewspaperPage
+import me.ash.reader.infrastructure.android.VolumeKeyEvent
+import me.ash.reader.infrastructure.android.VolumeKeyEventBus
+import me.ash.reader.infrastructure.android.VolumeKeyPriority
 import androidx.paging.PagingData
 import androidx.paging.compose.collectAsLazyPagingItems
 import kotlinx.coroutines.flow.flowOf
@@ -329,6 +336,156 @@ class NewspaperUiTest {
             assertTrue("Resized first row still contains source27",
                 27 in rows[currentList.get().firstVisibleItemIndex].indices)
             assertEquals("Resize is not explicit forward reading", (12 until 18).toSet(), marked)
+        }
+    }
+
+    @Test fun productionEffectsHandleRapidVolumeBusEventsFilterReplacementAndResize() {
+        // Exercises FlowPage's exact production effects/controller, not copied lifecycle logic.
+        // Events enter its real hardware-volume bus; Android OS key dispatch is not simulated.
+        VolumeKeyEventBus.resetForTest()
+        val feed = Feed(id = "effects", name = "Transition Journal", url = "https://example.com",
+            groupId = "g", accountId = 1)
+        fun fixture(prefix: String) = (0 until 30).map { index ->
+            ArticleFlowItem.Article(ArticleWithFeed(Article(id = "$prefix-$index", date = Date(0),
+                title = "$prefix article $index: a substantial headline for measured transition testing",
+                rawDescription = "", shortDescription = "Enough content to force scrolling within each bounded slice, exposing incorrect retained offsets and stale list ownership.",
+                link = "https://example.com/$prefix/$index", feedId = feed.id, accountId = 1), feed))
+        }
+        val data = mapOf("a" to fixture("a"), "b" to fixture("b"))
+        val pagers = data.mapValues { flowOf(PagingData.from<ArticleFlowItem>(it.value)) }
+        val selected = mutableStateOf("a")
+        val volumeEnabled = mutableStateOf(true)
+        val page = mutableStateOf(2)
+        val capacity = mutableStateOf(6)
+        val targetCapacity = mutableStateOf(6)
+        val columns = mutableStateOf(1)
+        val marked = mutableListOf<String>()
+        val currentList = java.util.concurrent.atomic.AtomicReference<LazyListState>()
+        try {
+            compose.setContent {
+                CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON) {
+                    AppTheme(useDarkTheme = false) {
+                        val pager = pagers.getValue(selected.value)
+                        val items = pager.collectAsLazyPagingItems()
+                        val state = remember(pager) { LazyListState() }
+                        SideEffect { currentList.set(state) }
+                        EInkPagerReset(pagerIdentity = pager, enabled = true, listState = state,
+                            onPageChange = { page.value = it })
+                        EInkVolumePageKeys(enabled = volumeEnabled.value, listState = state, onTurn = { forward ->
+                            turnNewspaperPage(currentPage = page.value,
+                                pageCount = maxOf(1, (items.itemCount + capacity.value - 1) / capacity.value),
+                                capacity = capacity.value, forward = forward, listState = state,
+                                snapshot = items.itemSnapshotList, snapshotPager = pager, activePager = pager,
+                                markReadEnabled = true,
+                                article = { (it as? ArticleFlowItem.Article)?.articleWithFeed },
+                                onMarkRead = { articles -> marked.addAll(articles.map { it.article.id }) },
+                                onPageChange = { page.value = it })
+                        })
+                        BoxWithConstraints(Modifier.fillMaxWidth().height(360.dp)) {
+                            EInkMeasuredPageLayout(enabled = true, targetCapacity = targetCapacity.value,
+                                targetColumns = if (maxWidth >= 600.dp) 2 else 1, hasMeasuredPane = true,
+                                itemCount = items.itemCount,
+                                isRefreshComplete = items.loadState.refresh is androidx.paging.LoadState.NotLoading,
+                                listState = state, currentPage = { page.value },
+                                currentCapacity = { capacity.value }, currentColumns = { columns.value },
+                                isDate = { items.peek(it) is ArticleFlowItem.Date },
+                                onLayoutChange = { count, columnCount -> capacity.value = count; columns.value = columnCount },
+                                onPageChange = { page.value = it })
+                            LazyColumn(Modifier.fillMaxSize().testTag("effects-fixture"), state = state) {
+                                ArticleList(pagingItems = items, diffMap = emptyMap(), isShowFeedIcon = false,
+                                    isShowStickyHeader = false, articleListTonalElevation = 0,
+                                    einkPageStart = page.value * capacity.value,
+                                    einkPageEnd = (page.value + 1) * capacity.value, columns = columns.value)
+                            }
+                        }
+                    }
+                }
+            }
+            compose.onNodeWithText(data.getValue("a")[12].articleWithFeed.article.title).assertIsDisplayed()
+            compose.onNodeWithTag("effects-fixture").performScrollToIndex(2)
+            compose.runOnIdle {
+                assertTrue(currentList.get().firstVisibleItemIndex > 0)
+                VolumeKeyEventBus.emit(VolumeKeyEvent.NEXT)
+                VolumeKeyEventBus.emit(VolumeKeyEvent.NEXT)
+            }
+            compose.waitUntil(5_000) { page.value == 4 }
+            compose.runOnIdle {
+                assertEquals(0, currentList.get().firstVisibleItemIndex)
+                assertEquals(0, currentList.get().firstVisibleItemScrollOffset)
+                assertEquals((12 until 24).map { "a-$it" }, marked)
+            }
+            compose.runOnIdle { VolumeKeyEventBus.emit(VolumeKeyEvent.PREV) }
+            compose.waitUntil(5_000) { page.value == 3 }
+            compose.runOnIdle {
+                assertEquals(0, currentList.get().firstVisibleItemIndex)
+                assertEquals((12 until 24).map { "a-$it" }, marked)
+            }
+            compose.onNodeWithTag("effects-fixture").performScrollToIndex(2)
+            val oldList = currentList.get()
+            val oldIndex = oldList.firstVisibleItemIndex
+            compose.runOnIdle { selected.value = "b" }
+            compose.waitUntil(5_000) { page.value == 0 && currentList.get() !== oldList }
+            compose.onNodeWithText(data.getValue("b")[0].articleWithFeed.article.title).assertIsDisplayed()
+            compose.onNodeWithTag("effects-fixture").performScrollToIndex(2)
+            compose.runOnIdle { VolumeKeyEventBus.emit(VolumeKeyEvent.NEXT) }
+            compose.waitUntil(5_000) { page.value == 1 }
+            compose.runOnIdle {
+                assertEquals(0, currentList.get().firstVisibleItemIndex)
+                assertEquals(0, currentList.get().firstVisibleItemScrollOffset)
+                assertEquals("Stale collector must not scroll the previous filter", oldIndex, oldList.firstVisibleItemIndex)
+                assertEquals((12 until 24).map { "a-$it" } + (0 until 6).map { "b-$it" }, marked)
+            }
+            val beforeDisabledMarks = marked.toList()
+            compose.runOnIdle { volumeEnabled.value = false }
+            compose.runOnIdle {
+                assertTrue("Disposed list must unregister its LOW volume listener",
+                    !VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.LOW))
+                VolumeKeyEventBus.emit(VolumeKeyEvent.NEXT)
+            }
+            compose.runOnIdle {
+                assertEquals("Disabled listener cannot turn pages", 1, page.value)
+                assertEquals(beforeDisabledMarks, marked)
+                volumeEnabled.value = true
+            }
+            compose.waitUntil(5_000) { VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.LOW) }
+            compose.runOnIdle {
+                // The reading pane has HIGH priority; its registration suppresses the list.
+                VolumeKeyEventBus.register(VolumeKeyPriority.HIGH)
+                assertTrue(!VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.LOW))
+                VolumeKeyEventBus.emit(VolumeKeyEvent.NEXT)
+            }
+            compose.runOnIdle {
+                assertEquals("Reading-pane priority suppresses list navigation", 1, page.value)
+                assertEquals(beforeDisabledMarks, marked)
+                VolumeKeyEventBus.unregister(VolumeKeyPriority.HIGH)
+                assertTrue(VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.LOW))
+                VolumeKeyEventBus.emit(VolumeKeyEvent.NEXT)
+            }
+            compose.waitUntil(5_000) { page.value == 2 }
+            compose.runOnIdle {
+                assertEquals("Re-enabled listener captures the next concrete slice once",
+                    beforeDisabledMarks + (6 until 12).map { "b-$it" }, marked)
+                assertEquals(0, currentList.get().firstVisibleItemIndex)
+                targetCapacity.value = 3
+            }
+            compose.waitUntil(5_000) { capacity.value == 3 }
+            compose.runOnIdle {
+                newspaperPageForSource(27, 30, capacity.value, columns.value, isDate = { false })
+                    .applyTo(currentList.get()) { page.value = it }
+            }
+            compose.onNodeWithText(data.getValue("b")[27].articleWithFeed.article.title).assertIsDisplayed()
+            val beforeResizeMarks = marked.toList()
+            compose.runOnIdle { targetCapacity.value = 5 }
+            compose.waitUntil(5_000) { capacity.value == 5 }
+            compose.runOnIdle {
+                assertEquals(5, page.value)
+                val rows = newspaperRows(30, columns.value, 25, 30) { false }
+                assertTrue(27 in rows[currentList.get().firstVisibleItemIndex].indices)
+                assertEquals("Real layout effect never marks reader-return or resized rows", beforeResizeMarks, marked)
+            }
+            compose.onNodeWithText(data.getValue("b")[27].articleWithFeed.article.title).assertIsDisplayed()
+        } finally {
+            VolumeKeyEventBus.resetForTest()
         }
     }
 
