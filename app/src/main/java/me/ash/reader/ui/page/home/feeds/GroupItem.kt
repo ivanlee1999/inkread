@@ -16,19 +16,120 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import me.ash.reader.R
 import me.ash.reader.domain.model.group.Group
+import me.ash.reader.infrastructure.preference.LocalReadingColumns
+import me.ash.reader.infrastructure.preference.LocalReadingLayoutPreset
+import me.ash.reader.ui.layout.resolveReadingLayout
 import me.ash.reader.ui.page.home.feeds.drawer.group.GroupOptionViewModel
 
+/**
+ * A newspaper section, independent of navigation, storage, and Hilt so the real header can be
+ * exercised in native UI tests. Opening a folder and expanding its publications are separate
+ * sibling targets: a tap on the disclosure never accidentally opens the article list.
+ */
 @OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun NewspaperFolderHeader(
+    name: String,
+    important: Int = 0,
+    feedCount: Int? = null,
+    isExpanded: Boolean,
+    modifier: Modifier = Modifier,
+    onExpanded: () -> Unit = {},
+    onLongClick: () -> Unit = {},
+    onClick: () -> Unit = {},
+) {
+    BoxWithConstraints(modifier.fillMaxWidth()) {
+        val layout = resolveReadingLayout(
+            availableWidthDp = maxWidth.value,
+            fontScale = LocalDensity.current.fontScale,
+            preset = LocalReadingLayoutPreset.current.preset,
+            columnPreference = LocalReadingColumns.current.columns,
+        )
+        Column(Modifier.padding(horizontal = layout.horizontalPaddingDp.dp)) {
+            HorizontalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.onSurface)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 72.dp)
+                        .testTag("folder-open:$name")
+                        .combinedClickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            role = Role.Button,
+                            onClick = onClick,
+                            onLongClick = onLongClick,
+                        )
+                        .padding(vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            modifier = Modifier.semantics { heading() },
+                            text = name,
+                            style = MaterialTheme.typography.titleLarge,
+                            fontFamily = FontFamily.Serif,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (feedCount != null) {
+                            Text(
+                                text = "${stringResource(R.string.feeds)} · $feedCount",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                    }
+                    if (important != 0) {
+                        Text(
+                            text = important.toString(),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontFamily = FontFamily.Serif,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("folder-expand:$name")
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            role = Role.Button,
+                            onClick = onExpanded,
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = if (isExpanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                        contentDescription = "${stringResource(if (isExpanded) R.string.expand_less else R.string.expand_more)} $name",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface)
+        }
+    }
+}
+
 @Composable
 fun GroupItem(
     group: Group,
@@ -37,63 +138,26 @@ fun GroupItem(
     groupOptionViewModel: GroupOptionViewModel = hiltViewModel(),
     onExpanded: () -> Unit = {},
     onLongClick: () -> Unit = {},
+    feedCount: Int? = null,
     groupOnClick: () -> Unit = {},
 ) {
-    Column {
-        HorizontalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.onSurface)
-        Row(
-            modifier = Modifier.fillMaxWidth().combinedClickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                role = Role.Button,
-                onClick = groupOnClick,
-                onLongClick = {
-                    groupOptionViewModel.fetchGroup(groupId = group.id)
-                    onLongClick()
-                },
-            ),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                modifier = Modifier.weight(1f).padding(vertical = 16.dp).semantics { heading() },
-                text = group.name,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (important != 0) {
-                Text(
-                    modifier = Modifier.padding(start = 12.dp),
-                    text = important.toString(),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-            }
-            Box(
-                modifier = Modifier.size(48.dp).clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    role = Role.Button,
-                    onClick = onExpanded,
-                ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = if (isExpanded()) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                    contentDescription = stringResource(if (isExpanded()) R.string.expand_less else R.string.expand_more),
-                    tint = MaterialTheme.colorScheme.onSurface,
-                )
-            }
-        }
-    }
+    NewspaperFolderHeader(
+        name = group.name,
+        important = important,
+        feedCount = feedCount,
+        isExpanded = isExpanded(),
+        onExpanded = onExpanded,
+        onLongClick = {
+            groupOptionViewModel.fetchGroup(groupId = group.id)
+            onLongClick()
+        },
+        onClick = groupOnClick,
+    )
 }
 
 @Composable
 inline fun GroupWithFeedsContainer(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    Column(
-        modifier = modifier.padding(top = 20.dp, start = 20.dp, end = 20.dp),
-        content = { content() },
-    )
+    // Header and publication grid each resolve their gutters against the full measured pane.
+    // Insetting this container as well would double-count phone padding and lose a column.
+    Column(modifier = modifier.padding(top = 20.dp), content = { content() })
 }

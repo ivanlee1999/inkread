@@ -111,6 +111,8 @@ import me.ash.reader.infrastructure.preference.SortUnreadArticlesPreference
 import me.ash.reader.ui.component.FilterBar
 import me.ash.reader.ui.component.base.FeedbackIconButton
 import me.ash.reader.ui.component.base.RYExtensibleVisibility
+import me.ash.reader.ui.component.base.newspaperSwipeScroll
+import me.ash.reader.infrastructure.preference.LocalReadingColumns
 import me.ash.reader.ui.component.base.RYScaffold
 import me.ash.reader.ui.component.scrollbar.VerticalScrollIndicatorFactory
 import me.ash.reader.ui.component.scrollbar.drawVerticalScrollIndicator
@@ -164,8 +166,6 @@ fun FlowPage(
     val einkMode = LocalEInkMode.current.isEInkMode()
     val haptic = LocalHapticFeedback.current
 
-    val navBarBottomPx = WindowInsets.navigationBars.getBottom(LocalDensity.current)
-    val navBarBottom = with(LocalDensity.current) { navBarBottomPx.toDp() }
 
     val density = LocalDensity.current
     var einkAvailableHeightPx by remember { mutableIntStateOf(0) }
@@ -174,6 +174,7 @@ fun FlowPage(
         availableWidthDp = with(density) { articlePaneWidthPx.toDp() }.value,
         fontScale = density.fontScale,
         preset = LocalReadingLayoutPreset.current.preset,
+        columnPreference = LocalReadingColumns.current.columns,
     )
     val newspaperColumns = readingLayout.columns
     val einkItemsPerPage = if (einkAvailableHeightPx > 0) {
@@ -398,6 +399,7 @@ fun FlowPage(
 
     Box(modifier = Modifier.fillMaxSize()) {
         RYScaffold(
+            reserveBottomBarSpace = true,
             containerTonalElevation = articleListTonalElevation.value.dp,
             topBar = {
                 MaterialTheme(
@@ -884,10 +886,23 @@ fun FlowPage(
 
                     LazyColumn(
                             // Page buttons remain instant; scrolling keeps oversized text/cards reachable.
-                            userScrollEnabled = true,
-                            contentPadding = if (einkMode) PaddingValues(bottom = 56.dp + navBarBottom) else PaddingValues(),
+                            userScrollEnabled = !einkMode,
+                            contentPadding = PaddingValues(bottom = 16.dp),
                             modifier =
-                                Modifier.pullToLoad(
+                                Modifier.newspaperSwipeScroll(
+                                        listState = listState,
+                                        enabled = einkMode,
+                                        gestureKey = listOf(pager, einkCurrentPage, einkPageCapacity, renderedColumns),
+                                        currentGestureKey = { listOf(pager, einkCurrentPage, einkPageCapacity, renderedColumns) },
+                                        topObstructionPx = {
+                                            val layout = listState.layoutInfo
+                                            layout.visibleItemsInfo.filter {
+                                                it.contentType == CONTENT_TYPE_DATE_HEADER
+                                            }.maxOfOrNull { it.size } ?: 0
+                                        },
+                                        onPreviousBoundary = { turnEinkPage(false) },
+                                        onNextBoundary = { turnEinkPage(true) },
+                                    ).pullToLoad(
                                         state = pullToLoadState,
                                         enabled = !einkMode,
                                         contentOffsetY = { fraction ->
@@ -953,17 +968,7 @@ fun FlowPage(
                                 horizontalPadding = readingLayout.horizontalPaddingDp.dp,
                                 columnSpacing = readingLayout.columnSpacingDp.dp,
                             )
-                            if (!einkMode) {
-                                item {
-                                    Spacer(modifier = Modifier.height(128.dp))
-                                    Spacer(
-                                        modifier =
-                                            Modifier.windowInsetsBottomHeight(
-                                                WindowInsets.navigationBars
-                                            )
-                                    )
-                                }
-                            }
+
                         }
                 }
             },

@@ -46,6 +46,7 @@ data class Settings(
 
     // Reading page
     val readingLayoutPreset: ReadingLayoutPresetPreference = ReadingLayoutPresetPreference.default,
+    val readingColumns: ReadingColumnsPreference = ReadingColumnsPreference.default,
     val readingRenderer: ReadingRendererPreference = ReadingRendererPreference.default,
     val readingBoldCharacters: ReadingBoldCharactersPreference = ReadingBoldCharactersPreference.default,
     val readingTheme: ReadingThemePreference = ReadingThemePreference.default,

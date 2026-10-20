@@ -36,16 +36,61 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import me.ash.reader.R
+import me.ash.reader.infrastructure.preference.LocalReadingColumns
 import me.ash.reader.infrastructure.preference.LocalReadingLayoutPreset
+import me.ash.reader.infrastructure.preference.ReadingColumnsPreference
 import me.ash.reader.infrastructure.preference.ReadingLayoutPresetPreference
 import me.ash.reader.ui.component.base.RYDialog
 
-/** Both appearance pages edit the same persisted preference, not independent presets. */
+/** Both appearance pages edit the same persisted settings, not independent copies. */
 @Composable
 fun ReadingLayoutPresetSetting() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val columns = LocalReadingColumns.current
     val preset = LocalReadingLayoutPreset.current
+
+    Column {
+        LayoutChoiceSetting(
+            title = stringResource(R.string.reading_columns),
+            selectedDescription = columns.toDesc(context),
+            description = stringResource(R.string.reading_columns_description),
+            selectedValue = columns.value,
+            options = ReadingColumnsPreference.values.map { option ->
+                LayoutChoice(option.value, option.toDesc(context), option.description(context)) {
+                    option.put(context, scope)
+                }
+            },
+        )
+        LayoutChoiceSetting(
+            title = stringResource(R.string.layout_preset),
+            selectedDescription = preset.toDesc(context),
+            description = stringResource(R.string.layout_preset_description),
+            selectedValue = preset.value,
+            options = ReadingLayoutPresetPreference.values.map { option ->
+                LayoutChoice(option.value, option.toDesc(context), option.description(context)) {
+                    option.put(context, scope)
+                }
+            },
+        )
+    }
+}
+
+private data class LayoutChoice(
+    val value: Int,
+    val label: String,
+    val description: String,
+    val select: () -> Unit,
+)
+
+@Composable
+private fun LayoutChoiceSetting(
+    title: String,
+    selectedDescription: String,
+    description: String,
+    selectedValue: Int,
+    options: List<LayoutChoice>,
+) {
     var showDialog by rememberSaveable { mutableStateOf(false) }
 
     // Static selection feedback: no ripple, animated radio control, or size transition.
@@ -62,27 +107,27 @@ fun ReadingLayoutPresetSetting() {
             .padding(horizontal = 24.dp, vertical = 16.dp),
     ) {
         Text(
-            text = stringResource(R.string.layout_preset),
+            text = title,
             style = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp),
             color = MaterialTheme.colorScheme.onSurface,
         )
         Text(
-            text = preset.toDesc(context),
+            text = selectedDescription,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
     RYDialog(
         visible = showDialog,
-        title = { Text(stringResource(R.string.layout_preset)) },
+        title = { Text(title) },
         text = {
             LazyColumn(modifier = Modifier.selectableGroup()) {
                 item {
-                    Text(stringResource(R.string.layout_preset_description))
+                    Text(description)
                     Spacer(Modifier.height(16.dp))
                 }
-                items(ReadingLayoutPresetPreference.values, key = { it.value }) { option ->
-                    val selected = option == preset
+                items(options, key = { it.value }) { option ->
+                    val selected = option.value == selectedValue
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -93,7 +138,7 @@ fun ReadingLayoutPresetSetting() {
                                 indication = null,
                                 role = Role.RadioButton,
                                 onClick = {
-                                    option.put(context, scope)
+                                    option.select()
                                     showDialog = false
                                 },
                             )
@@ -110,11 +155,11 @@ fun ReadingLayoutPresetSetting() {
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = option.toDesc(context),
+                                text = option.label,
                                 style = MaterialTheme.typography.bodyLarge,
                             )
                             Text(
-                                text = option.description(context),
+                                text = option.description,
                                 style = MaterialTheme.typography.bodyMedium,
                             )
                         }

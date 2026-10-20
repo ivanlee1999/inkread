@@ -1,6 +1,7 @@
 package me.ash.reader.ui.component.base
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -32,9 +33,12 @@ fun RYScaffold(
     topBar: (@Composable () -> Unit)? = null,
     bottomBar: (@Composable () -> Unit)? = null,
     floatingActionButton: (@Composable () -> Unit)? = null,
+    reserveBottomBarSpace: Boolean = false,
+    contentWindowInsets: WindowInsets = ScaffoldDefaults.contentWindowInsets,
     content: @Composable () -> Unit = {},
 ) {
     Scaffold(
+        contentWindowInsets = contentWindowInsets,
         modifier =
             modifier.background(
                 MaterialTheme.colorScheme.surfaceColorAtElevation(
@@ -71,6 +75,7 @@ fun RYScaffold(
                     Modifier.padding(
                         start = it.calculateStartPadding(layoutDirection),
                         end = it.calculateEndPadding(layoutDirection),
+                        bottom = if (reserveBottomBarSpace) it.calculateBottomPadding() else 0.dp,
                     )
             ) {
                 Spacer(modifier = Modifier.height(it.calculateTopPadding()))

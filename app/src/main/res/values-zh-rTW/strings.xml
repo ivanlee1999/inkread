@@ -353,11 +353,19 @@
 
     <!-- Responsive newspaper layout -->
     <string name="layout_preset">版面預設</string>
-    <string name="layout_preset_description">用於文章列表和訂閱。欄數依可用視窗寬度和文字大小調整，也適用於分割畫面。</string>
+    <string name="layout_preset_description">用於文章列表、訂閱和資料夾的間距。獨立的「欄數」設定適用於所有預設，包括手機。</string>
     <string name="layout_preset_auto">自動</string>
     <string name="layout_preset_phone">手機</string>
     <string name="layout_preset_tablet">平板</string>
-    <string name="layout_preset_auto_description">依可用空間自動調整。</string>
-    <string name="layout_preset_phone_description">一律使用單欄。</string>
-    <string name="layout_preset_tablet_description">空間足夠且文字清晰易讀時，優先使用多欄。</string>
+    <string name="layout_preset_auto_description">依可用視窗自動調整間距，也適用於分割畫面。</string>
+    <string name="layout_preset_phone_description">緊湊間距，手機和大螢幕均可使用報紙式多欄。</string>
+    <string name="layout_preset_tablet_description">寬視窗使用寬鬆間距，手機上仍可使用緊湊多欄。</string>
+    <string name="reading_columns">欄數</string>
+    <string name="reading_columns_description">文章列表、訂閱和資料夾共用。頭條文章維持通欄。視窗極窄或無障礙字體較大時，可能使用單欄以保持文字清晰易讀。</string>
+    <string name="reading_columns_auto">自動</string>
+    <string name="reading_columns_one">單欄</string>
+    <string name="reading_columns_two">雙欄</string>
+    <string name="reading_columns_auto_description">手機使用報紙式多欄，寬螢幕可並排顯示更多訂閱。</string>
+    <string name="reading_columns_one_description">每篇文章和訂閱均使用通欄。</string>
+    <string name="reading_columns_two_description">手機和平板優先使用雙欄，同時保持文字清晰易讀。</string>
 </resources>

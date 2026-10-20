@@ -85,7 +85,7 @@ jobs:
           cat > release-notes.md <<EOF_NOTES
           Built by GitHub Actions from commit ${{ github.sha }}.
 
-          InkRead $VERSION refines the newspaper layout with photo-first lead stories, compact illustrated columns, and fine editorial rules inspired by Papeer. Choose Auto, Phone, or Tablet layout in appearance settings; layouts respect actual pane width and larger fonts. Article images use improved feed-thumbnail extraction and saved-content fallback while respecting the images-off preference. Browsing and image presentation remain static, with the validated pagination/read-state safeguards preserved.
+          InkRead $VERSION adds phone-friendly newspaper columns with an explicit Auto / One / Two column choice, editorial folder sections and compact subscription blocks. E-ink lists support instantaneous vertical swipe paging without fling or animation. Article and subscription content reserve the actual bottom toolbar space so the last items remain accessible. Photo support and pagination/read-state safeguards are retained.
 
           Uses the existing application ID and repository signing identity. No database migration is required. Native Android emulator tests cover narrow and tablet reading flows; physical BOOX refresh behavior still needs device verification.
           EOF_NOTES

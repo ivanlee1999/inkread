@@ -155,91 +155,93 @@ fun ArticleItem(
         isStarred || (showReadIndicator && isUnread)
     // An editorial block, not a dashboard card. The list owns the rules between rows.
     // No fixed text height: large type and longer headlines remain reachable by scrolling.
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .combinedClickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                role = Role.Button,
-                onClick = onClick, onLongClick = onLongClick,
-            )
-            .padding(top = 12.dp, bottom = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(if (isLead) 10.dp else 8.dp),
-    ) {
-        if (isLead && showImage) {
-            ArticlePhoto(data = imgData, isLead = true)
-        }
-        Text(
-            modifier = Modifier.semantics { heading() },
-            text = title,
-            color = MaterialTheme.colorScheme.onSurface,
-            style = MaterialTheme.typography.titleLarge.copy(
-                fontSize = if (isLead) 28.sp else 22.sp,
-                lineHeight = if (isLead) 34.sp else 28.sp,
-            ).applyTextDirection(title.requiresBidi()),
-            fontFamily = FontFamily.Serif,
-            fontWeight = if (isUnread) FontWeight.Bold else FontWeight.Medium,
-        )
-        if (!isLead && showImage) {
-            ArticlePhoto(data = imgData, isLead = false)
-        }
-        if (articleListDesc != FlowArticleListDescPreference.NONE && shortDescription.isNotBlank()) {
+    BoxWithConstraints(modifier.fillMaxWidth().combinedClickable(
+        interactionSource = remember { MutableInteractionSource() },
+        indication = null,
+        role = Role.Button,
+        onClick = onClick, onLongClick = onLongClick,
+    )) {
+        val compactColumn = !isLead && maxWidth < 220.dp
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 12.dp, bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(if (isLead) 10.dp else 8.dp),
+        ) {
+            if (isLead && showImage) {
+                ArticlePhoto(data = imgData, isLead = true)
+            }
             Text(
-                text = shortDescription,
+                modifier = Modifier.semantics { heading() },
+                text = title,
                 color = MaterialTheme.colorScheme.onSurface,
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    fontSize = if (isLead) 16.sp else 15.sp,
-                    lineHeight = if (isLead) 23.sp else 21.sp,
-                ).applyTextDirection(shortDescription.requiresBidi()),
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontSize = if (isLead) 28.sp else if (compactColumn) 17.sp else 22.sp,
+                    lineHeight = if (isLead) 34.sp else if (compactColumn) 22.sp else 28.sp,
+                ).applyTextDirection(title.requiresBidi()),
                 fontFamily = FontFamily.Serif,
-                maxLines = if (articleListDesc == FlowArticleListDescPreference.LONG) {
-                    if (isLead) 5 else 4
-                } else {
-                    if (isLead) 3 else 2
-                },
-                overflow = TextOverflow.Ellipsis,
+                fontWeight = if (isUnread) FontWeight.Bold else FontWeight.Medium,
             )
-        }
-        // Keep provenance and status legible, but secondary to the photograph and headline.
-        // Reading state never reduces contrast: the existing printed marker replaces fading.
-        if (showSource) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (articleListFeedIcon.value) {
-                    FeedIcon(feedName = feedName, iconUrl = feedIconUrl, animate = false)
-                }
-                if (articleListFeedName.value) {
-                    Text(
-                        modifier = Modifier.weight(1f),
-                        text = if (feedUnreadCount > 0) "$feedName ($feedUnreadCount)" else feedName,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                } else Spacer(Modifier.weight(1f))
-                if (isStarred) StarredIcon()
-                if (showReadIndicator && isUnread) {
-                    Icon(
-                        imageVector = Icons.Outlined.FiberManualRecord,
-                        contentDescription = stringResource(R.string.unread),
-                        modifier = Modifier.size(10.dp),
-                        tint = MaterialTheme.colorScheme.onSurface,
-                    )
+            if (!isLead && showImage) {
+                ArticlePhoto(data = imgData, isLead = false)
+            }
+            if (articleListDesc != FlowArticleListDescPreference.NONE && shortDescription.isNotBlank()) {
+                Text(
+                    text = shortDescription,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontSize = if (isLead) 16.sp else if (compactColumn) 13.sp else 15.sp,
+                        lineHeight = if (isLead) 23.sp else if (compactColumn) 19.sp else 21.sp,
+                    ).applyTextDirection(shortDescription.requiresBidi()),
+                    fontFamily = FontFamily.Serif,
+                    maxLines = if (articleListDesc == FlowArticleListDescPreference.LONG) {
+                        if (isLead) 5 else 4
+                    } else {
+                        if (isLead) 3 else 2
+                    },
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            // Keep provenance and status legible, but secondary to the photograph and headline.
+            // Reading state never reduces contrast: the existing printed marker replaces fading.
+            if (showSource) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (articleListFeedIcon.value) {
+                        FeedIcon(feedName = feedName, iconUrl = feedIconUrl, animate = false)
+                    }
+                    if (articleListFeedName.value) {
+                        Text(
+                            modifier = Modifier.weight(1f),
+                            text = if (feedUnreadCount > 0) "$feedName ($feedUnreadCount)" else feedName,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    } else Spacer(Modifier.weight(1f))
+                    if (isStarred) StarredIcon()
+                    if (showReadIndicator && isUnread) {
+                        Icon(
+                            imageVector = Icons.Outlined.FiberManualRecord,
+                            contentDescription = stringResource(R.string.unread),
+                            modifier = Modifier.size(10.dp),
+                            tint = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
                 }
             }
-        }
-        if (articleListDate.value && !timeString.isNullOrBlank()) {
-            Text(
-                text = timeString,
-                color = MaterialTheme.colorScheme.onSurface,
-                style = MaterialTheme.typography.labelSmall,
-            )
+            if (articleListDate.value && !timeString.isNullOrBlank()) {
+                Text(
+                    text = timeString,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
         }
     }
 }

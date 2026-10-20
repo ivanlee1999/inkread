@@ -14,14 +14,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalDensity
-import me.ash.reader.infrastructure.preference.LocalReadingLayoutPreset
-import me.ash.reader.ui.layout.resolveReadingLayout
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import me.ash.reader.domain.model.feed.Feed
 import me.ash.reader.ui.component.FeedIcon
@@ -42,7 +40,7 @@ fun PublicationBlock(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 148.dp)
+            .heightIn(min = 144.dp)
             .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -50,10 +48,9 @@ fun PublicationBlock(
                 onClick = onClick,
                 onLongClick = onLongClick,
             )
-            .padding(horizontal = 4.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .padding(vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface)
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             FeedIcon(feedName = name, iconUrl = iconUrl, animate = false)
             Spacer(Modifier.weight(1f))
@@ -68,7 +65,7 @@ fun PublicationBlock(
         }
         Text(
             text = name,
-            style = MaterialTheme.typography.titleLarge,
+            style = MaterialTheme.typography.titleMedium.copy(fontSize = 17.sp, lineHeight = 22.sp),
             fontFamily = FontFamily.Serif,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,
@@ -115,39 +112,5 @@ fun FeedItem(
                 }
             },
         )
-    }
-}
-
-/** Row-major, stable publication grid, also used by the native screenshot fixtures. */
-@Composable
-fun PublicationGrid(
-    itemCount: Int,
-    modifier: Modifier = Modifier,
-    itemContent: @Composable (index: Int, modifier: Modifier) -> Unit,
-) {
-    BoxWithConstraints(modifier.fillMaxWidth()) {
-        val layout = resolveReadingLayout(
-            availableWidthDp = maxWidth.value,
-            fontScale = LocalDensity.current.fontScale,
-            preset = LocalReadingLayoutPreset.current.preset,
-        )
-        val columns = layout.publicationColumns
-        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            for (start in 0 until itemCount step columns) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
-                    horizontalArrangement = Arrangement.spacedBy(layout.columnSpacingDp.dp),
-                ) {
-                    repeat(columns) { column ->
-                        val index = start + column
-                        if (index < itemCount) {
-                            itemContent(index, Modifier.weight(1f).fillMaxHeight())
-                        } else {
-                            Spacer(Modifier.weight(1f))
-                        }
-                    }
-                }
-            }
-        }
     }
 }

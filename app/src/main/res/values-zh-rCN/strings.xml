@@ -353,11 +353,19 @@
 
     <!-- Responsive newspaper layout -->
     <string name="layout_preset">布局预设</string>
-    <string name="layout_preset_description">用于文章列表和订阅。栏数根据可用窗口宽度和文字大小调整，也适用于分屏。</string>
+    <string name="layout_preset_description">用于文章列表、订阅和文件夹的间距。独立的“栏数”设置适用于所有预设，包括手机。</string>
     <string name="layout_preset_auto">自动</string>
     <string name="layout_preset_phone">手机</string>
     <string name="layout_preset_tablet">平板</string>
-    <string name="layout_preset_auto_description">根据可用空间自动调整。</string>
-    <string name="layout_preset_phone_description">始终使用单栏。</string>
-    <string name="layout_preset_tablet_description">空间足够且文字清晰易读时，优先使用多栏。</string>
+    <string name="layout_preset_auto_description">根据可用窗口自动调整间距，也适用于分屏。</string>
+    <string name="layout_preset_phone_description">紧凑间距，手机和大屏幕均可使用报纸式多栏。</string>
+    <string name="layout_preset_tablet_description">宽窗口使用宽松间距，手机上仍可使用紧凑多栏。</string>
+    <string name="reading_columns">栏数</string>
+    <string name="reading_columns_description">文章列表、订阅和文件夹共用。头条文章保持通栏。窗口极窄或无障碍字体较大时，可能使用单栏以保持文字清晰易读。</string>
+    <string name="reading_columns_auto">自动</string>
+    <string name="reading_columns_one">单栏</string>
+    <string name="reading_columns_two">双栏</string>
+    <string name="reading_columns_auto_description">手机使用报纸式多栏，宽屏可并排显示更多订阅。</string>
+    <string name="reading_columns_one_description">每篇文章和订阅均使用通栏。</string>
+    <string name="reading_columns_two_description">手机和平板优先使用双栏，同时保持文字清晰易读。</string>
 </resources>

@@ -164,6 +164,7 @@ sealed interface PreferencesKey {
 
         // Reading page
         const val readingLayoutPreset = "readingLayoutPreset"
+        const val readingColumns = "readingColumns"
         const val readingRenderer = "readingRender"
         const val readingBoldCharacters = "readingBoldCharacters"
         const val readingPageTonalElevation = "readingPageTonalElevation"
@@ -251,6 +252,7 @@ sealed interface PreferencesKey {
                 BooleanKey(flowSortUnreadArticles),
                 // Reading page
                 IntKey(readingLayoutPreset),
+                IntKey(readingColumns),
                 IntKey(readingRenderer),
                 BooleanKey(readingBoldCharacters),
                 IntKey(readingPageTonalElevation),
@@ -345,6 +347,7 @@ data class DataStoreKey<T>(val key: Preferences.Key<T>, val type: Class<T>) {
 
         // Reading page
         const val readingLayoutPreset = "readingLayoutPreset"
+        const val readingColumns = "readingColumns"
         const val readingRenderer = "readingRender"
         const val readingBoldCharacters = "readingBoldCharacters"
         const val readingPageTonalElevation = "readingPageTonalElevation"
@@ -475,6 +478,8 @@ data class DataStoreKey<T>(val key: Preferences.Key<T>, val type: Class<T>) {
                 // Reading page
                 readingLayoutPreset to
                     DataStoreKey(intPreferencesKey(readingLayoutPreset), Int::class.java),
+                readingColumns to
+                    DataStoreKey(intPreferencesKey(readingColumns), Int::class.java),
                 readingRenderer to
                     DataStoreKey(intPreferencesKey(readingRenderer), Int::class.java),
                 readingBoldCharacters to
