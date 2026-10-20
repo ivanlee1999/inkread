@@ -82,16 +82,13 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.paging.LoadState
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import me.ash.reader.infrastructure.android.VolumeKeyEvent
-import me.ash.reader.infrastructure.android.VolumeKeyEventBus
-import me.ash.reader.infrastructure.android.VolumeKeyPriority
-import androidx.compose.runtime.DisposableEffect
 import me.ash.reader.R
 import me.ash.reader.domain.data.PagerData
 import me.ash.reader.domain.model.article.ArticleFlowItem
@@ -175,18 +172,14 @@ fun FlowPage(
     val einkItemsPerPage = if (einkAvailableHeightPx > 0) {
         maxOf(3, (with(density) { einkAvailableHeightPx.toDp() }.value / (260 * density.fontScale.coerceAtLeast(1f))).toInt() * newspaperColumns + 1)
     } else 3
-    var einkCurrentPage by rememberSaveable { mutableStateOf(0) }
-    val currentPageCapacity by rememberUpdatedState(einkItemsPerPage)
-    var explicitlyAdvancedRange by remember { mutableStateOf<IntRange?>(null) }
-    var previousPageCapacity by remember { mutableIntStateOf(einkItemsPerPage) }
-    LaunchedEffect(einkItemsPerPage) {
-        if (einkMode && previousPageCapacity != einkItemsPerPage) {
-            // Keep the same source neighborhood when the pane or font scale changes.
-            val firstSource = einkCurrentPage * previousPageCapacity
-            einkCurrentPage = firstSource / einkItemsPerPage
-        }
-        previousPageCapacity = einkItemsPerPage
-    }
+    var einkCurrentPage by rememberSaveable { mutableIntStateOf(0) }
+    // Keep rendering the old layout until its visible source anchor has been captured.
+    // Saving capacity with the page also avoids interpreting restored pages at capacity 3.
+    var einkPageCapacity by rememberSaveable { mutableIntStateOf(einkItemsPerPage) }
+    var einkPageColumns by rememberSaveable { mutableIntStateOf(newspaperColumns) }
+    val renderedColumns = if (einkMode) einkPageColumns else newspaperColumns
+    val currentPageCapacity by rememberUpdatedState(einkPageCapacity)
+    val currentColumns by rememberUpdatedState(renderedColumns)
     // Hoisted so bottomBar can read them (updated via SideEffect inside AnimatedContent)
     var einkTotalPagesState by remember { mutableIntStateOf(1) }
     var einkArticleCountState by remember { mutableIntStateOf(0) }
@@ -199,6 +192,12 @@ fun FlowPage(
     val filterUiState = pagerData.filterState
 
     val listState = rememberSaveable(pagerData, saver = LazyListState.Saver) { LazyListState(0, 0) }
+    // Keep the source and its identity together: a new filter must not use the old snapshot.
+    var currentPagingItems by remember {
+        mutableStateOf<Pair<Any, LazyPagingItems<ArticleFlowItem>>?>(null)
+    }
+
+    EInkPagerReset(pagerData.pager, einkMode, listState) { einkCurrentPage = it }
 
     val isTopBarElevated = topBarTonalElevation.value > 0
     val scrolledTopBarContainerColor =
@@ -319,88 +318,65 @@ fun FlowPage(
         if (einkMode) snapAppBarToCollapsed()
     }
 
-    // Register as LOW-priority volume key consumer. In two-pane layouts,
-    // when ReadingPage (HIGH priority) is also active, events go there instead.
-    if (einkMode) {
-        val volumeKeyFlow = remember { VolumeKeyEventBus.register(VolumeKeyPriority.LOW) }
-        DisposableEffect(Unit) {
-            onDispose { VolumeKeyEventBus.unregister(VolumeKeyPriority.LOW) }
-        }
-        LaunchedEffect(Unit) {
-            volumeKeyFlow.collect { event ->
-                if (VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.LOW)) {
-                    when (event) {
-                        VolumeKeyEvent.NEXT -> {
-                            if (einkCurrentPage < einkTotalPagesState - 1) {
-                                explicitlyAdvancedRange = einkCurrentPage * currentPageCapacity until
-                                    (einkCurrentPage + 1) * currentPageCapacity
-                                einkCurrentPage++
-                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            }
-                        }
-                        VolumeKeyEvent.PREV -> {
-                            if (einkCurrentPage > 0) {
-                                einkCurrentPage--
-                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    // Buttons and hardware keys use exactly the same non-animated page/scroll change.
+    val turnEinkPage: (Boolean) -> Boolean = { forward ->
+        val source = currentPagingItems
+        turnNewspaperPage(
+            currentPage = einkCurrentPage,
+            pageCount = einkTotalPagesState,
+            capacity = einkPageCapacity,
+            forward = forward,
+            listState = listState,
+            snapshot = source?.second?.itemSnapshotList,
+            snapshotPager = source?.first,
+            activePager = pagerData.pager,
+            markReadEnabled = einkMode && markAsReadOnScroll && filterUiState.filter.isUnread(),
+            article = { (it as? ArticleFlowItem.Article)?.articleWithFeed },
+            onMarkRead = { articles ->
+                viewModel.diffMapHolder.updateDiff(
+                    articleWithFeed = articles.toTypedArray(), isUnread = false,
+                )
+            },
+            onPageChange = { einkCurrentPage = it },
+        )
+    }
+    // ReadingPage's HIGH-priority consumer takes precedence in two-pane layouts.
+    EInkVolumePageKeys(einkMode, listState, turnEinkPage) {
+        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
     }
 
     val readerState = viewModel.readerStateStateFlow.collectAsStateValue()
 
-    var pagingItems: LazyPagingItems<ArticleFlowItem>? by remember { mutableStateOf(null) }
-
-    if (isTwoPane) {
-        // Key only on articleId — snapshotFlow handles the case where the article isn't
-        // loaded yet, waiting reactively until it appears in the paging snapshot, then
-        // scrolling exactly once. This avoids re-scroll regressions from itemCount changes.
-        LaunchedEffect(readerState.articleId, newspaperColumns, einkItemsPerPage) {
-            val articleId = readerState.articleId ?: return@LaunchedEffect
-            snapshotFlow { pagingItems?.itemSnapshotList }
-                .first { snapshot ->
-                    val index = snapshot?.indexOfFirst {
-                        it is ArticleFlowItem.Article && it.articleWithFeed.article.id == articleId
-                    } ?: -1
-                    if (index != -1) {
-                        snapAppBarToCollapsed()
-                        if (einkMode) einkCurrentPage = index / einkItemsPerPage
-                        val start = if (einkMode) einkCurrentPage * einkItemsPerPage else 0
-                        val rows = newspaperRows(snapshot!!.size, newspaperColumns, start,
-                            if (einkMode) start + einkItemsPerPage else snapshot.size) {
+    // Restore the selected article once when it loads. E-ink resizes separately preserve
+    // the current viewport, rather than jumping back to a previously selected article.
+    LaunchedEffect(
+        readerState.articleId, listState, pagerData.pager, einkMode,
+        if (einkMode) null else newspaperColumns,
+    ) {
+        val articleId = readerState.articleId ?: return@LaunchedEffect
+        snapshotFlow {
+            currentPagingItems?.takeIf { it.first === pagerData.pager }?.second?.itemSnapshotList
+        }
+            .first { snapshot ->
+                val index = snapshot?.indexOfFirst {
+                    it is ArticleFlowItem.Article && it.articleWithFeed.article.id == articleId
+                } ?: -1
+                if (index != -1) {
+                    snapAppBarToCollapsed()
+                    if (einkMode) {
+                        newspaperPageForSource(
+                            index, snapshot!!.size, currentPageCapacity, currentColumns,
+                        ) { snapshot[it] is ArticleFlowItem.Date }
+                            .applyTo(listState) { einkCurrentPage = it }
+                    } else {
+                        val rows = newspaperRows(snapshot!!.size, currentColumns) {
                             snapshot[it] is ArticleFlowItem.Date
                         }
                         listState.requestScrollToItem(rows.rowForSourceIndex(index))
-                        true
-                    } else false
-                }
-        }
-    } else {
-        // Same one-shot snapshotFlow pattern — scroll to article exactly once when it loads.
-        LaunchedEffect(readerState.articleId, newspaperColumns, einkItemsPerPage) {
-            val articleId = readerState.articleId ?: return@LaunchedEffect
-            snapshotFlow { pagingItems?.itemSnapshotList }
-                .first { snapshot ->
-                    val index = snapshot?.indexOfFirst {
-                        it is ArticleFlowItem.Article && it.articleWithFeed.article.id == articleId
-                    } ?: -1
-                    if (index != -1) {
-                        snapAppBarToCollapsed()
-                        if (einkMode) einkCurrentPage = index / einkItemsPerPage
-                        val start = if (einkMode) einkCurrentPage * einkItemsPerPage else 0
-                        val rows = newspaperRows(snapshot!!.size, newspaperColumns, start,
-                            if (einkMode) start + einkItemsPerPage else snapshot.size) {
-                            snapshot[it] is ArticleFlowItem.Date
-                        }
-                        // Applied on the next measure, after the requested page slice updates.
-                        listState.requestScrollToItem(rows.rowForSourceIndex(index))
-                        true
-                    } else false
-                }
-        }
+                    }
+                    true
+                } else false
+            }
     }
 
     val isSyncing = viewModel.isSyncingFlow.collectAsStateValue()
@@ -715,16 +691,7 @@ fun FlowPage(
                 ) { flowUiState ->
                     val pager = flowUiState.pagerData.pager
                     val filterState = flowUiState.pagerData.filterState
-                    val pagingItems = pager.collectAsLazyPagingItems().also { pagingItems = it }
-
-                    // Reset E-Ink page only when feed/filter genuinely changes (not back-navigation)
-                    var lastPagerIdentity by remember { mutableStateOf<Any?>(null) }
-                    LaunchedEffect(pager) {
-                        if (lastPagerIdentity != null && lastPagerIdentity !== pager) {
-                            einkCurrentPage = 0
-                        }
-                        lastPagerIdentity = pager
-                    }
+                    val pagingItems = pager.collectAsLazyPagingItems().also { currentPagingItems = pager to it }
 
                     // E-Ink pagination derived state — count article items only (exclude date headers)
                     val einkArticleCount by remember(pagingItems.itemCount) {
@@ -738,39 +705,56 @@ fun FlowPage(
                     }
                     // Pagination is based on total item count (articles + headers)
                     // since einkPageStart/einkPageEnd slice the flat list
-                    val einkTotalPages = maxOf(1, (pagingItems.itemCount + einkItemsPerPage - 1) / einkItemsPerPage)
-                    // Clamp einkCurrentPage when list shrinks (e.g. filter/sync changes)
-                    if (einkCurrentPage >= einkTotalPages) {
-                        einkCurrentPage = (einkTotalPages - 1).coerceAtLeast(0)
-                    }
-                    val einkStartIndex = if (einkMode) einkCurrentPage * einkItemsPerPage else null
-                    val einkEndIndex = if (einkMode) (einkCurrentPage + 1) * einkItemsPerPage else null
+                    val einkTotalPages = maxOf(1, (pagingItems.itemCount + einkPageCapacity - 1) / einkPageCapacity)
+                    val einkStartIndex = if (einkMode) einkCurrentPage * einkPageCapacity else null
+                    val einkEndIndex = if (einkMode) (einkCurrentPage + 1) * einkPageCapacity else null
                     val itemSnapshot = pagingItems.itemSnapshotList
                     val visibleNewspaperRows = remember(
-                        itemSnapshot, newspaperColumns, einkStartIndex, einkEndIndex,
+                        itemSnapshot, renderedColumns, einkStartIndex, einkEndIndex,
                     ) {
                         newspaperRows(
-                            itemSnapshot.size, newspaperColumns,
+                            itemSnapshot.size, renderedColumns,
                             einkStartIndex ?: 0, einkEndIndex ?: itemSnapshot.size,
                         ) { itemSnapshot[it] is ArticleFlowItem.Date }
                     }
+                    EInkMeasuredPageLayout(
+                        enabled = einkMode,
+                        targetCapacity = einkItemsPerPage,
+                        targetColumns = newspaperColumns,
+                        hasMeasuredPane = einkAvailableHeightPx > 0 && articlePaneWidthPx > 0,
+                        itemCount = itemSnapshot.size,
+                        isRefreshComplete = pagingItems.loadState.refresh is LoadState.NotLoading,
+                        listState = listState,
+                        currentPage = { einkCurrentPage },
+                        currentCapacity = { einkPageCapacity },
+                        currentColumns = { einkPageColumns },
+                        isDate = { itemSnapshot[it] is ArticleFlowItem.Date },
+                        onLayoutChange = { capacity, columns ->
+                            einkPageCapacity = capacity
+                            einkPageColumns = columns
+                        },
+                        onPageChange = { einkCurrentPage = it },
+                    )
                     // Hoist pagination state up so bottomBar can access it
                     SideEffect {
                         einkTotalPagesState = einkTotalPages
                         einkArticleCountState = einkArticleCount
                     }
 
-                    if (markAsReadOnScroll && filterState.filter.isUnread()) {
+                    if (!einkMode && markAsReadOnScroll && filterState.filter.isUnread()) {
                         LaunchedEffect(listState.isScrollInProgress) {
                             if (!listState.isScrollInProgress) {
-                                val firstVisibleArticleIndex =
+                                val firstVisibleArticleRow =
                                     listState.layoutInfo.visibleItemsInfo
                                         .firstOrNull { it.contentType == CONTENT_TYPE_ARTICLE }
-                                        ?.index?.let { visibleNewspaperRows.getOrNull(it)?.indices?.firstOrNull() }
-                                        ?: return@LaunchedEffect
-                                // Only scan items before the first visible article
+                                        ?.index ?: return@LaunchedEffect
+                                val readRange = newspaperScrolledReadRange(
+                                    visibleNewspaperRows, firstVisibleArticleRow,
+                                    einkStartIndex ?: 0, einkEndIndex ?: pagingItems.itemCount,
+                                    einkMode = einkMode,
+                                )
                                 val items = mutableListOf<ArticleWithFeed>()
-                                for (index in 0 until firstVisibleArticleIndex) {
+                                for (index in readRange) {
                                     val item = pagingItems.peek(index)
                                     if (item is ArticleFlowItem.Article) {
                                         items.add(item.articleWithFeed)
@@ -782,25 +766,6 @@ fun FlowPage(
                                         isUnread = false,
                                     )
                                 }
-                            }
-                        }
-                    }
-
-                    // Only a forward page button/volume action can mark the old slice read.
-                    // Resize, filter changes and reader-return remapping never enqueue a range.
-                    LaunchedEffect(explicitlyAdvancedRange) {
-                        val range = explicitlyAdvancedRange ?: return@LaunchedEffect
-                        explicitlyAdvancedRange = null
-                        if (einkMode && markAsReadOnScroll && filterState.filter.isUnread()) {
-                            val articles = range.mapNotNull { index ->
-                                if (index in 0 until pagingItems.itemCount) {
-                                    (pagingItems.peek(index) as? ArticleFlowItem.Article)?.articleWithFeed
-                                } else null
-                            }
-                            if (articles.isNotEmpty()) {
-                                viewModel.diffMapHolder.updateDiff(
-                                    articleWithFeed = articles.toTypedArray(), isUnread = false,
-                                )
                             }
                         }
                     }
@@ -964,7 +929,7 @@ fun FlowPage(
                                         )
                                     } else {
                                         // Record which page this article is on before navigating
-                                        if (einkMode) einkCurrentPage = index / einkItemsPerPage
+                                        if (einkMode) einkCurrentPage = index / einkPageCapacity
                                         navigateToArticle(articleWithFeed.article.id, index)
                                     }
                                 },
@@ -976,7 +941,7 @@ fun FlowPage(
                                 einkPageStart = einkStartIndex,
                                 einkPageEnd = einkEndIndex,
                                 feedUnreadCounts = feedUnreadCounts,
-                                columns = newspaperColumns,
+                                columns = renderedColumns,
                                 rowPlan = visibleNewspaperRows,
                             )
                             if (!einkMode) {
@@ -1001,20 +966,8 @@ fun FlowPage(
                         totalPages = einkTotalPagesState,
                         totalArticles = einkArticleCountState,
                         lastSyncTime = lastSyncTime,
-                        onPrev = {
-                            if (einkCurrentPage > 0) {
-                                einkCurrentPage--
-                                scope.launch { listState.scrollToItem(0) }
-                            }
-                        },
-                        onNext = {
-                            if (einkCurrentPage < einkTotalPagesState - 1) {
-                                explicitlyAdvancedRange = einkCurrentPage * currentPageCapacity until
-                                    (einkCurrentPage + 1) * currentPageCapacity
-                                einkCurrentPage++
-                                scope.launch { listState.scrollToItem(0) }
-                            }
-                        },
+                        onPrev = { turnEinkPage(false) },
+                        onNext = { turnEinkPage(true) },
                     )
                 } else {
                     FilterBar(
