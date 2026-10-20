@@ -658,10 +658,19 @@ class NewspaperUiTest {
                 assertEquals(choice, persisted)
             }
             compose.onNodeWithText(context.getString(R.string.layout_preset)).performClick()
-            compose.onNode(hasText(ReadingLayoutPresetPreference.Tablet.toDesc(context)) and isSelectable()).assertExists()
-            pressBack()
+            compose.onNode(hasText(ReadingLayoutPresetPreference.Tablet.toDesc(context)) and isSelectable()).assertIsDisplayed()
+            // Espresso's default root picker can retain the unfocused activity root
+            // while Compose Dialog owns focus. Inject a real Back key through Android
+            // instead, so the focused dialog receives it without selecting a View root.
+            val instrumentation = InstrumentationRegistry.getInstrumentation()
+            instrumentation.waitForIdleSync()
+            instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+            compose.waitForIdle()
             compose.onNode(hasText(ReadingLayoutPresetPreference.Tablet.toDesc(context)) and isSelectable()).assertDoesNotExist()
             assertEquals(ReadingLayoutPresetPreference.Auto, observed.get())
+            assertEquals(ReadingLayoutPresetPreference.Auto, runBlocking {
+                ReadingLayoutPresetPreference.fromPreferences(context.dataStore.data.first())
+            })
         } finally {
             runBlocking {
                 original.put(context, this)
