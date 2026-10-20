@@ -47,6 +47,9 @@ jobs:
       - name: Run unit tests
         run: ./gradlew --stacktrace --no-daemon ${{ github.event.inputs.gradle-task || 'testGithubDebugUnitTest' }}
 
+      - name: Lint release variant
+        run: ./gradlew --stacktrace --no-daemon --max-workers=2 lintGithubRelease
+
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
