@@ -33,6 +33,15 @@ import me.ash.reader.ui.page.home.flow.EInkPaginationBar
 import me.ash.reader.infrastructure.preference.FlowFilterBarStylePreference
 import androidx.compose.material3.Text
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.SideEffect
+import me.ash.reader.ui.page.home.flow.NewspaperPageChange
+import me.ash.reader.ui.page.home.flow.newspaperPageTurn
+import me.ash.reader.ui.page.home.flow.newspaperPageForSource
+import me.ash.reader.ui.page.home.flow.newspaperRows
+import me.ash.reader.ui.page.home.flow.applyTo
+import me.ash.reader.ui.page.home.flow.newspaperScrolledReadRange
 import androidx.paging.PagingData
 import androidx.paging.compose.collectAsLazyPagingItems
 import kotlinx.coroutines.flow.flowOf
@@ -231,6 +240,96 @@ class NewspaperUiTest {
         compose.onNodeWithText("Last article remains reachable").assertIsDisplayed().performClick().performClick()
         assertEquals(2, clicked.get())
         capture("articles-large-font-end")
+    }
+
+    @Test fun pageTurnsResetMeasuredRowsAndResizeKeepsExactSource() {
+        // Render real rows while invoking the same page transition and scroll-request helpers
+        // used by FlowPage's volume and on-screen controls. This is not a hardware-key test.
+        val feed = Feed(id = "slice-fixture", name = "Pagination Journal", url = "https://example.com",
+            groupId = "g", accountId = 1)
+        val fixture = (0 until 30).map { index ->
+            ArticleFlowItem.Article(ArticleWithFeed(Article(id = "slice-$index", date = Date(0),
+                title = "Article $index: a deliberately substantial headline for a measured newspaper block",
+                rawDescription = "", shortDescription = "A substantial text block makes each slice overflow this bounded viewport so a retained scroll offset cannot pass unnoticed.",
+                link = "https://example.com/$index", feedId = feed.id, accountId = 1), feed))
+        }
+        val stream = flowOf(PagingData.from<ArticleFlowItem>(fixture))
+        val page = mutableStateOf(2)
+        val capacity = mutableStateOf(6)
+        val marked = mutableSetOf<Int>()
+        val currentList = java.util.concurrent.atomic.AtomicReference<LazyListState>()
+        var columns = 1
+        fun apply(change: NewspaperPageChange) {
+            change.readRange?.let { marked.addAll(it) }
+            change.applyTo(currentList.get()) { page.value = it }
+        }
+        compose.setContent {
+            CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON) {
+                AppTheme(useDarkTheme = false) {
+                    val items = stream.collectAsLazyPagingItems()
+                    val state = rememberLazyListState()
+                    SideEffect { currentList.set(state) }
+                    BoxWithConstraints(Modifier.fillMaxWidth().height(360.dp)) {
+                        columns = if (maxWidth >= 600.dp) 2 else 1
+                        LazyColumn(Modifier.fillMaxSize().testTag("pagination-fixture"), state = state) {
+                            ArticleList(pagingItems = items, diffMap = emptyMap(), isShowFeedIcon = false,
+                                isShowStickyHeader = false, articleListTonalElevation = 0,
+                                einkPageStart = page.value * capacity.value,
+                                einkPageEnd = (page.value + 1) * capacity.value, columns = columns)
+                        }
+                    }
+                }
+            }
+        }
+        compose.onNodeWithText(fixture[12].articleWithFeed.article.title).assertIsDisplayed()
+        compose.onNodeWithTag("pagination-fixture").performScrollToIndex(2)
+        compose.runOnIdle {
+            assertTrue(currentList.get().firstVisibleItemIndex > 0)
+            val rows = newspaperRows(30, columns, page.value * capacity.value,
+                (page.value + 1) * capacity.value) { false }
+            marked.addAll(newspaperScrolledReadRange(rows, currentList.get().firstVisibleItemIndex,
+                page.value * capacity.value, (page.value + 1) * capacity.value, einkMode = true))
+            assertTrue("Production e-ink scroll policy does not mark unseen slices or rows", marked.isEmpty())
+            apply(requireNotNull(newspaperPageTurn(page.value, 5, capacity.value, forward = true)))
+        }
+        compose.onNodeWithText(fixture[18].articleWithFeed.article.title).assertIsDisplayed()
+        compose.runOnIdle {
+            assertEquals(0, currentList.get().firstVisibleItemIndex)
+            assertEquals(0, currentList.get().firstVisibleItemScrollOffset)
+            assertEquals((12 until 18).toSet(), marked)
+            assertTrue(marked.none { it < 12 })
+        }
+        compose.onNodeWithTag("pagination-fixture").performScrollToIndex(2)
+        compose.runOnIdle { apply(requireNotNull(newspaperPageTurn(page.value, 5, capacity.value, forward = false))) }
+        compose.onNodeWithText(fixture[12].articleWithFeed.article.title).assertIsDisplayed()
+        compose.runOnIdle {
+            assertEquals(0, currentList.get().firstVisibleItemIndex)
+            assertEquals(0, currentList.get().firstVisibleItemScrollOffset)
+            assertEquals("Previous page never marks more articles", (12 until 18).toSet(), marked)
+            // Exact observed failure: page9 at capacity3 used to clamp to page5 before
+            // remapping, moving source27 back to source15 when capacity grew to5.
+            capacity.value = 3
+            apply(newspaperPageForSource(27, 30, 3, columns, isDate = { false }))
+        }
+        compose.onNodeWithText(fixture[27].articleWithFeed.article.title).assertIsDisplayed()
+        compose.runOnIdle {
+            val rows = newspaperRows(30, columns, page.value * capacity.value,
+                (page.value + 1) * capacity.value) { false }
+            val sourceAnchor = rows[currentList.get().firstVisibleItemIndex].indices.first()
+            assertEquals(27, sourceAnchor)
+            val change = newspaperPageForSource(sourceAnchor, 30, 5, columns, isDate = { false })
+            capacity.value = 5
+            apply(change)
+        }
+        compose.onNodeWithText(fixture[27].articleWithFeed.article.title).assertIsDisplayed()
+        compose.runOnIdle {
+            val rows = newspaperRows(30, columns, page.value * capacity.value,
+                (page.value + 1) * capacity.value) { false }
+            assertEquals(5, page.value)
+            assertTrue("Resized first row still contains source27",
+                27 in rows[currentList.get().firstVisibleItemIndex].indices)
+            assertEquals("Resize is not explicit forward reading", (12 until 18).toSet(), marked)
+        }
     }
 
     /** Production chrome around deterministic content fixtures, not an account-backed app session. */
