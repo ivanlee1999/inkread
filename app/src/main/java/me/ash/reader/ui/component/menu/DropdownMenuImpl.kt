@@ -62,11 +62,12 @@ class AnchorEndPopupPositionProvider(
         popupContentSize: IntSize
     ): IntOffset {
 
-        val popupX = offset.x - popupContentSize.width / 2
+        val popupX = (anchorBounds.left + offset.x - popupContentSize.width / 2)
+            .coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
 
         val popupYPrimary = anchorBounds.bottom
 
-        val fitsBelow = (popupYPrimary + popupContentSize.height) <= windowSize.height
+        val fitsBelow = (popupYPrimary + verticalMargin + popupContentSize.height) <= windowSize.height
 
         val popupYSecondary = anchorBounds.top - popupContentSize.height
 
@@ -79,7 +80,7 @@ class AnchorEndPopupPositionProvider(
         onTransformOriginCalculated(if (fitsBelow) TopTransformOrigin else BottomTransformOrigin)
 
 
-        return IntOffset(popupX, popupY)
+        return IntOffset(popupX, popupY.coerceIn(0, (windowSize.height - popupContentSize.height).coerceAtLeast(0)))
     }
 }
 

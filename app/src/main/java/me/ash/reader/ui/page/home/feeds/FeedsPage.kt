@@ -188,7 +188,7 @@ fun FeedsPage(
                         onClick = {
                             scope.launch {
                                 if (listState.firstVisibleItemIndex != 0) {
-                                    listState.animateScrollToItem(0)
+                                    listState.scrollToItem(0)
                                 }
                             }
                         },
@@ -280,7 +280,7 @@ fun FeedsPage(
                         Spacer(modifier = Modifier.height(8.dp))
                     }
 
-                    itemsIndexed(groupWithFeedList) { _, (group, feeds) ->
+                    itemsIndexed(groupWithFeedList, key = { _, item -> item.group.id }) { _, (group, feeds) ->
                         val groupImportant = feeds.sumOf { it.important }
                         GroupWithFeedsContainer {
                             GroupItem(
@@ -303,21 +303,22 @@ fun FeedsPage(
                                 navigationToFlow()
                             }
 
-                            feeds.forEachIndexed { index, feed ->
-                                FeedItem(
-                                    feed = feed,
-                                    isLastItem = { index == feeds.lastIndex },
-                                    isExpanded = {
-                                        groupsVisible.getOrPut(feed.groupId, groupListExpand::value)
-                                    },
-                                    onClick = {
-                                        feedsViewModel.changeFilter(
-                                            filterState.copy(feed = feed, group = null)
-                                        )
-                                        navigationToFlow()
-                                    },
-                                    onLongClick = { scope.launch { feedDrawerState.show() } },
-                                )
+                            if (groupsVisible.getOrPut(group.id, groupListExpand::value)) {
+                                PublicationGrid(itemCount = feeds.size) { index, modifier ->
+                                    val feed = feeds[index]
+                                    FeedItem(
+                                        modifier = modifier,
+                                        feed = feed,
+                                        isExpanded = { true },
+                                        onClick = {
+                                            feedsViewModel.changeFilter(
+                                                filterState.copy(feed = feed, group = null)
+                                            )
+                                            navigationToFlow()
+                                        },
+                                        onLongClick = { scope.launch { feedDrawerState.show() } },
+                                    )
+                                }
                             }
                         }
                     }
@@ -334,13 +335,7 @@ fun FeedsPage(
         },
         bottomBar = {
             FilterBar(
-                modifier =
-                    with(sharedTransitionScope) {
-                        Modifier.sharedElement(
-                            sharedContentState = rememberSharedContentState("filterBar"),
-                            animatedVisibilityScope = animatedVisibilityScope,
-                        )
-                    },
+                modifier = Modifier,
                 filter = filterState.filter,
                 filterBarStyle = filterBarStyle.value,
                 filterBarFilled = true,

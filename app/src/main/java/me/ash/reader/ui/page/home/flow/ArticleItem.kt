@@ -1,8 +1,11 @@
 package me.ash.reader.ui.page.home.flow
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.border
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -14,15 +17,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material.icons.outlined.FiberManualRecord
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
-import androidx.compose.material.icons.rounded.CheckCircleOutline
 import androidx.compose.material.icons.rounded.FiberManualRecord
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Star
@@ -34,26 +36,25 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.round
-import androidx.compose.ui.unit.sp
 import coil.size.Precision
 import coil.size.Scale
 import me.ash.reader.R
@@ -72,18 +73,12 @@ import me.ash.reader.infrastructure.preference.SwipeEndActionPreference
 import me.ash.reader.infrastructure.preference.SwipeStartActionPreference
 import me.ash.reader.ui.component.FeedIcon
 import me.ash.reader.ui.component.base.RYAsyncImage
-import me.ash.reader.ui.component.base.SIZE_1000
 import me.ash.reader.ui.component.menu.AnimatedDropdownMenu
-import me.ash.reader.ui.component.swipe.SwipeAction
-import me.ash.reader.ui.component.swipe.SwipeableActionsBox
 import me.ash.reader.ui.ext.requiresBidi
 import me.ash.reader.ui.ext.surfaceColorAtElevation
 import me.ash.reader.ui.page.settings.color.flow.generateArticleWithFeedPreview
-import me.ash.reader.ui.theme.Shape20
 import me.ash.reader.ui.theme.applyTextDirection
 import me.ash.reader.ui.theme.palette.onDark
-
-private const val TAG = "ArticleItem"
 
 @Composable
 fun ArticleItem(
@@ -91,6 +86,7 @@ fun ArticleItem(
     articleWithFeed: ArticleWithFeed,
     isUnread: Boolean = articleWithFeed.article.isUnread,
     feedUnreadCount: Int = 0,
+    isLead: Boolean = false,
     onClick: (ArticleWithFeed) -> Unit = {},
     onLongClick: (() -> Unit)? = null,
 ) {
@@ -102,6 +98,7 @@ fun ArticleItem(
         feedName = feed.name,
         feedIconUrl = feed.icon,
         feedUnreadCount = feedUnreadCount,
+        isLead = isLead,
         title = article.title,
         shortDescription = article.shortDescription,
         timeString = article.dateString,
@@ -120,6 +117,7 @@ fun ArticleItem(
     feedName: String = "",
     feedIconUrl: String? = null,
     feedUnreadCount: Int = 0,
+    isLead: Boolean = false,
     title: String = "",
     shortDescription: String = "",
     timeString: String? = null,
@@ -136,158 +134,85 @@ fun ArticleItem(
     val articleListDate = LocalFlowArticleListTime.current
     val articleListReadIndicator = LocalFlowArticleListReadIndicator.current
 
+    val showReadIndicator = articleListReadIndicator != FlowArticleReadIndicatorPreference.None
+    // Reading state never reduces contrast: a printed marker replaces faded text.
     Column(
-        modifier =
-            modifier
-                .padding(horizontal = 12.dp)
-                .clip(Shape20)
-                .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-                .padding(horizontal = 12.dp, vertical = 12.dp)
-                .alpha(
-                    when (articleListReadIndicator) {
-                        FlowArticleReadIndicatorPreference.None -> 1f
-
-                        FlowArticleReadIndicatorPreference.AllRead -> {
-                            if (isUnread) 1f else 0.5f
-                        }
-
-                        FlowArticleReadIndicatorPreference.ExcludingStarred -> {
-                            if (isUnread || isStarred) 1f else 0.5f
-                        }
-                    }
-                )
+        modifier = modifier
+            .fillMaxWidth()
+            .border(1.dp, MaterialTheme.colorScheme.onSurface)
+            .combinedClickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                role = Role.Button,
+                onClick = onClick, onLongClick = onLongClick,
+            )
+            .padding(if (isLead) 18.dp else 14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // Top
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Feed name
+            if (articleListFeedIcon.value) FeedIcon(feedName = feedName, iconUrl = feedIconUrl, animate = false)
             if (articleListFeedName.value) {
                 Text(
-                    modifier =
-                        Modifier.weight(1f)
-                            .padding(
-                                start = if (articleListFeedIcon.value) 30.dp else 0.dp,
-                                end = 10.dp,
-                            ),
+                    modifier = Modifier.weight(1f),
                     text = if (feedUnreadCount > 0) "$feedName ($feedUnreadCount)" else feedName,
-                    color = MaterialTheme.colorScheme.tertiary,
+                    color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.labelMedium,
-                    maxLines = 1,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier) {
-                    // Starred
-                    if (isStarred) {
-                        StarredIcon()
-                    }
-
-                    if (articleListDate.value) {
-                        // Time
-                        Text(
-                            modifier = Modifier,
-                            text = timeString ?: "",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                    }
-                }
-            } else {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Spacer(Modifier.width(if (articleListFeedIcon.value) 30.dp else 0.dp))
-
-                    if (articleListDate.value) {
-                        // Time
-                        Text(
-                            modifier = Modifier.weight(1f),
-                            text = timeString ?: "",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                        // Starred
-                        if (isStarred) {
-                            StarredIcon()
-                        }
-                    }
-                }
-            }
-
-            // Right
-
-        }
-
-        // Bottom
-        Row(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
-            // Feed icon
-            if (articleListFeedIcon.value) {
-                FeedIcon(feedName = feedName, iconUrl = feedIconUrl)
-                Spacer(modifier = Modifier.width(10.dp))
-            }
-
-            // Article
-            Column(modifier = Modifier.weight(1f)) {
-
-                // Title
-                Row {
-                    Text(
-                        text = title,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        style =
-                            MaterialTheme.typography.titleMedium
-                                .applyTextDirection(title.requiresBidi())
-                                .merge(lineHeight = 22.sp),
-                        maxLines =
-                            if (articleListDesc != FlowArticleListDescPreference.NONE) 2 else 4,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    if (!articleListFeedName.value && !articleListDate.value) {
-                        if (isStarred) {
-                            StarredIcon()
-                        } else {
-                            Spacer(modifier = Modifier.width(16.dp))
-                        }
-                    }
-                }
-
-                // Description
-                if (
-                    articleListDesc != FlowArticleListDescPreference.NONE &&
-                        shortDescription.isNotBlank()
-                ) {
-                    Text(
-                        modifier = Modifier.padding(top = 4.dp),
-                        text = shortDescription,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style =
-                            MaterialTheme.typography.bodySmall.applyTextDirection(
-                                shortDescription.requiresBidi()
-                            ),
-                        maxLines =
-                            when (articleListDesc) {
-                                FlowArticleListDescPreference.LONG -> 4
-                                FlowArticleListDescPreference.SHORT -> 2
-                                else -> throw IllegalStateException()
-                            },
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-
-            // Image
-            if (imgData != null && articleListImage.value) {
-                RYAsyncImage(
-                    modifier = Modifier.padding(start = 10.dp).size(80.dp).clip(Shape20),
-                    data = imgData,
-                    scale = Scale.FILL,
-                    precision = Precision.INEXACT,
-                    size = SIZE_1000,
-                    contentScale = ContentScale.Crop,
+            } else Spacer(Modifier.weight(1f))
+            if (isStarred) StarredIcon()
+            if (showReadIndicator && isUnread) {
+                Icon(
+                    imageVector = Icons.Outlined.FiberManualRecord,
+                    contentDescription = stringResource(R.string.unread),
+                    modifier = Modifier.size(10.dp),
+                    tint = MaterialTheme.colorScheme.onSurface,
                 )
             }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface, thickness = if (isLead) 2.dp else 1.dp)
+        Text(
+            text = title,
+            color = MaterialTheme.colorScheme.onSurface,
+            style = (if (isLead) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge)
+                .applyTextDirection(title.requiresBidi()),
+            fontFamily = FontFamily.Serif,
+            fontWeight = if (isUnread) FontWeight.Bold else FontWeight.Medium,
+            maxLines = if (isLead) 5 else 4,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (imgData != null && articleListImage.value) {
+            RYAsyncImage(
+                modifier = Modifier.fillMaxWidth().height(if (isLead) 144.dp else 104.dp),
+                data = imgData,
+                scale = Scale.FILL,
+                precision = Precision.INEXACT,
+                size = coil.size.Size(800, 400),
+                contentScale = ContentScale.Crop,
+                animate = false,
+            )
+        }
+        if (articleListDesc != FlowArticleListDescPreference.NONE && shortDescription.isNotBlank()) {
+            Text(
+                text = shortDescription,
+                color = MaterialTheme.colorScheme.onSurface,
+                style = MaterialTheme.typography.bodyMedium.applyTextDirection(shortDescription.requiresBidi()),
+                maxLines = if (articleListDesc == FlowArticleListDescPreference.LONG) 4 else 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (articleListDate.value && !timeString.isNullOrBlank()) {
+            Text(
+                text = timeString,
+                color = MaterialTheme.colorScheme.onSurface,
+                style = MaterialTheme.typography.labelSmall,
+            )
         }
     }
 }
@@ -303,21 +228,19 @@ fun StarredIcon(modifier: Modifier = Modifier) {
             .padding(end = 2.dp),
         imageVector = Icons.Rounded.Star,
         contentDescription = stringResource(R.string.starred),
-        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+        tint = MaterialTheme.colorScheme.onSurface,
     )
 }
-
-private const val PositionalThresholdFraction = 0.4f
-private const val SwipeActionDelay = 300L
 
 @Composable
 fun SwipeableArticleItem(
     articleWithFeed: ArticleWithFeed,
     isUnread: Boolean = articleWithFeed.article.isUnread,
     feedUnreadCount: Int = 0,
+    isLead: Boolean = false,
     articleListTonalElevation: Int = 0,
     onClick: (ArticleWithFeed) -> Unit = {},
-    isSwipeEnabled: () -> Boolean = { false },
+    isSwipeEnabled: () -> Boolean = { true },
     isMenuEnabled: Boolean = true,
     onToggleStarred: (ArticleWithFeed) -> Unit = {},
     onToggleRead: (ArticleWithFeed) -> Unit = {},
@@ -338,8 +261,7 @@ fun SwipeableArticleItem(
 
     SwipeActionBox(
         articleWithFeed = articleWithFeed,
-        isRead = !isUnread,
-        isStarred = articleWithFeed.article.isStarred,
+        isSwipeEnabled = isSwipeEnabled,
         onToggleStarred = onToggleStarred,
         onToggleRead = onToggleRead,
     ) {
@@ -366,6 +288,7 @@ fun SwipeableArticleItem(
                 articleWithFeed = articleWithFeed,
                 isUnread = isUnread,
                 feedUnreadCount = feedUnreadCount,
+                isLead = isLead,
                 onClick = onClick,
                 onLongClick = onLongClick,
             )
@@ -374,6 +297,7 @@ fun SwipeableArticleItem(
                     AnimatedDropdownMenu(
                         modifier = Modifier.padding(horizontal = 12.dp),
                         expanded = isMenuExpanded,
+                        animated = false,
                         onDismissRequest = { isMenuExpanded = false },
                         offset = menuOffset,
                     ) {
@@ -396,23 +320,15 @@ fun SwipeableArticleItem(
     }
 }
 
-private enum class SwipeDirection {
-    StartToEnd,
-    EndToStart,
-}
-
 @Composable
 private fun SwipeActionBox(
     modifier: Modifier = Modifier,
     articleWithFeed: ArticleWithFeed,
-    isStarred: Boolean,
-    isRead: Boolean,
+    isSwipeEnabled: () -> Boolean,
     onToggleStarred: (ArticleWithFeed) -> Unit,
     onToggleRead: (ArticleWithFeed) -> Unit,
     content: @Composable () -> Unit,
 ) {
-    val containerColor = MaterialTheme.colorScheme.tertiaryContainer
-
     val swipeToStartAction = LocalArticleListSwipeStartAction.current
     val swipeToEndAction = LocalArticleListSwipeEndAction.current
 
@@ -435,134 +351,29 @@ private fun SwipeActionBox(
         return
     }
 
-    val startAction =
-        onSwipeStartToEnd?.let {
-            SwipeAction(
-                icon = {
-                    swipeActionIcon(
-                            direction = SwipeDirection.StartToEnd,
-                            isStarred = isStarred,
-                            isRead = isRead,
-                        )
-                        ?.let {
-                            Icon(
-                                imageVector = it,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.tertiary,
-                                modifier = Modifier.padding(horizontal = 24.dp),
-                            )
-                        }
-                },
-                background = containerColor,
-                isUndo = false,
-                onSwipe = { onSwipeStartToEnd.invoke(articleWithFeed) },
-            )
-        }
-
-    val endAction =
-        onSwipeEndToStart?.let {
-            SwipeAction(
-                icon = {
-                    swipeActionIcon(
-                            direction = SwipeDirection.EndToStart,
-                            isStarred = isStarred,
-                            isRead = isRead,
-                        )
-                        ?.let {
-                            Icon(
-                                imageVector = it,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.tertiary,
-                                modifier = Modifier.padding(horizontal = 24.dp),
-                            )
-                        }
-                },
-                background = containerColor,
-                isUndo = false,
-                onSwipe = { onSwipeEndToStart.invoke(articleWithFeed) },
-            )
-        }
-
-    SwipeableActionsBox(
-        modifier = modifier,
-        startActions = listOfNotNull(startAction),
-        endActions = listOfNotNull(endAction),
-        backgroundUntilSwipeThreshold = MaterialTheme.colorScheme.surface,
-    ) {
-        content.invoke()
-    }
-}
-
-@Composable
-private fun swipeActionIcon(
-    direction: SwipeDirection,
-    isStarred: Boolean,
-    isRead: Boolean,
-): ImageVector? {
-    val swipeToStartAction = LocalArticleListSwipeStartAction.current
-    val swipeToEndAction = LocalArticleListSwipeEndAction.current
-
-    val starImageVector =
-        remember(isStarred) { if (isStarred) Icons.Outlined.StarOutline else Icons.Rounded.Star }
-
-    val readImageVector =
-        remember(isRead) { if (isRead) Icons.Outlined.Circle else Icons.Rounded.CheckCircleOutline }
-
-    return remember(direction) {
-        when (direction) {
-            SwipeDirection.StartToEnd -> {
-
-                when (swipeToEndAction) {
-                    SwipeEndActionPreference.None -> null
-                    SwipeEndActionPreference.ToggleRead -> readImageVector
-                    SwipeEndActionPreference.ToggleStarred -> starImageVector
+    val threshold = with(LocalDensity.current) { 60.dp.toPx() }
+    val direction = if (LocalLayoutDirection.current == LayoutDirection.Rtl) -1f else 1f
+    // Preserve configured swipe shortcuts without translating cards, ripples, or spring reset.
+    Box(modifier.pointerInput(articleWithFeed, onSwipeStartToEnd, onSwipeEndToStart, threshold, direction) {
+        var distance = 0f
+        detectHorizontalDragGestures(
+            onDragStart = { distance = 0f },
+            onDragCancel = { distance = 0f },
+            onDragEnd = {
+                when {
+                    !isSwipeEnabled() -> Unit
+                    distance * direction > threshold -> onSwipeStartToEnd?.invoke(articleWithFeed)
+                    distance * direction < -threshold -> onSwipeEndToStart?.invoke(articleWithFeed)
                 }
-            }
+                distance = 0f
+            },
+            onHorizontalDrag = { change, amount ->
+                change.consume()
+                distance += amount
+            },
+        )
+    }) { content() }
 
-            SwipeDirection.EndToStart -> {
-                when (swipeToStartAction) {
-                    SwipeStartActionPreference.None -> null
-                    SwipeStartActionPreference.ToggleRead -> readImageVector
-                    SwipeStartActionPreference.ToggleStarred -> starImageVector
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun swipeActionText(
-    direction: SwipeDirection,
-    isStarred: Boolean,
-    isRead: Boolean,
-): String {
-    val swipeToStartAction = LocalArticleListSwipeStartAction.current
-    val swipeToEndAction = LocalArticleListSwipeEndAction.current
-
-    val starText =
-        stringResource(if (isStarred) R.string.mark_as_unstar else R.string.mark_as_starred)
-
-    val readText = stringResource(if (isRead) R.string.mark_as_unread else R.string.mark_as_read)
-
-    return remember(direction) {
-        when (direction) {
-            SwipeDirection.StartToEnd -> {
-                when (swipeToEndAction) {
-                    SwipeEndActionPreference.None -> "null"
-                    SwipeEndActionPreference.ToggleRead -> readText
-                    SwipeEndActionPreference.ToggleStarred -> starText
-                }
-            }
-
-            SwipeDirection.EndToStart -> {
-                when (swipeToStartAction) {
-                    SwipeStartActionPreference.None -> "null"
-                    SwipeStartActionPreference.ToggleRead -> readText
-                    SwipeStartActionPreference.ToggleStarred -> starText
-                }
-            }
-        }
-    }
 }
 
 @Composable

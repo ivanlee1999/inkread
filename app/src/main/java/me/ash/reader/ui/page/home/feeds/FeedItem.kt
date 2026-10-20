@@ -1,108 +1,91 @@
 package me.ash.reader.ui.page.home.feeds
 
+import android.net.Uri
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Badge
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.text.style.LineHeightStyle
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
-import kotlinx.coroutines.launch
 import me.ash.reader.domain.model.feed.Feed
 import me.ash.reader.ui.component.FeedIcon
-import me.ash.reader.ui.component.base.RYExtensibleVisibility
 import me.ash.reader.ui.page.home.feeds.drawer.feed.FeedOptionViewModel
 
+/** A publication, rather than another settings-style row. No animated visibility or ripple. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun contentPadding(isLastItem: Boolean): PaddingValues = if (isLastItem) PaddingValues(
-    bottom = 22.dp, start = 14.dp, end = 14.dp, top = 14.dp
-) else PaddingValues(14.dp)
-
-@OptIn(
-    ExperimentalFoundationApi::class,
-)
-@Composable
-private fun FeedItemImpl(
-    feed: Feed,
-    isLastItem: () -> Boolean = { false },
-    onLongClickCallback: (String) -> Unit = {},
+fun PublicationBlock(
+    name: String,
+    iconUrl: String? = null,
+    count: Int = 0,
+    source: String = "",
+    modifier: Modifier = Modifier,
     onClick: () -> Unit = {},
-    onLongClick: () -> Unit = {}
+    onLongClick: (() -> Unit)? = null,
 ) {
-    val scope = rememberCoroutineScope()
-    Row(
-        modifier = Modifier
+    Column(
+        modifier = modifier
             .fillMaxWidth()
-            .combinedClickable(onClick = {
-                onClick()
-            }, onLongClick = {
-                onLongClick()
-                scope.launch {
-                    onLongClickCallback(feed.id)
-                }
-            })
-            .padding(contentPadding(isLastItem())),
+            .heightIn(min = 156.dp)
+            .border(1.dp, MaterialTheme.colorScheme.onSurface)
+            .combinedClickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                role = Role.Button,
+                onClick = onClick,
+                onLongClick = onLongClick,
+            )
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 14.dp, end = 6.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                FeedIcon(
-                    feedName = feed.name, iconUrl = feed.icon, modifier = Modifier
-                )
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            FeedIcon(feedName = name, iconUrl = iconUrl, animate = false)
+            Spacer(Modifier.weight(1f))
+            if (count != 0) {
                 Text(
-                    modifier = Modifier.padding(start = 12.dp, end = 6.dp),
-                    text = feed.name,
-                    style = MaterialTheme.typography.labelLarge.merge(
-                        lineHeight = 20.sp,
-                        lineHeightStyle = LineHeightStyle(
-                            trim = LineHeightStyle.Trim.Both,
-                            alignment = LineHeightStyle.Alignment.Center
-                        )
-                    ),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                    text = count.toString(),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
             }
-            if (feed.important != 0) {
-                Badge(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    contentColor = MaterialTheme.colorScheme.outline,
-                    content = {
-                        Text(
-                            text = feed.important.toString(),
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                    },
-                )
-            }
+        }
+        Text(
+            text = name,
+            style = MaterialTheme.typography.titleLarge,
+            fontFamily = FontFamily.Serif,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (source.isNotBlank()) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface)
+            Text(
+                text = source,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
 
-@OptIn(
-    ExperimentalFoundationApi::class,
-)
 @Composable
 fun FeedItem(
     feed: Feed,
@@ -110,42 +93,58 @@ fun FeedItem(
     isExpanded: () -> Boolean,
     feedOptionViewModel: FeedOptionViewModel = hiltViewModel(),
     onClick: () -> Unit = {},
-    onLongClick: () -> Unit = {}
+    onLongClick: () -> Unit = {},
+    modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
-    RYExtensibleVisibility(visible = isExpanded()) {
-        FeedItemImpl(
-            feed = feed,
-            isLastItem = isLastItem,
+    // Keep the existing entry point for settings previews and feed-option ownership.
+    if (isExpanded()) {
+        PublicationBlock(
+            modifier = modifier,
+            name = feed.name,
+            iconUrl = feed.icon,
+            count = feed.important,
+            source = remember(feed.url) { Uri.parse(feed.url).host.orEmpty().removePrefix("www.") },
             onClick = onClick,
-            onLongClick = onLongClick,
-            onLongClickCallback = { feedId ->
+            onLongClick = {
                 scope.launch {
-                    feedOptionViewModel.fetchFeed(feedId = feedId)
+                    feedOptionViewModel.fetchFeed(feedId = feed.id)
+                    onLongClick()
                 }
-            })
+            },
+        )
     }
 }
 
-@Preview
+/** Row-major, stable publication grid, also used by the native screenshot fixtures. */
 @Composable
-private fun Preview() {
-    MaterialTheme {
-        Surface {
-            FeedItemImpl(
-                feed = Feed(
-                    id = "1",
-                    name = "Awesome Feed",
-                    icon = null,
-                    important = 5,
-                    url = "https://example.com",
-                    groupId = "1",
-                    accountId = 1,
-                    isNotification = false,
-                    isFullContent = false,
-                ),
-            )
+fun PublicationGrid(
+    itemCount: Int,
+    modifier: Modifier = Modifier,
+    itemContent: @Composable (index: Int, modifier: Modifier) -> Unit,
+) {
+    BoxWithConstraints(modifier.fillMaxWidth()) {
+        val columns = when {
+            maxWidth >= 800.dp -> 3
+            maxWidth >= 440.dp -> 2
+            else -> 1
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            for (start in 0 until itemCount step columns) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    repeat(columns) { column ->
+                        val index = start + column
+                        if (index < itemCount) {
+                            itemContent(index, Modifier.weight(1f).fillMaxHeight())
+                        } else {
+                            Spacer(Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
         }
     }
-
 }

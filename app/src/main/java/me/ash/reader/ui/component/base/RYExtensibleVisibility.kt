@@ -20,9 +20,10 @@ import me.ash.reader.ui.theme.isEInkMode
 fun RYExtensibleVisibility(
     visible: Boolean,
     modifier: Modifier = Modifier,
+    animated: Boolean = true,
     content: @Composable AnimatedVisibilityScope.() -> Unit,
 ) {
-    if (isEInkMode) {
+    if (isEInkMode || !animated) {
         AnimatedVisibility(
             modifier = modifier,
             visible = visible,

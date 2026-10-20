@@ -170,10 +170,23 @@ fun FlowPage(
 
     val density = LocalDensity.current
     var einkAvailableHeightPx by remember { mutableIntStateOf(0) }
+    var articlePaneWidthPx by remember { mutableIntStateOf(0) }
+    val newspaperColumns = if (with(density) { articlePaneWidthPx.toDp() } >= 600.dp) 2 else 1
     val einkItemsPerPage = if (einkAvailableHeightPx > 0) {
-        maxOf(1, (with(density) { einkAvailableHeightPx.toDp() }.value / 120).toInt())
-    } else 5
+        maxOf(3, (with(density) { einkAvailableHeightPx.toDp() }.value / (260 * density.fontScale.coerceAtLeast(1f))).toInt() * newspaperColumns + 1)
+    } else 3
     var einkCurrentPage by rememberSaveable { mutableStateOf(0) }
+    val currentPageCapacity by rememberUpdatedState(einkItemsPerPage)
+    var explicitlyAdvancedRange by remember { mutableStateOf<IntRange?>(null) }
+    var previousPageCapacity by remember { mutableIntStateOf(einkItemsPerPage) }
+    LaunchedEffect(einkItemsPerPage) {
+        if (einkMode && previousPageCapacity != einkItemsPerPage) {
+            // Keep the same source neighborhood when the pane or font scale changes.
+            val firstSource = einkCurrentPage * previousPageCapacity
+            einkCurrentPage = firstSource / einkItemsPerPage
+        }
+        previousPageCapacity = einkItemsPerPage
+    }
     // Hoisted so bottomBar can read them (updated via SideEffect inside AnimatedContent)
     var einkTotalPagesState by remember { mutableIntStateOf(1) }
     var einkArticleCountState by remember { mutableIntStateOf(0) }
@@ -206,7 +219,7 @@ fun FlowPage(
     var currentPullToLoadState: PullToLoadState? by remember { mutableStateOf(null) }
     var currentLoadAction: LoadAction? by remember { mutableStateOf(null) }
 
-    val settleSpec = remember { spring<Float>(dampingRatio = Spring.DampingRatioLowBouncy) }
+    val settleSpec = remember { androidx.compose.animation.core.snap<Float>() }
 
     val lastVisibleIndex =
         remember(listState) {
@@ -319,6 +332,8 @@ fun FlowPage(
                     when (event) {
                         VolumeKeyEvent.NEXT -> {
                             if (einkCurrentPage < einkTotalPagesState - 1) {
+                                explicitlyAdvancedRange = einkCurrentPage * currentPageCapacity until
+                                    (einkCurrentPage + 1) * currentPageCapacity
                                 einkCurrentPage++
                                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             }
@@ -343,7 +358,7 @@ fun FlowPage(
         // Key only on articleId — snapshotFlow handles the case where the article isn't
         // loaded yet, waiting reactively until it appears in the paging snapshot, then
         // scrolling exactly once. This avoids re-scroll regressions from itemCount changes.
-        LaunchedEffect(readerState.articleId) {
+        LaunchedEffect(readerState.articleId, newspaperColumns, einkItemsPerPage) {
             val articleId = readerState.articleId ?: return@LaunchedEffect
             snapshotFlow { pagingItems?.itemSnapshotList }
                 .first { snapshot ->
@@ -351,20 +366,21 @@ fun FlowPage(
                         it is ArticleFlowItem.Article && it.articleWithFeed.article.id == articleId
                     } ?: -1
                     if (index != -1) {
-                        if (einkMode) {
-                            snapAppBarToCollapsed()
-                            listState.scrollToItem(index, scrollOffset = -200)
-                        } else {
-                            scrollAppBarToCollapsed()
-                            listState.animateScrollToItem(index, scrollOffset = -200)
+                        snapAppBarToCollapsed()
+                        if (einkMode) einkCurrentPage = index / einkItemsPerPage
+                        val start = if (einkMode) einkCurrentPage * einkItemsPerPage else 0
+                        val rows = newspaperRows(snapshot!!.size, newspaperColumns, start,
+                            if (einkMode) start + einkItemsPerPage else snapshot.size) {
+                            snapshot[it] is ArticleFlowItem.Date
                         }
+                        listState.requestScrollToItem(rows.rowForSourceIndex(index))
                         true
                     } else false
                 }
         }
     } else {
         // Same one-shot snapshotFlow pattern — scroll to article exactly once when it loads.
-        LaunchedEffect(readerState.articleId, einkItemsPerPage) {
+        LaunchedEffect(readerState.articleId, newspaperColumns, einkItemsPerPage) {
             val articleId = readerState.articleId ?: return@LaunchedEffect
             snapshotFlow { pagingItems?.itemSnapshotList }
                 .first { snapshot ->
@@ -372,12 +388,15 @@ fun FlowPage(
                         it is ArticleFlowItem.Article && it.articleWithFeed.article.id == articleId
                     } ?: -1
                     if (index != -1) {
-                        if (einkMode) {
-                            einkCurrentPage = index / einkItemsPerPage
-                        } else {
-                            snapAppBarToCollapsed()
-                            listState.requestScrollToItem(index, scrollOffset = -400)
+                        snapAppBarToCollapsed()
+                        if (einkMode) einkCurrentPage = index / einkItemsPerPage
+                        val start = if (einkMode) einkCurrentPage * einkItemsPerPage else 0
+                        val rows = newspaperRows(snapshot!!.size, newspaperColumns, start,
+                            if (einkMode) start + einkItemsPerPage else snapshot.size) {
+                            snapshot[it] is ArticleFlowItem.Date
                         }
+                        // Applied on the next measure, after the requested page slice updates.
+                        listState.requestScrollToItem(rows.rowForSourceIndex(index))
                         true
                     } else false
                 }
@@ -462,7 +481,7 @@ fun FlowPage(
                                     showBadge = isSyncing,
                                     tint = MaterialTheme.colorScheme.onSurface,
                                 ) { viewModel.sync() }
-                                RYExtensibleVisibility(visible = !filterUiState.filter.isStarred()) {
+                                RYExtensibleVisibility(animated = false, visible = !filterUiState.filter.isStarred()) {
                                     FeedbackIconButton(
                                         imageVector = Icons.Rounded.DoneAll,
                                         contentDescription = stringResource(R.string.mark_all_as_read),
@@ -474,7 +493,7 @@ fun FlowPage(
                                             markAsRead = false
                                         } else {
                                             scope.launch {
-                                                if (listState.firstVisibleItemIndex != 0) listState.animateScrollToItem(0)
+                                                if (listState.firstVisibleItemIndex != 0) listState.scrollToItem(0)
                                             }.invokeOnCompletion {
                                                 markAsRead = true
                                                 onSearch = false
@@ -493,7 +512,7 @@ fun FlowPage(
                                         onSearch = false
                                     } else {
                                         scope.launch {
-                                            if (listState.firstVisibleItemIndex != 0) listState.animateScrollToItem(0)
+                                            if (listState.firstVisibleItemIndex != 0) listState.scrollToItem(0)
                                         }.invokeOnCompletion {
                                             scope.launch {
                                                 onSearch = true
@@ -516,7 +535,7 @@ fun FlowPage(
                                 onClick = {
                                     scope.launch {
                                         if (listState.firstVisibleItemIndex != 0) {
-                                            listState.animateScrollToItem(0)
+                                            listState.scrollToItem(0)
                                         }
                                     }
                                 },
@@ -565,7 +584,7 @@ fun FlowPage(
                             }
                         },
                         actions = {
-                            RYExtensibleVisibility(visible = !filterUiState.filter.isStarred()) {
+                            RYExtensibleVisibility(animated = false, visible = !filterUiState.filter.isStarred()) {
                                 FeedbackIconButton(
                                     imageVector = Icons.Rounded.DoneAll,
                                     contentDescription = stringResource(R.string.mark_all_as_read),
@@ -582,7 +601,7 @@ fun FlowPage(
                                         scope
                                             .launch {
                                                 if (listState.firstVisibleItemIndex != 0) {
-                                                    listState.animateScrollToItem(0)
+                                                    listState.scrollToItem(0)
                                                 }
                                             }
                                             .invokeOnCompletion {
@@ -608,7 +627,7 @@ fun FlowPage(
                                     scope
                                         .launch {
                                             if (listState.firstVisibleItemIndex != 0) {
-                                                listState.animateScrollToItem(0)
+                                                listState.scrollToItem(0)
                                             }
                                         }
                                         .invokeOnCompletion {
@@ -631,7 +650,7 @@ fun FlowPage(
                 }
             },
             content = {
-                RYExtensibleVisibility(modifier = Modifier.zIndex(1f), visible = onSearch) {
+                RYExtensibleVisibility(animated = false, modifier = Modifier.zIndex(1f), visible = onSearch) {
                     BackHandler(onSearch) { onSearch = false }
                     SearchBar(
                         value = filterUiState.searchContent ?: "",
@@ -666,7 +685,7 @@ fun FlowPage(
                     )
                 }
 
-                RYExtensibleVisibility(markAsRead) {
+                RYExtensibleVisibility(animated = false, visible = markAsRead) {
                     BackHandler(markAsRead) { markAsRead = false }
 
                     MarkAsReadBar {
@@ -692,27 +711,7 @@ fun FlowPage(
                 AnimatedContent(
                     targetState = flowUiState,
                     contentKey = { it.pagerData.filterState.copy(searchContent = null) },
-                    transitionSpec = {
-                        if (einkMode) {
-                            EnterTransition.None togetherWith ExitTransition.None
-                        } else {
-                            val targetFilter = targetState.pagerData.filterState
-                            val initialFilter = initialState.pagerData.filterState
-
-                            if (targetFilter.filter.index > initialFilter.filter.index) {
-                                contentTransitionForward
-                            } else if (targetFilter.filter.index < initialFilter.filter.index) {
-                                contentTransitionBackward
-                            } else if (
-                                targetFilter.group != initialFilter.group ||
-                                    targetFilter.feed != initialFilter.feed
-                            ) {
-                                contentTransitionVertical
-                            } else {
-                                EnterTransition.None togetherWith ExitTransition.None
-                            }
-                        }
-                    },
+                    transitionSpec = { EnterTransition.None togetherWith ExitTransition.None },
                 ) { flowUiState ->
                     val pager = flowUiState.pagerData.pager
                     val filterState = flowUiState.pagerData.filterState
@@ -746,6 +745,15 @@ fun FlowPage(
                     }
                     val einkStartIndex = if (einkMode) einkCurrentPage * einkItemsPerPage else null
                     val einkEndIndex = if (einkMode) (einkCurrentPage + 1) * einkItemsPerPage else null
+                    val itemSnapshot = pagingItems.itemSnapshotList
+                    val visibleNewspaperRows = remember(
+                        itemSnapshot, newspaperColumns, einkStartIndex, einkEndIndex,
+                    ) {
+                        newspaperRows(
+                            itemSnapshot.size, newspaperColumns,
+                            einkStartIndex ?: 0, einkEndIndex ?: itemSnapshot.size,
+                        ) { itemSnapshot[it] is ArticleFlowItem.Date }
+                    }
                     // Hoist pagination state up so bottomBar can access it
                     SideEffect {
                         einkTotalPagesState = einkTotalPages
@@ -758,7 +766,8 @@ fun FlowPage(
                                 val firstVisibleArticleIndex =
                                     listState.layoutInfo.visibleItemsInfo
                                         .firstOrNull { it.contentType == CONTENT_TYPE_ARTICLE }
-                                        ?.index ?: return@LaunchedEffect
+                                        ?.index?.let { visibleNewspaperRows.getOrNull(it)?.indices?.firstOrNull() }
+                                        ?: return@LaunchedEffect
                                 // Only scan items before the first visible article
                                 val items = mutableListOf<ArticleWithFeed>()
                                 for (index in 0 until firstVisibleArticleIndex) {
@@ -777,40 +786,31 @@ fun FlowPage(
                         }
                     }
 
-                    // E-Ink: mark previous page as read when navigating forward
-                    if (einkMode) {
-                        var prevEinkPage by remember { mutableIntStateOf(einkCurrentPage) }
-                        LaunchedEffect(einkCurrentPage) {
-                            if (markAsReadOnScroll && filterState.filter.isUnread()) {
-                                val prev = prevEinkPage
-                                if (einkCurrentPage > prev) {
-                                    val prevStart = prev * einkItemsPerPage
-                                    val prevEnd = (prev + 1) * einkItemsPerPage
-                                    val items = mutableListOf<ArticleWithFeed>()
-                                    for (index in prevStart until minOf(prevEnd, pagingItems.itemCount)) {
-                                        pagingItems.peek(index)?.let { item ->
-                                            if (item is ArticleFlowItem.Article) {
-                                                items.add(item.articleWithFeed)
-                                            }
-                                        }
-                                    }
-                                    if (items.isNotEmpty()) {
-                                        viewModel.diffMapHolder.updateDiff(
-                                            articleWithFeed = items.toTypedArray(),
-                                            isUnread = false,
-                                        )
-                                    }
-                                }
+                    // Only a forward page button/volume action can mark the old slice read.
+                    // Resize, filter changes and reader-return remapping never enqueue a range.
+                    LaunchedEffect(explicitlyAdvancedRange) {
+                        val range = explicitlyAdvancedRange ?: return@LaunchedEffect
+                        explicitlyAdvancedRange = null
+                        if (einkMode && markAsReadOnScroll && filterState.filter.isUnread()) {
+                            val articles = range.mapNotNull { index ->
+                                if (index in 0 until pagingItems.itemCount) {
+                                    (pagingItems.peek(index) as? ArticleFlowItem.Article)?.articleWithFeed
+                                } else null
                             }
-                            prevEinkPage = einkCurrentPage
+                            if (articles.isNotEmpty()) {
+                                viewModel.diffMapHolder.updateDiff(
+                                    articleWithFeed = articles.toTypedArray(), isUnread = false,
+                                )
+                            }
                         }
                     }
 
                     if (settings.flowArticleListDateStickyHeader.value) {
-                        LaunchedEffect(lastVisibleIndex) {
+                        LaunchedEffect(lastVisibleIndex, visibleNewspaperRows) {
                             lastVisibleIndex.collect {
-                                if (it in (pagingItems.itemCount - 25..pagingItems.itemCount - 1)) {
-                                    pagingItems.get(it)
+                                val sourceIndex = visibleNewspaperRows.getOrNull(it)?.indices?.lastOrNull()
+                                if (sourceIndex != null && sourceIndex in (pagingItems.itemCount - 25 until pagingItems.itemCount)) {
+                                    pagingItems[sourceIndex]
                                 }
                             }
                         }
@@ -890,7 +890,6 @@ fun FlowPage(
                             )
                             .also { currentPullToLoadState = it }
 
-                    var dragAccumulator by remember { mutableFloatStateOf(0f) }
 
                     val diffMap = viewModel.diffMapHolder.diffMap
                     val feedUnreadCounts by remember(pagingItems.itemCount, diffMap) {
@@ -912,7 +911,8 @@ fun FlowPage(
                     }
 
                     LazyColumn(
-                            userScrollEnabled = !einkMode,
+                            // Page buttons remain instant; scrolling keeps oversized text/cards reachable.
+                            userScrollEnabled = true,
                             contentPadding = if (einkMode) PaddingValues(bottom = 56.dp + navBarBottom) else PaddingValues(),
                             modifier =
                                 Modifier.pullToLoad(
@@ -937,27 +937,9 @@ fun FlowPage(
                                     )
                                     .let { if (!einkMode) it.nestedScroll(scrollBehavior.nestedScrollConnection) else it }
                                     .fillMaxSize()
-                                    .let { if (einkMode) it.onSizeChanged { size -> einkAvailableHeightPx = size.height } else it }
-                                    .let {
-                                        if (einkMode) it.pointerInput(einkMode) {
-                                            detectVerticalDragGestures(
-                                                onDragEnd = {
-                                                    if (dragAccumulator < -150f && einkCurrentPage < einkTotalPagesState - 1) {
-                                                        einkCurrentPage++
-                                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                                        scope.launch { listState.scrollToItem(0) }
-                                                    } else if (dragAccumulator > 150f && einkCurrentPage > 0) {
-                                                        einkCurrentPage--
-                                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                                        scope.launch { listState.scrollToItem(0) }
-                                                    }
-                                                    dragAccumulator = 0f
-                                                },
-                                                onVerticalDrag = { _, dragAmount ->
-                                                    dragAccumulator += dragAmount
-                                                },
-                                            )
-                                        } else it
+                                    .onSizeChanged { size ->
+                                        einkAvailableHeightPx = size.height
+                                        articlePaneWidthPx = size.width
                                     }
                                     .drawVerticalScrollIndicator(listState),
                             state = listState,
@@ -968,7 +950,7 @@ fun FlowPage(
                                 isShowFeedIcon = articleListFeedIcon.value,
                                 isShowStickyHeader = articleListDateStickyHeader.value,
                                 articleListTonalElevation = articleListTonalElevation.value,
-                                isSwipeEnabled = { listState.isScrollInProgress },
+                                isSwipeEnabled = { !listState.isScrollInProgress },
                                 onClick = { articleWithFeed, index ->
                                     if (articleWithFeed.feed.isBrowser) {
                                         viewModel.diffMapHolder.updateDiff(
@@ -994,6 +976,8 @@ fun FlowPage(
                                 einkPageStart = einkStartIndex,
                                 einkPageEnd = einkEndIndex,
                                 feedUnreadCounts = feedUnreadCounts,
+                                columns = newspaperColumns,
+                                rowPlan = visibleNewspaperRows,
                             )
                             if (!einkMode) {
                                 item {
@@ -1025,6 +1009,8 @@ fun FlowPage(
                         },
                         onNext = {
                             if (einkCurrentPage < einkTotalPagesState - 1) {
+                                explicitlyAdvancedRange = einkCurrentPage * currentPageCapacity until
+                                    (einkCurrentPage + 1) * currentPageCapacity
                                 einkCurrentPage++
                                 scope.launch { listState.scrollToItem(0) }
                             }
@@ -1032,13 +1018,6 @@ fun FlowPage(
                     )
                 } else {
                     FilterBar(
-                        modifier =
-                            with(sharedTransitionScope) {
-                                Modifier.sharedElement(
-                                    sharedContentState = rememberSharedContentState("filterBar"),
-                                    animatedVisibilityScope = animatedVisibilityScope,
-                                )
-                            },
                         filter = filterUiState.filter,
                         filterBarStyle = filterBarStyle.value,
                         filterBarFilled = true,
@@ -1050,7 +1029,7 @@ fun FlowPage(
                         } else {
                             scope.launch {
                                 if (listState.firstVisibleItemIndex != 0) {
-                                    listState.animateScrollToItem(0)
+                                    listState.scrollToItem(0)
                                 }
                             }
                         }
