@@ -718,7 +718,7 @@ constructor(
                                 //                        fullContent = it.summary?.content
                                 // ?:
                                 // "",
-                                img = rssHelper.findThumbnail(it.summary?.content),
+                                img = rssHelper.findThumbnail(it.summary?.content, findArticleURL(it)),
                                 link = findArticleURL(it),
                                 feedId =
                                     accountId.spacerDollar(

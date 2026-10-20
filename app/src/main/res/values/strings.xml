@@ -397,4 +397,14 @@
     <string name="parse_full_content_desc">Fetch full articles from webpages</string>
     <string name="enable">Enable</string>
     <string name="disable">Disable</string>
+
+    <!-- Responsive newspaper layout -->
+    <string name="layout_preset">Layout preset</string>
+    <string name="layout_preset_description">For article lists and subscriptions. Columns adapt to the available window width and text size, including split-screen.</string>
+    <string name="layout_preset_auto">Auto</string>
+    <string name="layout_preset_phone">Phone</string>
+    <string name="layout_preset_tablet">Tablet</string>
+    <string name="layout_preset_auto_description">Automatically adapts to the available space.</string>
+    <string name="layout_preset_phone_description">Always use a single column.</string>
+    <string name="layout_preset_tablet_description">Prefer columns when there is enough room for readable text.</string>
 </resources>

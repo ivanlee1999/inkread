@@ -1,5 +1,6 @@
 package me.ash.reader.ui.component.reader
 
+import android.graphics.drawable.Animatable
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -112,12 +114,15 @@ private fun ArticleImage(
                             addHeader("Referer", domain!!)
                         }
                         data(data = data)
-                        crossfade(true)
+                        crossfade(false)
                         precision(Precision.INEXACT)
                         size(size)
                     }
                     .build()
         )
+    LaunchedEffect(painter.state) {
+        ((painter.state as? AsyncImagePainter.State.Success)?.result?.drawable as? Animatable)?.stop()
+    }
     Image(
         painter = painter,
         contentDescription = contentDescription,

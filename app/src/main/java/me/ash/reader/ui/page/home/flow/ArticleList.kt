@@ -1,13 +1,22 @@
 package me.ash.reader.ui.page.home.flow
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.paging.compose.LazyPagingItems
 import me.ash.reader.domain.data.Diff
@@ -35,6 +44,8 @@ internal fun LazyListScope.ArticleList(
     feedUnreadCounts: Map<String, Int> = emptyMap(),
     columns: Int = 1,
     rowPlan: List<NewspaperRow>? = null,
+    horizontalPadding: Dp = 16.dp,
+    columnSpacing: Dp = 24.dp,
 ) {
     // peek builds structural rows without fetching pages. Only composed cells access get().
     val rows = rowPlan ?: newspaperRows(pagingItems.itemCount, columns, einkPageStart ?: 0,
@@ -49,41 +60,55 @@ internal fun LazyListScope.ArticleList(
             val date = pagingItems[firstIndex] as? ArticleFlowItem.Date
             if (date != null) StickyHeader(date.date, isShowFeedIcon, articleListTonalElevation)
         } else {
-            androidx.compose.foundation.layout.Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
-            ) {
-                row.indices.forEach { index ->
-                    val cellKey = (pagingItems.peek(index) as? ArticleFlowItem.Article)
-                        ?.articleWithFeed?.article?.id ?: "placeholder-$index"
-                    key(cellKey) {
-                        androidx.compose.foundation.layout.Box(Modifier.weight(1f)) {
-                            val item = pagingItems[index] as? ArticleFlowItem.Article
-                            if (item != null) {
-                                val article = item.articleWithFeed.article
-                                SwipeableArticleItem(
-                                    articleWithFeed = item.articleWithFeed,
-                                    isLead = row.isLead,
-                                    isUnread = diffMap[article.id]?.isUnread ?: article.isUnread,
-                                    feedUnreadCount = feedUnreadCounts[item.articleWithFeed.feed.id] ?: 0,
-                                    articleListTonalElevation = articleListTonalElevation,
-                                    onClick = { onClick(it, index) },
-                                    isSwipeEnabled = isSwipeEnabled,
-                                    isMenuEnabled = isMenuEnabled,
-                                    onToggleStarred = onToggleStarred,
-                                    onToggleRead = onToggleRead,
-                                    onMarkAboveAsRead = if (index <= 1) null else onMarkAboveAsRead,
-                                    onMarkBelowAsRead = if (index == pagingItems.itemCount - 1) null else onMarkBelowAsRead,
-                                    onShare = onShare,
-                                )
+            val ruleColor = MaterialTheme.colorScheme.onSurface
+            Column(Modifier.fillMaxWidth().padding(horizontal = horizontalPadding)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().drawBehind {
+                        if (row.indices.size > 1) {
+                            // A newspaper gutter, without enclosing either column in a card.
+                            drawLine(
+                                color = ruleColor,
+                                start = Offset(size.width / 2f, 12.dp.toPx()),
+                                end = Offset(size.width / 2f, (size.height - 16.dp.toPx()).coerceAtLeast(12.dp.toPx())),
+                                strokeWidth = 0.5.dp.toPx(),
+                            )
+                        }
+                    },
+                    horizontalArrangement = Arrangement.spacedBy(columnSpacing),
+                ) {
+                    row.indices.forEach { index ->
+                        val cellKey = (pagingItems.peek(index) as? ArticleFlowItem.Article)
+                            ?.articleWithFeed?.article?.id ?: "placeholder-$index"
+                        key(cellKey) {
+                            Box(Modifier.weight(1f)) {
+                                val item = pagingItems[index] as? ArticleFlowItem.Article
+                                if (item != null) {
+                                    val article = item.articleWithFeed.article
+                                    SwipeableArticleItem(
+                                        articleWithFeed = item.articleWithFeed,
+                                        isLead = row.isLead,
+                                        isUnread = diffMap[article.id]?.isUnread ?: article.isUnread,
+                                        feedUnreadCount = feedUnreadCounts[item.articleWithFeed.feed.id] ?: 0,
+                                        articleListTonalElevation = articleListTonalElevation,
+                                        onClick = { onClick(it, index) },
+                                        isSwipeEnabled = isSwipeEnabled,
+                                        isMenuEnabled = isMenuEnabled,
+                                        onToggleStarred = onToggleStarred,
+                                        onToggleRead = onToggleRead,
+                                        onMarkAboveAsRead = if (index <= 1) null else onMarkAboveAsRead,
+                                        onMarkBelowAsRead = if (index == pagingItems.itemCount - 1) null else onMarkBelowAsRead,
+                                        onShare = onShare,
+                                    )
+                                }
                             }
                         }
                     }
+                    // Keep an unpaired supporting story at the same column width.
+                    if (!row.isLead && row.indices.size < columns) {
+                        Spacer(Modifier.weight(1f))
+                    }
                 }
-                // Keep an unpaired supporting story at the same column width.
-                if (!row.isLead && row.indices.size < columns) {
-                    Spacer(Modifier.weight(1f))
-                }
+                HorizontalDivider(color = ruleColor, thickness = 0.5.dp)
             }
         }
     }

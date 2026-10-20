@@ -19,6 +19,7 @@ import me.ash.reader.R
 import me.ash.reader.infrastructure.preference.*
 import me.ash.reader.ui.component.base.*
 import me.ash.reader.ui.page.settings.SettingItem
+import me.ash.reader.ui.page.settings.color.ReadingLayoutPresetSetting
 import me.ash.reader.ui.theme.palette.onLight
 
 @Composable
@@ -103,6 +104,8 @@ fun FlowPageStylePage(
 
                 // Top Bar
                 item {
+                    ReadingLayoutPresetSetting()
+                    Spacer(modifier = Modifier.height(24.dp))
                     Subtitle(
                         modifier = Modifier.padding(horizontal = 24.dp),
                         text = stringResource(R.string.top_bar)

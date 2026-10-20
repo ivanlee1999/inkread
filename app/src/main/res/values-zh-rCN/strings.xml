@@ -350,4 +350,14 @@
     <string name="parse_full_content_desc">从网页获取完整内容</string>
     <string name="enable">启用</string>
     <string name="disable">停用</string>
+
+    <!-- Responsive newspaper layout -->
+    <string name="layout_preset">布局预设</string>
+    <string name="layout_preset_description">用于文章列表和订阅。栏数根据可用窗口宽度和文字大小调整，也适用于分屏。</string>
+    <string name="layout_preset_auto">自动</string>
+    <string name="layout_preset_phone">手机</string>
+    <string name="layout_preset_tablet">平板</string>
+    <string name="layout_preset_auto_description">根据可用空间自动调整。</string>
+    <string name="layout_preset_phone_description">始终使用单栏。</string>
+    <string name="layout_preset_tablet_description">空间足够且文字清晰易读时，优先使用多栏。</string>
 </resources>

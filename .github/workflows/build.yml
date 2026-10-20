@@ -85,7 +85,7 @@ jobs:
           cat > release-notes.md <<EOF_NOTES
           Built by GitHub Actions from commit ${{ github.sha }}.
 
-          InkRead $VERSION fixes newspaper pagination: scrolling within an e-ink page no longer marks unseen earlier pages read, volume-key page turns return to the top, and resizing preserves the visible source article. Static newspaper blocks, high-contrast typography, and existing navigation/actions remain unchanged.
+          InkRead $VERSION refines the newspaper layout with photo-first lead stories, compact illustrated columns, and fine editorial rules inspired by Papeer. Choose Auto, Phone, or Tablet layout in appearance settings; layouts respect actual pane width and larger fonts. Article images use improved feed-thumbnail extraction and saved-content fallback while respecting the images-off preference. Browsing and image presentation remain static, with the validated pagination/read-state safeguards preserved.
 
           Uses the existing application ID and repository signing identity. No database migration is required. Native Android emulator tests cover narrow and tablet reading flows; physical BOOX refresh behavior still needs device verification.
           EOF_NOTES

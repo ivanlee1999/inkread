@@ -35,9 +35,6 @@ import okio.Buffer
 import okio.BufferedSource
 import org.jsoup.Jsoup
 
-val enclosureRegex = """<enclosure\s+url="([^"]+)"\s+type=".*"\s*/>""".toRegex()
-val imgRegex = """img.*?src=(["'])((?!data).*?)\1""".toRegex(RegexOption.DOT_MATCHES_ALL)
-
 private const val FULL_CONTENT_MAX_BYTES = 2L * 1024L * 1024L
 private const val FULL_CONTENT_CHARSET_SNIFF_BYTES = 64L * 1024L
 private const val READ_BUFFER_BYTES = 8L * 1024L
@@ -212,59 +209,53 @@ constructor(
             rawDescription = content ?: desc ?: "",
             shortDescription = Readability.parseToText(desc ?: content, syndEntry.link).take(280),
             //            fullContent = content,
-            img = findThumbnail(syndEntry) ?: findThumbnail(content ?: desc),
+            img = findThumbnail(syndEntry, syndEntry.link ?: feed.url),
             link = syndEntry.link ?: "",
             updateAt = preDate,
         )
     }
 
-    fun findThumbnail(syndEntry: SyndEntry): String? {
-        if (syndEntry.enclosures?.firstOrNull()?.url != null) {
-            return syndEntry.enclosures.first().url
+    fun findThumbnail(syndEntry: SyndEntry, baseUrl: String? = syndEntry.link): String? {
+        syndEntry.enclosures.orEmpty().forEach { enclosure ->
+            if (isImageEnclosure(enclosure.url, enclosure.type)) {
+                normalizeImageUrl(enclosure.url, baseUrl)?.let { return it }
+            }
         }
 
         val mediaModule = syndEntry.getModule(MediaModule.URI) as? MediaEntryModule
         if (mediaModule != null) {
-            return findThumbnail(mediaModule)
+            findThumbnail(mediaModule, baseUrl)?.let { return it }
         }
 
-        return null
+        return syndEntry.contents.orEmpty().firstNotNullOfOrNull { findThumbnail(it.value, baseUrl) }
+            ?: findThumbnail(syndEntry.description?.value, baseUrl)
     }
 
-    private fun findThumbnail(mediaModule: MediaEntryModule): String? {
+    private fun findThumbnail(mediaModule: MediaEntryModule, baseUrl: String?): String? {
+        val groups = mediaModule.mediaGroups.orEmpty()
+        val mediaContents = mediaModule.mediaContents.orEmpty().toList() +
+            groups.flatMap { it.contents.orEmpty().toList() }
         val candidates =
             buildList {
                     add(mediaModule.metadata)
-                    addAll(mediaModule.mediaGroups.map { mediaGroup -> mediaGroup.metadata })
-                    addAll(mediaModule.mediaContents.map { content -> content.metadata })
+                    addAll(groups.map { mediaGroup -> mediaGroup.metadata })
+                    addAll(mediaContents.map { content -> content.metadata })
                 }
-                .flatMap { it.thumbnail.toList() }
+                .filterNotNull()
+                .flatMap { it.thumbnail.orEmpty().toList() }
 
-        val thumbnail = candidates.firstOrNull()
-
-        if (thumbnail != null) {
-            return thumbnail.url.toString()
-        } else {
-            val imageMedia = mediaModule.mediaContents.firstOrNull { it.medium == "image" }
-            if (imageMedia != null) {
-                return (imageMedia.reference as? UrlReference)?.url.toString()
+        candidates.forEach { thumbnail ->
+            normalizeImageUrl(thumbnail.url?.toString(), baseUrl)?.let { return it }
+        }
+        mediaContents.forEach { content ->
+            if (content.medium == "image" || content.type?.startsWith("image/", ignoreCase = true) == true) {
+                normalizeImageUrl((content.reference as? UrlReference)?.url?.toString(), baseUrl)?.let { return it }
             }
         }
         return null
     }
 
-    fun findThumbnail(text: String?): String? {
-        text ?: return null
-        val enclosure = enclosureRegex.find(text)?.groupValues?.get(1)
-        if (enclosure?.isNotBlank() == true) {
-            return enclosure
-        }
-        // From https://gitlab.com/spacecowboy/Feeder
-        // Using negative lookahead to skip data: urls, being inline base64
-        // And capturing original quote to use as ending quote
-        // Base64 encoded images can be quite large - and crash database cursors
-        return imgRegex.find(text)?.groupValues?.get(2)?.takeIf { !it.startsWith("data:") }
-    }
+    fun findThumbnail(text: String?, baseUrl: String? = null): String? = findHtmlThumbnail(text, baseUrl)
 
     suspend fun queryRssIconLink(feedLink: String?): String? {
         if (feedLink.isNullOrEmpty()) return null

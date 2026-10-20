@@ -1,11 +1,11 @@
 package me.ash.reader.ui.page.home.feeds
 
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -27,24 +27,27 @@ fun FeedsBanner(
     desc: String? = null,
     onClick: () -> Unit = {},
 ) {
-    Row(
+    Column(
         modifier = modifier.padding(horizontal = 20.dp)
-            .fillMaxWidth().border(2.dp, MaterialTheme.colorScheme.onSurface)
+            .fillMaxWidth()
             .clickable(interactionSource = remember { MutableInteractionSource() },
                 indication = null, role = Role.Button, onClick = onClick)
-            .padding(20.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
+            .padding(vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(filter.toName(), fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold,
-                style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onSurface)
-            if (!desc.isNullOrBlank()) {
-                Spacer(Modifier.height(8.dp))
-                Text(desc, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface, thickness = 2.dp)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text(filter.toName(), fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onSurface)
+                if (!desc.isNullOrBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(desc, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+                }
             }
+            Icon(imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                contentDescription = null, tint = MaterialTheme.colorScheme.onSurface)
         }
-        Icon(imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-            contentDescription = null, tint = MaterialTheme.colorScheme.onSurface)
+        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface)
     }
 }

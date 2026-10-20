@@ -38,6 +38,7 @@ fun RYAsyncImage(
     @DrawableRes placeholder: Int? = null,
     @DrawableRes error: Int? = null,
     animate: Boolean = true,
+    hideOnError: Boolean = false,
 ) {
     val einkMode = isEInkMode
     val painter =
@@ -66,6 +67,9 @@ fun RYAsyncImage(
             ((painter.state as? AsyncImagePainter.State.Success)?.result?.drawable as? Animatable)?.stop()
         }
     }
+    // Editorial list photos may disappear on failure instead of reserving an empty panel.
+    // Keep the loading slot stable, and leave other callers' error placeholders unchanged.
+    if (hideOnError && painter.state is AsyncImagePainter.State.Error) return
     Image(
         painter = painter,
         contentDescription = contentDescription,

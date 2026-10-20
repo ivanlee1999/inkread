@@ -45,6 +45,7 @@ data class Settings(
     val flowSortUnreadArticles: SortUnreadArticlesPreference = SortUnreadArticlesPreference.default,
 
     // Reading page
+    val readingLayoutPreset: ReadingLayoutPresetPreference = ReadingLayoutPresetPreference.default,
     val readingRenderer: ReadingRendererPreference = ReadingRendererPreference.default,
     val readingBoldCharacters: ReadingBoldCharactersPreference = ReadingBoldCharactersPreference.default,
     val readingTheme: ReadingThemePreference = ReadingThemePreference.default,

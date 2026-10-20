@@ -350,4 +350,14 @@
     <string name="parse_full_content_desc">從網頁擷取完整文章</string>
     <string name="enable">啟用</string>
     <string name="disable">停用</string>
+
+    <!-- Responsive newspaper layout -->
+    <string name="layout_preset">版面預設</string>
+    <string name="layout_preset_description">用於文章列表和訂閱。欄數依可用視窗寬度和文字大小調整，也適用於分割畫面。</string>
+    <string name="layout_preset_auto">自動</string>
+    <string name="layout_preset_phone">手機</string>
+    <string name="layout_preset_tablet">平板</string>
+    <string name="layout_preset_auto_description">依可用空間自動調整。</string>
+    <string name="layout_preset_phone_description">一律使用單欄。</string>
+    <string name="layout_preset_tablet_description">空間足夠且文字清晰易讀時，優先使用多欄。</string>
 </resources>

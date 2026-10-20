@@ -104,6 +104,7 @@ class SettingsProvider @Inject constructor(
             LocalSortUnreadArticles provides settings.flowSortUnreadArticles,
 
             // Reading page
+            LocalReadingLayoutPreset provides settings.readingLayoutPreset,
             LocalReadingRenderer provides settings.readingRenderer,
             LocalReadingBoldCharacters provides settings.readingBoldCharacters,
             LocalReadingTheme provides settings.readingTheme,
