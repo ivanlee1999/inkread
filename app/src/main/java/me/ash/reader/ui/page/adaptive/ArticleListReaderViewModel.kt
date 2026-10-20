@@ -10,6 +10,7 @@ import androidx.work.WorkManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.Date
 import javax.inject.Inject
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.collections.any
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -335,6 +336,7 @@ constructor(
                 }
                 val base = _readerState.value.copy(
                     articleId = article.id,
+                    accountId = article.accountId,
                     feedName = feed.name,
                     title = article.title,
                     author = article.author,
@@ -362,8 +364,11 @@ constructor(
     suspend fun ReaderState.renderContent(articleWithFeed: ArticleWithFeed): ReaderState {
         val contentState =
             if (articleWithFeed.feed.isFullContent) {
-                val fullContent =
-                    readerCacheHelper.readFullContent(articleWithFeed.article.id, articleWithFeed.article.accountId).getOrNull()
+                val cachedContent = readerCacheHelper.readFullContent(
+                    articleWithFeed.article.id, articleWithFeed.article.accountId,
+                )
+                cachedContent.exceptionOrNull()?.let { if (it is CancellationException) throw it }
+                val fullContent = cachedContent.getOrNull()
                 if (fullContent != null) {
                     ReaderState.FullContent(fullContent)
                 } else {
@@ -401,7 +406,14 @@ constructor(
                     _readerState.update {
                         it.copy(content = result.fold(
                             onSuccess = { ReaderState.FullContent(it) },
-                            onFailure = { ReaderState.Error(it.message.orEmpty()) },
+                            onFailure = { failure ->
+                                if (failure is CancellationException) throw failure
+                                if (article.rawDescription.isNotBlank()) {
+                                    ReaderState.Description(article.rawDescription)
+                                } else {
+                                    ReaderState.Error(failure.message.orEmpty())
+                                }
+                            },
                         ))
                     }
                 }
@@ -501,6 +513,7 @@ data class ReadingUiState(
 
 data class ReaderState(
     val articleId: String? = null,
+    val accountId: Int? = null,
     val feedName: String = "",
     val title: String? = null,
     val author: String? = null,
