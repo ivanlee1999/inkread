@@ -63,6 +63,7 @@ import me.ash.reader.ui.ext.ExternalFonts
 import me.ash.reader.ui.ext.MimeType
 import me.ash.reader.ui.ext.showToast
 import me.ash.reader.ui.page.settings.SettingItem
+import me.ash.reader.ui.page.settings.color.ReadingLayoutPresetSetting
 import me.ash.reader.ui.theme.palette.onLight
 
 @Composable
@@ -157,6 +158,7 @@ fun ReadingStylePage(
 
                 // General
                 item {
+                    ReadingLayoutPresetSetting()
                     Subtitle(
                         modifier = Modifier.padding(horizontal = 24.dp),
                         text = stringResource(R.string.general)

@@ -1,5 +1,25 @@
 package me.ash.reader.ui.page.home
 
+import coil.Coil
+import coil.ImageLoader
+import coil.disk.DiskCache
+import coil.request.CachePolicy
+import coil.request.ImageRequest
+import coil.request.SuccessResult
+import coil.decode.DataSource
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import androidx.compose.runtime.collectAsState
+import me.ash.reader.ui.page.settings.color.ReadingLayoutPresetSetting
+import me.ash.reader.infrastructure.preference.FlowArticleListImagePreference
+import me.ash.reader.infrastructure.preference.LocalFlowArticleListImage
+import me.ash.reader.infrastructure.preference.LocalReadingLayoutPreset
+import me.ash.reader.infrastructure.preference.ReadingLayoutPresetPreference
+import me.ash.reader.ui.layout.ReadingLayoutPreset
+import me.ash.reader.ui.layout.resolveReadingLayout
+import me.ash.reader.ui.ext.dataStore
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import androidx.test.espresso.Espresso.pressBack
@@ -119,7 +139,8 @@ class NewspaperUiTest {
         val first = compose.onNodeWithTag("publication-0").fetchSemanticsNode().boundsInRoot
         val second = compose.onNodeWithTag("publication-1").fetchSemanticsNode().boundsInRoot
         val width = InstrumentationRegistry.getInstrumentation().targetContext.resources.configuration.screenWidthDp
-        if (width < 440) assertTrue("Narrow reading order is vertical", second.top >= first.bottom)
+        if (resolveReadingLayout((width - 32).toFloat()).publicationColumns == 1)
+            assertTrue("Narrow reading order is vertical", second.top >= first.bottom)
         else assertTrue("Wide publications form columns", second.left >= first.right)
         capture("subscriptions")
         compose.onNodeWithTag("publication-5").performScrollTo().assertIsDisplayed().performClick()
@@ -131,11 +152,13 @@ class NewspaperUiTest {
         val opened = mutableListOf<Int>()
         val readActions = mutableListOf<String>()
         val starActions = mutableListOf<String>()
-        val titles = listOf("A quieter way to read the world", "Architecture for a changing climate", "The long view: why patient observation matters in science and everyday life", "世界新闻：城市中的自然", "An independent perspective")
-        val feed = Feed(id = "fixture", name = "The Morning Journal", url = "https://example.com", groupId = "g", accountId = 1)
+        val photo = cachedEarthriseUrl()
+        val titles = listOf("Earthrise: a fresh view of our home", "Across the lunar horizon", "The long view: why patient observation matters in science and everyday life", "世界新闻：城市中的自然", "An independent perspective")
+        val feed = Feed(id = "fixture", name = "NASA Archive / Bill Anders", url = "https://example.com", groupId = "g", accountId = 1)
         val items = listOf(ArticleFlowItem.Date("Today", false)) + titles.mapIndexed { index, title ->
             ArticleFlowItem.Article(ArticleWithFeed(Article(id = "a$index", date = Date(0), title = title,
-                rawDescription = "", shortDescription = "Thoughtful reporting, clear ideas and a little room to think. An edition made for unhurried reading.",
+                rawDescription = "", img = if (index < 2) photo else null,
+                shortDescription = if (index < 2) "Historical photograph: NASA/Bill Anders. A new perspective from Apollo 8." else "Thoughtful reporting, clear ideas and a little room to think. An edition made for unhurried reading.",
                 link = "https://example.com/$index", feedId = feed.id, accountId = 1,
                 isUnread = index != 2, isStarred = index == 1).apply { dateString = "09:00" }, feed))
         }
@@ -147,7 +170,8 @@ class NewspaperUiTest {
                     FixtureChrome(subscriptions = false) {
                     val articles = stream.collectAsLazyPagingItems()
                     BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
-                        val columns = if (maxWidth >= 600.dp) 2 else 1
+                        val columns = resolveReadingLayout(maxWidth.value, LocalDensity.current.fontScale,
+                            LocalReadingLayoutPreset.current.preset).columns
                         LazyColumn(Modifier.testTag("article-list")) {
                             item { Text("The daily edition", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.headlineLarge) }
                             ArticleList(pagingItems = articles, diffMap = emptyMap(), isShowFeedIcon = false,
@@ -164,6 +188,8 @@ class NewspaperUiTest {
         }
         compose.onNodeWithText(titles[0]).assertIsDisplayed().performClick().performClick()
         assertEquals(listOf(1, 1), opened)
+        compose.onAllNodesWithTag("article-photo", useUnmergedTree = true).onFirst().assertIsDisplayed()
+        waitForPhotoPixels()
         capture("articles")
         compose.onNodeWithTag("article-list").performScrollToNode(hasText(titles[2]))
         compose.onNodeWithText(titles[2]).assertIsDisplayed().performClick()
@@ -486,6 +512,209 @@ class NewspaperUiTest {
             compose.onNodeWithText(data.getValue("b")[27].articleWithFeed.article.title).assertIsDisplayed()
         } finally {
             VolumeKeyEventBus.resetForTest()
+        }
+    }
+
+    @Test fun photoEditionHonorsPresetsImageOffAndLargeText() {
+        val photo = cachedEarthriseUrl()
+        val feed = Feed(id = "photo", name = "NASA / Bill Anders", url = "https://example.com", groupId = "g", accountId = 1)
+        val titles = listOf("Earthrise: our home beyond the lunar horizon", "A new perspective on Earth", "The text-only dispatch remains complete", "The final story stays reachable")
+        val source = titles.mapIndexed { index, title -> ArticleFlowItem.Article(ArticleWithFeed(
+            Article(id = "photo-$index", title = title, date = Date(0),
+                rawDescription = if (index == 1) "<p><img src=\"$photo\" alt=\"Earthrise\"></p>" else "",
+                shortDescription = "A historical Apollo 8 photograph accompanies this offline reading fixture.",
+                img = if (index == 0) photo else null, link = "https://example.com/$index", feedId = feed.id, accountId = 1), feed)) }
+        val stream = flowOf(PagingData.from<ArticleFlowItem>(source))
+        val preset = mutableStateOf<ReadingLayoutPresetPreference>(ReadingLayoutPresetPreference.Auto)
+        val images = mutableStateOf<FlowArticleListImagePreference>(FlowArticleListImagePreference.ON)
+        val fontScale = mutableStateOf(1f)
+        val paneWidth = mutableStateOf<Float?>(null)
+        val measuredColumns = AtomicInteger()
+        val list = java.util.concurrent.atomic.AtomicReference<LazyListState>()
+        compose.setContent {
+            val density = LocalDensity.current.density
+            CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON,
+                LocalReadingLayoutPreset provides preset.value, LocalFlowArticleListImage provides images.value,
+                LocalDensity provides Density(density, fontScale.value)) {
+                AppTheme(useDarkTheme = false) {
+                    FixtureChrome(subscriptions = false, articleCount = 4) {
+                        val items = stream.collectAsLazyPagingItems()
+                        val state = rememberLazyListState()
+                        SideEffect { list.set(state) }
+                        BoxWithConstraints(Modifier.fillMaxHeight().widthIn(max = paneWidth.value?.dp ?: androidx.compose.ui.unit.Dp.Infinity).fillMaxWidth()) {
+                            val layout = resolveReadingLayout(maxWidth.value, fontScale.value, preset.value.preset)
+                            SideEffect { measuredColumns.set(layout.columns) }
+                            LazyColumn(Modifier.testTag("photo-edition"), state = state) {
+                                ArticleList(items, emptyMap(), false, false, 0, columns = layout.columns)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (choice in ReadingLayoutPresetPreference.values) {
+            compose.runOnIdle { preset.value = choice; list.get().requestScrollToItem(0) }
+            compose.onNodeWithText(titles[0], useUnmergedTree = true).assertIsDisplayed()
+            waitForPhotoPixels()
+            val photograph = compose.onAllNodesWithTag("article-photo", useUnmergedTree = true).onFirst().fetchSemanticsNode().boundsInRoot
+            val headline = compose.onNodeWithText(titles[0], useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            assertTrue("Lead photography precedes the headline", photograph.bottom <= headline.top + 1f)
+            capture("photos-${choice.preset.name.lowercase()}")
+            compose.onNodeWithTag("photo-edition").performScrollToIndex(1)
+            val firstSupport = compose.onNodeWithText(titles[1]).fetchSemanticsNode().boundsInRoot
+            val secondSupport = compose.onNodeWithText(titles[2]).fetchSemanticsNode().boundsInRoot
+            if (measuredColumns.get() == 2) assertTrue(secondSupport.left > firstSupport.left)
+            else assertTrue(secondSupport.top >= firstSupport.top)
+        }
+        compose.onNodeWithTag("photo-edition").performScrollToNode(hasText(titles[1]))
+        val supportingHeadline = compose.onNodeWithText(titles[1], useUnmergedTree = true)
+        val supportingPhoto = supportingHeadline.onParent().onChildren().filter(hasTestTag("article-photo")).onFirst()
+        assertTrue("Supporting headline precedes its photo", supportingHeadline.fetchSemanticsNode().boundsInRoot.top < supportingPhoto.fetchSemanticsNode().boundsInRoot.top)
+        compose.runOnIdle { images.value = FlowArticleListImagePreference.OFF; list.get().requestScrollToItem(0) }
+        compose.onAllNodesWithTag("article-photo", useUnmergedTree = true).assertCountEquals(0)
+        capture("photos-off")
+        compose.runOnIdle { fontScale.value = 1.6f }
+        for (choice in ReadingLayoutPresetPreference.values) {
+            compose.runOnIdle { preset.value = choice }
+            compose.onNodeWithTag("photo-edition").performScrollToNode(hasText(titles.last()))
+            compose.onNodeWithText(titles.last()).assertIsDisplayed()
+            assertEquals("Large font never squeezes two narrow article columns", 1, measuredColumns.get())
+        }
+        compose.runOnIdle { fontScale.value = 1f; paneWidth.value = 320f; list.get().requestScrollToItem(0) }
+        compose.waitUntil(5_000) { measuredColumns.get() == 1 }
+        compose.onNodeWithText(titles[0]).assertIsDisplayed()
+        compose.runOnIdle { paneWidth.value = null }
+        val width = InstrumentationRegistry.getInstrumentation().targetContext.resources.configuration.screenWidthDp
+        compose.waitUntil(5_000) { measuredColumns.get() == resolveReadingLayout(width.toFloat(), 1f, ReadingLayoutPreset.Tablet).columns }
+        compose.onNodeWithTag("photo-edition").performScrollToNode(hasText(titles.last()))
+        compose.onNodeWithText(titles.last()).assertIsDisplayed()
+    }
+
+    @Test fun cachedHttpsPhotographRendersWithNetworkAndMemoryCacheDisabled() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val previousLoader = Coil.imageLoader(context)
+        val requests = AtomicInteger()
+        val url = "https://offline-fixture.invalid/earthrise.jpg"
+        val displayedImage = mutableStateOf(url)
+        val cache = DiskCache.Builder().directory(File(context.cacheDir, "photo-offline-${System.nanoTime()}")).build()
+        val editor = requireNotNull(cache.openEditor(url))
+        earthriseFile().copyTo(editor.data.toFile(), overwrite = true)
+        editor.metadata.toFile().writeBytes(byteArrayOf())
+        editor.commit()
+        val loader = ImageLoader.Builder(context).diskCache(cache).memoryCachePolicy(CachePolicy.DISABLED)
+            .networkCachePolicy(CachePolicy.DISABLED).respectCacheHeaders(false)
+            .okHttpClient(okhttp3.OkHttpClient.Builder().addInterceptor {
+                requests.incrementAndGet()
+                throw java.io.IOException("Network is disabled for offline screenshot QA")
+            }.build()).build()
+        try {
+            val result = runBlocking { loader.execute(ImageRequest.Builder(context).data(url).build()) }
+            assertTrue("HTTPS fixture decodes from the real Coil disk cache", result is SuccessResult)
+            assertEquals(DataSource.DISK, (result as SuccessResult).dataSource)
+            Coil.setImageLoader(loader)
+            compose.setContent {
+                CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON) {
+                    AppTheme(useDarkTheme = false) {
+                        FixtureChrome(subscriptions = false, articleCount = 1) {
+                            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+                                ArticleItem(title = "Earthrise, available offline", feedName = "NASA / Bill Anders",
+                                    shortDescription = "A cached HTTPS photograph. Network and memory cache are disabled in this test.",
+                                    imgData = displayedImage.value, isLead = true, isUnread = true)
+                            }
+                        }
+                    }
+                }
+            }
+            waitForPhotoPixels()
+            capture("photos-cached-offline")
+            assertEquals("No network request was attempted", 0, requests.get())
+            compose.runOnIdle { displayedImage.value = "file://${context.cacheDir}/deliberately-missing-photo.jpg" }
+            compose.waitUntil(10_000) { compose.onAllNodesWithTag("article-photo", useUnmergedTree = true).fetchSemanticsNodes().isEmpty() }
+            compose.onNodeWithText("Earthrise, available offline").assertIsDisplayed()
+        } finally {
+            Coil.setImageLoader(previousLoader)
+            loader.shutdown()
+        }
+    }
+
+    @Test fun readingPresetChooserPersistsAndBackCancels() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val original = runBlocking { ReadingLayoutPresetPreference.fromPreferences(context.dataStore.data.first()) }
+        val observed = java.util.concurrent.atomic.AtomicReference(original)
+        try {
+            compose.setContent {
+                val selected by remember { context.dataStore.data.map { ReadingLayoutPresetPreference.fromPreferences(it) } }
+                    .collectAsState(initial = original)
+                SideEffect { observed.set(selected) }
+                CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON, LocalReadingLayoutPreset provides selected) {
+                    AppTheme(useDarkTheme = false) { ReadingLayoutPresetSetting() }
+                }
+            }
+            for (choice in listOf(ReadingLayoutPresetPreference.Phone, ReadingLayoutPresetPreference.Tablet, ReadingLayoutPresetPreference.Auto)) {
+                compose.onNodeWithText(context.getString(R.string.layout_preset)).performClick()
+                compose.onNode(hasText(choice.toDesc(context)) and isSelectable()).performScrollTo().performClick()
+                compose.waitUntil(5_000) { observed.get() == choice }
+                val persisted = runBlocking { ReadingLayoutPresetPreference.fromPreferences(context.dataStore.data.first()) }
+                assertEquals(choice, persisted)
+            }
+            compose.onNodeWithText(context.getString(R.string.layout_preset)).performClick()
+            compose.onNode(hasText(ReadingLayoutPresetPreference.Tablet.toDesc(context)) and isSelectable()).assertIsDisplayed()
+            // Espresso's default root picker can retain the unfocused activity root
+            // while Compose Dialog owns focus. Inject a real Back key through Android
+            // instead, so the focused dialog receives it without selecting a View root.
+            val instrumentation = InstrumentationRegistry.getInstrumentation()
+            instrumentation.waitForIdleSync()
+            instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+            compose.waitForIdle()
+            compose.onNode(hasText(ReadingLayoutPresetPreference.Tablet.toDesc(context)) and isSelectable()).assertDoesNotExist()
+            assertEquals(ReadingLayoutPresetPreference.Auto, observed.get())
+            assertEquals(ReadingLayoutPresetPreference.Auto, runBlocking {
+                ReadingLayoutPresetPreference.fromPreferences(context.dataStore.data.first())
+            })
+        } finally {
+            runBlocking {
+                original.put(context, this)
+                withTimeout(5_000) { context.dataStore.data.first { ReadingLayoutPresetPreference.fromPreferences(it) == original } }
+            }
+        }
+    }
+
+    private fun cachedEarthriseUrl(): String {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val url = "https://offline-fixture.invalid/earthrise-${System.nanoTime()}.jpg"
+        val cache = requireNotNull(Coil.imageLoader(context).diskCache)
+        val editor = requireNotNull(cache.openEditor(url))
+        earthriseFile().copyTo(editor.data.toFile(), overwrite = true)
+        editor.metadata.toFile().writeBytes(byteArrayOf())
+        editor.commit()
+        val decoded = runBlocking {
+            Coil.imageLoader(context).execute(ImageRequest.Builder(context).data(url)
+                .memoryCachePolicy(CachePolicy.DISABLED).networkCachePolicy(CachePolicy.DISABLED).build())
+        }
+        assertTrue("Manually seeded production cache must decode the real photo", decoded is SuccessResult)
+        assertEquals(DataSource.DISK, (decoded as SuccessResult).dataSource)
+        return url
+    }
+
+    private fun earthriseFile(): File {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        return File(instrumentation.targetContext.cacheDir, "nasa-earthrise.jpg").apply {
+            instrumentation.context.assets.open("nasa-earthrise.jpg").use { input -> outputStream().use { input.copyTo(it) } }
+        }
+    }
+
+    private fun waitForPhotoPixels() {
+        // Inspect only the production image node, not page text. The original photograph
+        // contains both broad black sky and blue Earth pixels, unlike an empty placeholder.
+        compose.waitUntil(10_000) {
+            val photos = compose.onAllNodesWithTag("article-photo", useUnmergedTree = true)
+            if (photos.fetchSemanticsNodes().isEmpty()) return@waitUntil false
+            val image = photos.onFirst().captureToImage().asAndroidBitmap()
+            val pixels = IntArray(image.width * image.height)
+            image.getPixels(pixels, 0, image.width, 0, 0, image.width, image.height)
+            val sky = pixels.count { Color.red(it) < 30 && Color.green(it) < 30 && Color.blue(it) < 30 }
+            val earth = pixels.count { Color.blue(it) > Color.red(it) + 8 && Color.blue(it) > Color.green(it) + 2 }
+            sky > pixels.size / 10 && earth > 20
         }
     }
 

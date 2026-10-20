@@ -2,6 +2,7 @@ package me.ash.reader.ui.page.home.reading
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.drawable.Animatable
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -43,6 +44,7 @@ import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.content.ContextCompat
 import androidx.core.view.HapticFeedbackConstantsCompat
 import coil.compose.rememberAsyncImagePainter
+import coil.compose.AsyncImagePainter
 import coil.request.ImageRequest
 import me.ash.reader.R
 import me.ash.reader.ui.ext.extractDomain
@@ -79,8 +81,13 @@ fun ReaderImageViewer(
                     ImageRequest.Builder(LocalContext.current)
                         .addHeader("Referer", imageData.imageUrl.extractDomain() ?: "")
                         .data(data = imageData.imageUrl)
+                        .crossfade(false)
                         .build()
                 )
+
+            LaunchedEffect(painter.state) {
+                ((painter.state as? AsyncImagePainter.State.Success)?.result?.drawable as? Animatable)?.stop()
+            }
 
             var expanded by remember { mutableStateOf(false) }
 

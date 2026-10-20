@@ -2,7 +2,6 @@ package me.ash.reader.ui.page.home.feeds
 
 import android.net.Uri
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -15,6 +14,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import me.ash.reader.infrastructure.preference.LocalReadingLayoutPreset
+import me.ash.reader.ui.layout.resolveReadingLayout
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -40,8 +42,7 @@ fun PublicationBlock(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 156.dp)
-            .border(1.dp, MaterialTheme.colorScheme.onSurface)
+            .heightIn(min = 148.dp)
             .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -49,9 +50,10 @@ fun PublicationBlock(
                 onClick = onClick,
                 onLongClick = onLongClick,
             )
-            .padding(16.dp),
+            .padding(horizontal = 4.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface)
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             FeedIcon(feedName = name, iconUrl = iconUrl, animate = false)
             Spacer(Modifier.weight(1f))
@@ -124,16 +126,17 @@ fun PublicationGrid(
     itemContent: @Composable (index: Int, modifier: Modifier) -> Unit,
 ) {
     BoxWithConstraints(modifier.fillMaxWidth()) {
-        val columns = when {
-            maxWidth >= 800.dp -> 3
-            maxWidth >= 440.dp -> 2
-            else -> 1
-        }
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        val layout = resolveReadingLayout(
+            availableWidthDp = maxWidth.value,
+            fontScale = LocalDensity.current.fontScale,
+            preset = LocalReadingLayoutPreset.current.preset,
+        )
+        val columns = layout.publicationColumns
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
             for (start in 0 until itemCount step columns) {
                 Row(
                     modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(layout.columnSpacingDp.dp),
                 ) {
                     repeat(columns) { column ->
                         val index = start + column

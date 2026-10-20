@@ -1,7 +1,6 @@
 package me.ash.reader.ui.page.home.flow
 
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.combinedClickable
@@ -10,6 +9,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.FiberManualRecord
@@ -47,8 +46,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -74,11 +76,13 @@ import me.ash.reader.infrastructure.preference.LocalFlowArticleListReadIndicator
 import me.ash.reader.infrastructure.preference.LocalFlowArticleListTime
 import me.ash.reader.infrastructure.preference.SwipeEndActionPreference
 import me.ash.reader.infrastructure.preference.SwipeStartActionPreference
+import me.ash.reader.infrastructure.rss.articleThumbnail
 import me.ash.reader.ui.component.FeedIcon
 import me.ash.reader.ui.component.base.RYAsyncImage
 import me.ash.reader.ui.component.menu.AnimatedDropdownMenu
 import me.ash.reader.ui.ext.requiresBidi
 import me.ash.reader.ui.ext.surfaceColorAtElevation
+import me.ash.reader.ui.layout.resolveArticleImageHeightDp
 import me.ash.reader.ui.page.settings.color.flow.generateArticleWithFeedPreview
 import me.ash.reader.ui.theme.applyTextDirection
 import me.ash.reader.ui.theme.palette.onDark
@@ -95,6 +99,13 @@ fun ArticleItem(
 ) {
     val feed = articleWithFeed.feed
     val article = articleWithFeed.article
+    // Reuse an article's saved content, without downloading anything to build the list.
+    // Disabling images also skips HTML inspection, not just the visible image slot.
+    val image = if (LocalFlowArticleListImage.current.value) {
+        remember(article.img, article.rawDescription, article.link) {
+            articleThumbnail(article.img, article.rawDescription, article.link)
+        }
+    } else null
 
     ArticleItem(
         modifier = modifier,
@@ -105,7 +116,7 @@ fun ArticleItem(
         title = article.title,
         shortDescription = article.shortDescription,
         timeString = article.dateString,
-        imgData = article.img,
+        imgData = image,
         isStarred = article.isStarred,
         isUnread = isUnread,
         onClick = { onClick(articleWithFeed) },
@@ -138,49 +149,29 @@ fun ArticleItem(
     val articleListReadIndicator = LocalFlowArticleListReadIndicator.current
 
     val showReadIndicator = articleListReadIndicator != FlowArticleReadIndicatorPreference.None
-    // Reading state never reduces contrast: a printed marker replaces faded text.
+    val showImage = articleListImage.value && imgData != null &&
+        (imgData !is String || imgData.isNotBlank())
+    val showSource = articleListFeedIcon.value || articleListFeedName.value ||
+        isStarred || (showReadIndicator && isUnread)
+    // An editorial block, not a dashboard card. The list owns the rules between rows.
+    // No fixed text height: large type and longer headlines remain reachable by scrolling.
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .border(1.dp, MaterialTheme.colorScheme.onSurface)
             .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
                 role = Role.Button,
                 onClick = onClick, onLongClick = onLongClick,
             )
-            .padding(if (isLead) 18.dp else 14.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+            .padding(top = 12.dp, bottom = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(if (isLead) 10.dp else 8.dp),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (articleListFeedIcon.value) FeedIcon(feedName = feedName, iconUrl = feedIconUrl, animate = false)
-            if (articleListFeedName.value) {
-                Text(
-                    modifier = Modifier.weight(1f),
-                    text = if (feedUnreadCount > 0) "$feedName ($feedUnreadCount)" else feedName,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            } else Spacer(Modifier.weight(1f))
-            if (isStarred) StarredIcon()
-            if (showReadIndicator && isUnread) {
-                Icon(
-                    imageVector = Icons.Outlined.FiberManualRecord,
-                    contentDescription = stringResource(R.string.unread),
-                    modifier = Modifier.size(10.dp),
-                    tint = MaterialTheme.colorScheme.onSurface,
-                )
-            }
+        if (isLead && showImage) {
+            ArticlePhoto(data = imgData, isLead = true)
         }
-        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface, thickness = if (isLead) 2.dp else 1.dp)
         Text(
+            modifier = Modifier.semantics { heading() },
             text = title,
             color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.titleLarge.copy(
@@ -189,28 +180,59 @@ fun ArticleItem(
             ).applyTextDirection(title.requiresBidi()),
             fontFamily = FontFamily.Serif,
             fontWeight = if (isUnread) FontWeight.Bold else FontWeight.Medium,
-            maxLines = if (isLead) 5 else 4,
-            overflow = TextOverflow.Ellipsis,
         )
-        if (imgData != null && articleListImage.value) {
-            RYAsyncImage(
-                modifier = Modifier.fillMaxWidth().height(if (isLead) 144.dp else 104.dp),
-                data = imgData,
-                scale = Scale.FILL,
-                precision = Precision.INEXACT,
-                size = coil.size.Size(800, 400),
-                contentScale = ContentScale.Crop,
-                animate = false,
-            )
+        if (!isLead && showImage) {
+            ArticlePhoto(data = imgData, isLead = false)
         }
         if (articleListDesc != FlowArticleListDescPreference.NONE && shortDescription.isNotBlank()) {
             Text(
                 text = shortDescription,
                 color = MaterialTheme.colorScheme.onSurface,
-                style = MaterialTheme.typography.bodyMedium.applyTextDirection(shortDescription.requiresBidi()),
-                maxLines = if (articleListDesc == FlowArticleListDescPreference.LONG) 4 else 2,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontSize = if (isLead) 16.sp else 15.sp,
+                    lineHeight = if (isLead) 23.sp else 21.sp,
+                ).applyTextDirection(shortDescription.requiresBidi()),
+                fontFamily = FontFamily.Serif,
+                maxLines = if (articleListDesc == FlowArticleListDescPreference.LONG) {
+                    if (isLead) 5 else 4
+                } else {
+                    if (isLead) 3 else 2
+                },
                 overflow = TextOverflow.Ellipsis,
             )
+        }
+        // Keep provenance and status legible, but secondary to the photograph and headline.
+        // Reading state never reduces contrast: the existing printed marker replaces fading.
+        if (showSource) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (articleListFeedIcon.value) {
+                    FeedIcon(feedName = feedName, iconUrl = feedIconUrl, animate = false)
+                }
+                if (articleListFeedName.value) {
+                    Text(
+                        modifier = Modifier.weight(1f),
+                        text = if (feedUnreadCount > 0) "$feedName ($feedUnreadCount)" else feedName,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                } else Spacer(Modifier.weight(1f))
+                if (isStarred) StarredIcon()
+                if (showReadIndicator && isUnread) {
+                    Icon(
+                        imageVector = Icons.Outlined.FiberManualRecord,
+                        contentDescription = stringResource(R.string.unread),
+                        modifier = Modifier.size(10.dp),
+                        tint = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
         }
         if (articleListDate.value && !timeString.isNullOrBlank()) {
             Text(
@@ -219,6 +241,29 @@ fun ArticleItem(
                 style = MaterialTheme.typography.labelSmall,
             )
         }
+    }
+}
+
+@Composable
+private fun ArticlePhoto(data: Any?, isLead: Boolean) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val height = resolveArticleImageHeightDp(maxWidth.value, isLead).dp
+        val density = LocalDensity.current
+        // Match the decoded image to the actual column, including high-density BOOX screens.
+        val imageSize = with(density) {
+            coil.size.Size(maxWidth.roundToPx().coerceAtLeast(1), height.roundToPx().coerceAtLeast(1))
+        }
+        RYAsyncImage(
+            modifier = Modifier.fillMaxWidth().height(height).testTag("article-photo"),
+            data = data,
+            scale = Scale.FILL,
+            precision = Precision.INEXACT,
+            size = imageSize,
+            contentScale = ContentScale.Crop,
+            // Preserve source colors for color e-ink displays; never animate editorial images.
+            animate = false,
+            hideOnError = true,
+        )
     }
 }
 

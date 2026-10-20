@@ -52,6 +52,7 @@ fun Preferences.toSettings(): Settings {
         flowSortUnreadArticles = SortUnreadArticlesPreference.fromPreferences(this),
 
         // Reading page
+        readingLayoutPreset = ReadingLayoutPresetPreference.fromPreferences(this),
         readingRenderer = ReadingRendererPreference.fromPreferences(this),
         readingBoldCharacters = ReadingBoldCharactersPreference.fromPreferences(this),
         readingTheme = ReadingThemePreference.fromPreferences(this),

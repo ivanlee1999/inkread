@@ -240,7 +240,7 @@ constructor(
                             rawDescription = item.html ?: "",
                             shortDescription =
                                 Readability.parseToText(item.html, item.url).take(280),
-                            img = rssHelper.findThumbnail(item.html),
+                            img = rssHelper.findThumbnail(item.html, item.url),
                             link = item.url ?: "",
                             feedId = accountId.spacerDollar(item.feed_id!!),
                             accountId = accountId,

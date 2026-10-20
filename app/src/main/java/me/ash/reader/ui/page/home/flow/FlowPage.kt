@@ -115,6 +115,8 @@ import me.ash.reader.ui.component.base.RYScaffold
 import me.ash.reader.ui.component.scrollbar.VerticalScrollIndicatorFactory
 import me.ash.reader.ui.component.scrollbar.drawVerticalScrollIndicator
 import me.ash.reader.ui.component.scrollbar.scrollIndicator
+import me.ash.reader.infrastructure.preference.LocalReadingLayoutPreset
+import me.ash.reader.ui.layout.resolveReadingLayout
 import me.ash.reader.infrastructure.preference.LocalEInkMode
 import me.ash.reader.ui.ext.collectAsStateValue
 import me.ash.reader.ui.ext.openURL
@@ -168,7 +170,12 @@ fun FlowPage(
     val density = LocalDensity.current
     var einkAvailableHeightPx by remember { mutableIntStateOf(0) }
     var articlePaneWidthPx by remember { mutableIntStateOf(0) }
-    val newspaperColumns = if (with(density) { articlePaneWidthPx.toDp() } >= 600.dp) 2 else 1
+    val readingLayout = resolveReadingLayout(
+        availableWidthDp = with(density) { articlePaneWidthPx.toDp() }.value,
+        fontScale = density.fontScale,
+        preset = LocalReadingLayoutPreset.current.preset,
+    )
+    val newspaperColumns = readingLayout.columns
     val einkItemsPerPage = if (einkAvailableHeightPx > 0) {
         maxOf(3, (with(density) { einkAvailableHeightPx.toDp() }.value / (260 * density.fontScale.coerceAtLeast(1f))).toInt() * newspaperColumns + 1)
     } else 3
@@ -943,6 +950,8 @@ fun FlowPage(
                                 feedUnreadCounts = feedUnreadCounts,
                                 columns = renderedColumns,
                                 rowPlan = visibleNewspaperRows,
+                                horizontalPadding = readingLayout.horizontalPaddingDp.dp,
+                                columnSpacing = readingLayout.columnSpacingDp.dp,
                             )
                             if (!einkMode) {
                                 item {
