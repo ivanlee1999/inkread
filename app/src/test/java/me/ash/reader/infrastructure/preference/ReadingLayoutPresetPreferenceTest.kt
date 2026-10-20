@@ -63,7 +63,7 @@ class ReadingLayoutPresetPreferenceTest {
     private class IsolatedPreferenceClassLoader(private val baseName: String) :
         ClassLoader(ReadingLayoutPresetPreference::class.java.classLoader) {
         override fun loadClass(name: String, resolve: Boolean): Class<*> =
-            synchronized(getClassLoadingLock(name)) {
+            synchronized(this) {
                 val loaded = findLoadedClass(name) ?: if (name == baseName || name.startsWith("$baseName\$")) {
                     val resource = name.replace('.', '/') + ".class"
                     val bytes = requireNotNull(parent.getResourceAsStream(resource)).use { it.readBytes() }
