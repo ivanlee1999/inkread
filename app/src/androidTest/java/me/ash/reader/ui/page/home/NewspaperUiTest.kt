@@ -210,8 +210,19 @@ class NewspaperUiTest {
     private fun capture(name: String) {
         compose.waitForIdle()
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val directory = File(context.getExternalFilesDir(null), "newspaper-screenshots").apply { mkdirs() }
-        File(directory, "newspaper-$name-${context.resources.configuration.screenWidthDp}.png")
-            .outputStream().use { compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it) }
+        // AGP collects this directory before uninstalling the test/application packages.
+        // A post-Gradle adb pull of externalFilesDir is too late when UTP cleans up the app.
+        val additionalOutput = InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")
+        val directory = if (additionalOutput.isNullOrBlank()) {
+            File(context.getExternalFilesDir(null), "newspaper-screenshots")
+        } else File(additionalOutput)
+        check(directory.isDirectory || directory.mkdirs()) { "Cannot create screenshot directory: $directory" }
+        val output = File(directory, "newspaper-$name-${context.resources.configuration.screenWidthDp}.png")
+        output.outputStream().use {
+            check(compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it)) {
+                "Could not encode screenshot: $output"
+            }
+        }
+        check(output.length() > 0) { "Empty screenshot: $output" }
     }
 }

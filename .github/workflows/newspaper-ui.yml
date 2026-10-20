@@ -47,13 +47,36 @@ jobs:
         run: |
           cat > "$RUNNER_TEMP/newspaper-tests.sh" <<'SCRIPT'
           #!/usr/bin/env bash
-          set +e
+          set -euo pipefail
           adb shell wm size ${{ matrix.size }}
           adb shell wm density 160
-          ./gradlew --no-daemon --max-workers=2 connectedGithubDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=me.ash.reader.ui.page.home.NewspaperUiTest
-          result=$?
-          mkdir -p newspaper-screenshots
-          adb pull /sdcard/Android/data/me.ash.reader/files/newspaper-screenshots/. newspaper-screenshots/
+          result=0
+          ./gradlew --no-daemon --max-workers=2 connectedGithubDebugAndroidTest \
+            -Pandroid.testInstrumentationRunnerArguments.class=me.ash.reader.ui.page.home.NewspaperUiTest \
+            -Pandroid.testInstrumentationRunnerArguments.additionalTestOutputDir=/sdcard/Android/media/me.ash.reader/newspaper-screenshots || result=$?
+          # AGP copies additional test outputs to the host before removing the app.
+          # Do not silently succeed if tests passed but screenshot delivery failed.
+          python3 - <<'PYTHON'
+          import pathlib
+          import shutil
+          import struct
+          root = pathlib.Path("app/build/outputs/connected_android_test_additional_output")
+          destination = pathlib.Path("newspaper-screenshots")
+          destination.mkdir(exist_ok=True)
+          width = ${{ matrix.width }}
+          names = ("subscriptions", "articles", "articles-image-large-font", "articles-large-font-end")
+          for name in names:
+              filename = f"newspaper-{name}-{width}.png"
+              matches = list(root.rglob(filename))
+              assert len(matches) == 1, f"Expected one {filename}, found {matches} in {root}"
+              source = matches[0]
+              data = source.read_bytes()
+              assert data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) > 100, f"Invalid PNG: {source}"
+              image_width, image_height = struct.unpack(">II", data[16:24])
+              assert image_width == width and image_height > 0, f"Unexpected screenshot dimensions: {source}: {image_width}x{image_height}"
+              shutil.copy2(source, destination / filename)
+              print(f"Collected {filename}: {image_width}x{image_height}, {len(data)} bytes")
+          PYTHON
           exit "$result"
           SCRIPT
       - name: Render and test real Compose layouts
@@ -74,4 +97,5 @@ jobs:
             newspaper-screenshots/**
             app/build/reports/androidTests/**
             app/build/outputs/androidTest-results/**
-          if-no-files-found: warn
+            app/build/outputs/connected_android_test_additional_output/**
+          if-no-files-found: error
