@@ -43,8 +43,10 @@ sealed class ReadingLayoutPresetPreference(val preset: ReadingLayoutPreset) : Pr
     )
 
     companion object {
-        val default = Auto
-        val values = listOf(Auto, Phone, Tablet)
+        // A singleton can be the first class loaded. Do not capture it while this superclass
+        // is still initializing, otherwise its INSTANCE field can still contain null.
+        val default: ReadingLayoutPresetPreference get() = Auto
+        val values: List<ReadingLayoutPresetPreference> get() = listOf(Auto, Phone, Tablet)
         private val key = intPreferencesKey(DataStoreKey.readingLayoutPreset)
 
         fun fromPreferences(preferences: Preferences): ReadingLayoutPresetPreference =
