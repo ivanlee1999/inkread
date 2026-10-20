@@ -2,6 +2,13 @@ package me.ash.reader.ui.component.menu
 
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Surface
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.DropdownMenu
@@ -12,6 +19,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.window.Popup
@@ -61,6 +70,7 @@ import androidx.compose.ui.window.PopupProperties
 @Composable
 fun AnimatedDropdownMenu(
     expanded: Boolean,
+    animated: Boolean = true,
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier,
     offset: IntOffset = IntOffset.Zero,
@@ -68,6 +78,22 @@ fun AnimatedDropdownMenu(
     properties: PopupProperties = PopupProperties(focusable = true),
     content: @Composable ColumnScope.() -> Unit
 ) {
+    if (!animated) {
+        if (expanded) {
+            val density = LocalDensity.current
+            val maxHeight = (LocalConfiguration.current.screenHeightDp - 32).coerceAtLeast(48).dp
+            val positionProvider = remember(density, offset) {
+                AnchorEndPopupPositionProvider(density, offset) { _ -> }
+            }
+            Popup(onDismissRequest = onDismissRequest, popupPositionProvider = positionProvider, properties = properties) {
+                Surface {
+                    Column(modifier = modifier.width(IntrinsicSize.Max).heightIn(max = maxHeight)
+                        .verticalScroll(scrollState).padding(vertical = 8.dp), content = content)
+                }
+            }
+        }
+        return
+    }
     val expandedState = remember { MutableTransitionState(false) }
     expandedState.targetState = expanded
 

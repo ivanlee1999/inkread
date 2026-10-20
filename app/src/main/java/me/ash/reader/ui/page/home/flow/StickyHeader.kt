@@ -9,6 +9,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import me.ash.reader.ui.ext.surfaceColorAtElevation
 import me.ash.reader.ui.theme.palette.onDark
@@ -31,11 +34,12 @@ fun StickyHeader(
         Text(
             modifier = Modifier
                 .padding(
-                    start = if (isShowFeedIcon) 54.dp else 24.dp,
+                    start = 16.dp,
                 )
-                .padding(top = 8.dp, bottom = 4.dp),
+                .padding(top = 16.dp, bottom = 8.dp).semantics { heading() },
             text = dateString,
-            color = MaterialTheme.colorScheme.primary,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontWeight = FontWeight.Bold,
             style = MaterialTheme.typography.labelLarge,
         )
     }

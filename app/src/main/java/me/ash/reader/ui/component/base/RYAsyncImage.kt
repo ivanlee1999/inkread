@@ -37,6 +37,7 @@ fun RYAsyncImage(
     contentDescription: String? = null,
     @DrawableRes placeholder: Int? = null,
     @DrawableRes error: Int? = null,
+    animate: Boolean = true,
 ) {
     val einkMode = isEInkMode
     val painter =
@@ -53,15 +54,15 @@ fun RYAsyncImage(
                     .apply {
                         if (placeholder != null) placeholder(placeholder)
                         if (error != null) error(error)
-                        crossfade(!einkMode)
+                        crossfade(animate && !einkMode)
                         scale(scale)
                         precision(precision)
                         size(size)
                     }
                     .build()
         )
-    LaunchedEffect(painter.state, einkMode) {
-        if (einkMode) {
+    LaunchedEffect(painter.state, einkMode, animate) {
+        if (einkMode || !animate) {
             ((painter.state as? AsyncImagePainter.State.Success)?.result?.drawable as? Animatable)?.stop()
         }
     }

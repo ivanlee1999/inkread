@@ -85,7 +85,7 @@ jobs:
           cat > release-notes.md <<EOF_NOTES
           Built by GitHub Actions from commit ${{ github.sha }}.
 
-          InkRead $VERSION fixes feed discovery and duplicate detection after redirects, including relative feed links and redirects on discovered feeds. Korean terms/privacy content now uses the complete default policy instead of the corrupted translation.
+          InkRead $VERSION introduces newspaper-style subscription and article blocks: crisp publication cards, serif lead stories, responsive supporting columns, and high-contrast reading states. Browsing interactions, images, menus, and swipe shortcuts avoid decorative animation. Navigation, read/star actions, text-only stories, and offline images remain available.
 
           Uses the existing application ID and repository signing identity. No database migration is required. Native Android emulator tests cover narrow and tablet reading flows; physical BOOX refresh behavior still needs device verification.
           EOF_NOTES

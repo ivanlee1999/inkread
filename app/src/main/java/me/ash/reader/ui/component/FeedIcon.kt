@@ -29,6 +29,7 @@ fun FeedIcon(
     iconUrl: String?,
     size: Dp = 20.dp,
     placeholderIcon: ImageVector? = null,
+    animate: Boolean = true,
 ) {
     if (iconUrl.isNullOrEmpty()) {
         if (placeholderIcon == null) {
@@ -54,6 +55,7 @@ fun FeedIcon(
             contentDescription = feedName ?: "",
             data = iconUrl,
             placeholder = null,
+            animate = animate,
         )
     }
 }
