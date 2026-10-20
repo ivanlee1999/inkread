@@ -56,6 +56,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.round
 import coil.size.Precision
 import coil.size.Scale
@@ -182,8 +183,10 @@ fun ArticleItem(
         Text(
             text = title,
             color = MaterialTheme.colorScheme.onSurface,
-            style = (if (isLead) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge)
-                .applyTextDirection(title.requiresBidi()),
+            style = MaterialTheme.typography.titleLarge.copy(
+                fontSize = if (isLead) 28.sp else 22.sp,
+                lineHeight = if (isLead) 34.sp else 28.sp,
+            ).applyTextDirection(title.requiresBidi()),
             fontFamily = FontFamily.Serif,
             fontWeight = if (isUnread) FontWeight.Bold else FontWeight.Medium,
             maxLines = if (isLead) 5 else 4,

@@ -13,6 +13,24 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.res.stringResource
+import me.ash.reader.ui.component.FilterBar
+import me.ash.reader.ui.component.base.FeedbackIconButton
+import me.ash.reader.ui.page.home.flow.EInkPaginationBar
+import me.ash.reader.infrastructure.preference.FlowFilterBarStylePreference
 import androidx.compose.material3.Text
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.paging.PagingData
@@ -60,6 +78,7 @@ class NewspaperUiTest {
         compose.setContent {
             CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON) {
                 AppTheme(useDarkTheme = false) {
+                    FixtureChrome(subscriptions = true) {
                     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)
                         .verticalScroll(rememberScrollState()).padding(16.dp)) {
                         Text("Subscriptions", style = MaterialTheme.typography.headlineLarge)
@@ -72,6 +91,7 @@ class NewspaperUiTest {
                                 onClick = { opened.incrementAndGet() },
                                 onLongClick = { options.incrementAndGet() })
                         }
+                    }
                     }
                 }
             }
@@ -88,6 +108,7 @@ class NewspaperUiTest {
         capture("subscriptions")
         compose.onNodeWithTag("publication-5").performScrollTo().assertIsDisplayed().performClick()
         assertEquals(3, opened.get())
+        assertAboveBottomBar(compose.onNodeWithTag("publication-5"))
     }
 
     @Test fun articlesRenderRealPagingRowsAndKeepSourceIndices() {
@@ -107,6 +128,7 @@ class NewspaperUiTest {
             CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON,
                 LocalArticleListSwipeEndAction provides SwipeEndActionPreference.ToggleRead) {
                 AppTheme(useDarkTheme = false) {
+                    FixtureChrome(subscriptions = false) {
                     val articles = stream.collectAsLazyPagingItems()
                     BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
                         val columns = if (maxWidth >= 600.dp) 2 else 1
@@ -119,6 +141,7 @@ class NewspaperUiTest {
                                 onToggleRead = { readActions.add(it.article.id) },
                                 onToggleStarred = { starActions.add(it.article.id) })
                         }
+                    }
                     }
                 }
             }
@@ -156,6 +179,7 @@ class NewspaperUiTest {
         compose.onNodeWithTag("article-list").performScrollToNode(hasText(titles[4]))
         compose.onNodeWithText(titles[4]).assertIsDisplayed().performClick()
         assertEquals(5, opened.last())
+        assertAboveBottomBar(compose.onNodeWithText(titles[4]))
     }
 
     @Test fun offlineImageAndLargeFontRemainReadableAndLastArticleReachable() {
@@ -177,6 +201,7 @@ class NewspaperUiTest {
             CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON,
                 LocalDensity provides Density(screenDensity, fontScale = 1.6f)) {
                 AppTheme(useDarkTheme = false) {
+                    FixtureChrome(subscriptions = false, articleCount = 3) {
                     LazyColumn(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).testTag("large-font-list"),
                         contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         item {
@@ -189,6 +214,7 @@ class NewspaperUiTest {
                             shortDescription = "Every block keeps its reading order as the text grows.", isUnread = false) }
                         item { ArticleItem(feedName = "The Last Page", title = "Last article remains reachable",
                             onClick = { clicked.incrementAndGet() }) }
+                    }
                     }
                 }
             }
@@ -205,6 +231,47 @@ class NewspaperUiTest {
         compose.onNodeWithText("Last article remains reachable").assertIsDisplayed().performClick().performClick()
         assertEquals(2, clicked.get())
         capture("articles-large-font-end")
+    }
+
+    /** Production chrome around deterministic content fixtures, not an account-backed app session. */
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    private fun FixtureChrome(subscriptions: Boolean, articleCount: Int = 5, content: @Composable () -> Unit) {
+        var filter by remember { mutableStateOf(Filter.Unread) }
+        Scaffold(
+            topBar = {
+                TopAppBar(title = { if (!subscriptions) Text(filter.toName()) },
+                    navigationIcon = {
+                        FeedbackIconButton(
+                            imageVector = if (subscriptions) Icons.Outlined.Settings else Icons.AutoMirrored.Rounded.ArrowBack,
+                            contentDescription = stringResource(if (subscriptions) R.string.settings else R.string.back))
+                    },
+                    actions = {
+                        FeedbackIconButton(
+                            imageVector = if (subscriptions) Icons.Rounded.Add else Icons.Rounded.Search,
+                            contentDescription = stringResource(if (subscriptions) R.string.subscribe else R.string.search))
+                    })
+            },
+            bottomBar = {
+                if (subscriptions) {
+                    FilterBar(modifier = Modifier.testTag("fixture-bottom-bar"), filter = filter,
+                        filterBarStyle = FlowFilterBarStylePreference.Icon.value,
+                        filterBarFilled = true, filterBarPadding = 12.dp, filterBarTonalElevation = 0.dp,
+                        filterOnClick = { filter = it })
+                } else {
+                    EInkPaginationBar(modifier = Modifier.testTag("fixture-bottom-bar"),
+                        currentPage = 1, totalPages = 1, totalArticles = articleCount, onPrev = {}, onNext = {})
+                }
+            },
+        ) { padding ->
+            Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) { content() }
+        }
+    }
+
+    private fun assertAboveBottomBar(node: SemanticsNodeInteraction) {
+        val last = node.fetchSemanticsNode().boundsInRoot
+        val bar = compose.onNodeWithTag("fixture-bottom-bar").fetchSemanticsNode().boundsInRoot
+        assertTrue("Last content remains above bottom navigation", last.bottom <= bar.top + 1f)
     }
 
     private fun capture(name: String) {
