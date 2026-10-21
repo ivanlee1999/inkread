@@ -376,7 +376,7 @@ class ViewportNewspaperUiTest {
             compose.runOnIdle { fixture.fontScale.value = scale }
             for (tag in listOf("article-list-back", "article-page-control", "article-list-more")) {
                 val bounds = compose.onNodeWithTag(tag).assertIsDisplayed().getUnclippedBoundsInRoot()
-                assertTrue("$tag preserves a 48dp hit target at font=$scale", bounds.width >= 48.dp && bounds.height >= 48.dp)
+                assertTrue("$tag preserves a 48dp hit target at font=$scale", bounds.right - bounds.left >= 48.dp && bounds.bottom - bounds.top >= 48.dp)
             }
             val title = compose.onNodeWithTag("article-list-title").getUnclippedBoundsInRoot()
             val count = compose.onNodeWithTag("article-page-control").getUnclippedBoundsInRoot()
@@ -671,7 +671,7 @@ class ViewportNewspaperUiTest {
             assertTrue("Whole preview $id must fit, including final metadata: $bounds in $viewport",
                 bounds.top >= viewport.top - 1.dp && bounds.bottom <= viewport.bottom + 1.dp &&
                     bounds.left >= viewport.left - 1.dp && bounds.right <= viewport.right + 1.dp)
-            assertTrue("A preview cannot disappear into a zero-height measurement", bounds.height > 0.dp)
+            assertTrue("A preview cannot disappear into a zero-height measurement", bounds.bottom - bounds.top > 0.dp)
             val headline = hasTestTag("article-headline") and hasAnyAncestor(hasTestTag("article-block-$id"))
             compose.onNode(headline, useUnmergedTree = true).assertIsDisplayed()
             for (tag in listOf("article-headline", "article-description", "article-photo", "article-time")) {
