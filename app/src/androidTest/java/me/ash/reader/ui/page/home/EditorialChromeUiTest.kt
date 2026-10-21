@@ -84,33 +84,7 @@ class EditorialChromeUiTest {
                     compose.onNodeWithText(context.getString(setting)).assertIsNotEnabled()
                 }
             }
-            if (name == "feeds") {
-                val parent = compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.ScrollToIndex))
-                val disclosure = hasTestTag("folder-expand:${context.getString(R.string.defaults)}")
-                val sample = hasText(context.getString(R.string.preview_feed_name)) and hasAnyAncestor(hasTestTag("feeds-style-preview"))
-                parent.performScrollToNode(disclosure)
-                val initiallyExpanded = compose.onAllNodes(sample).fetchSemanticsNodes().isNotEmpty()
-                compose.onNode(disclosure).assertIsDisplayed().performClick()
-                if (initiallyExpanded) compose.onNode(sample).assertDoesNotExist() else {
-                    parent.performScrollToNode(sample)
-                    compose.onNode(sample).assertIsDisplayed()
-                }
-                // Expanding changes the real preview item's height. Scroll to each actual
-                // control/content before its visibility gate rather than assuming the old
-                // collapsed lazy-item offset also exposes the newly inserted publication.
-                parent.performScrollToNode(disclosure)
-                compose.onNode(disclosure).assertIsDisplayed().performClick()
-                if (initiallyExpanded) {
-                    parent.performScrollToNode(sample)
-                    compose.onNode(sample).assertIsDisplayed()
-                } else compose.onNode(sample).assertDoesNotExist()
-                for (filter in listOf(R.string.starred, R.string.unread)) {
-                    val target = hasContentDescription(context.getString(filter)) and hasAnyAncestor(hasTestTag("feeds-style-preview"))
-                    parent.performScrollToNode(target)
-                    compose.onNode(target).assertIsDisplayed().performClick().assertIsSelected()
-                }
-                parent.performScrollToIndex(0)
-            }
+            if (name == "feeds") assertFeedsPreviewActions()
             capture("editorial-settings-$name")
             pageBack().performClick()
             assertEquals(name, backs.last())
@@ -391,6 +365,54 @@ class EditorialChromeUiTest {
                 style = TextStyle(fontSize = 18.sp), constraints = Constraints(maxWidth = 120))
             assertTrue(wrapped.lineCount > 1)
             assertNull("Real multiline English/Chinese wrapping remains valid", completeTextLayoutFailure(wrapped))
+        }
+    }
+
+    private fun assertFeedsPreviewActions() {
+        val parent = compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.ScrollToIndex))
+        val name = context.getString(R.string.defaults)
+        val disclosure = compose.onNodeWithTag("folder-expand:$name")
+        val collapseDescription = "${context.getString(R.string.expand_less)} $name"
+        val expandDescription = "${context.getString(R.string.expand_more)} $name"
+        // The real preview is inside a clickable style-sample Row. Its non-clickable Column tag
+        // is deliberately NOT merged into that Row (AndroidX TestTag merge policy), so descendant
+        // ancestry must use the unmerged tree. Expansion is read from the actual action label,
+        // never inferred from whether a particular merged Text selector happened to match.
+        val sample = hasText(context.getString(R.string.preview_feed_name)) and
+            hasAnyAncestor(hasTestTag("feeds-style-preview"))
+        try {
+            parent.performScrollToNode(hasTestTag("folder-expand:$name"))
+            compose.onNodeWithTag("feeds-style-preview", useUnmergedTree = true).assertExists()
+            val descriptions = disclosure.assertIsDisplayed().fetchSemanticsNode()
+                .config[SemanticsProperties.ContentDescription]
+            assertTrue("Disclosure announces its actual expanded/collapsed state: $descriptions",
+                collapseDescription in descriptions || expandDescription in descriptions)
+            val initiallyExpanded = collapseDescription in descriptions
+            fun assertExpansion(expanded: Boolean) {
+                disclosure.assertContentDescriptionEquals(if (expanded) collapseDescription else expandDescription)
+                val publication = compose.onNode(sample, useUnmergedTree = true)
+                if (expanded) publication.assertExists().performScrollTo().assertIsDisplayed()
+                else publication.assertDoesNotExist()
+            }
+            assertExpansion(initiallyExpanded)
+            disclosure.performScrollTo().assertIsDisplayed().performClick()
+            assertExpansion(!initiallyExpanded)
+            disclosure.performScrollTo().assertIsDisplayed().performClick()
+            assertExpansion(initiallyExpanded)
+            for (filter in listOf(R.string.starred, R.string.unread)) {
+                val target = isSelectable() and
+                    hasAnyDescendant(hasContentDescription(context.getString(filter))) and
+                    hasAnyAncestor(hasTestTag("feeds-style-preview"))
+                compose.onNode(target, useUnmergedTree = true).assertExists().performScrollTo()
+                    .assertIsDisplayed().performClick().assertIsSelected()
+            }
+            parent.performScrollToIndex(0)
+        } catch (failure: AssertionError) {
+            val state = runCatching { disclosure.printToString() }.getOrElse { it.toString() }
+            val merged = runCatching { compose.onRoot().printToString(maxDepth = 16) }.getOrElse { it.toString() }
+            val unmerged = runCatching { compose.onRoot(useUnmergedTree = true).printToString(maxDepth = 24) }.getOrElse { it.toString() }
+            runCatching { capture("diagnostic-feeds-preview") }
+            throw AssertionError("Real feeds preview action failure: ${failure.message}\nDisclosure: $state\nMerged hierarchy:\n$merged\nUnmerged hierarchy:\n$unmerged", failure)
         }
     }
 

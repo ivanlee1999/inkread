@@ -150,6 +150,8 @@ class FirstFrameArticleLayoutUiTest {
         val compositions = mutableListOf<ReadingLayoutMetrics>()
         val measurements = mutableListOf<ReadingLayoutMetrics>()
         val draws = mutableListOf<ReadingLayoutMetrics>()
+        val phaseReports = mutableListOf<String>()
+        var invalidComposition = false
         compose.setContent {
             val density = LocalDensity.current.density
             CompositionLocalProvider(
@@ -173,28 +175,30 @@ class FirstFrameArticleLayoutUiTest {
                 }
             }
         }
-        fun assertEveryComposition() {
+        fun assertEveryComposition(label: String) {
             compose.waitForIdle()
             compose.runOnIdle {
                 val expected = resolveReadingLayout(width.value.value, scale.value,
                     preset.value.preset, preference.value.columns)
                 assertTrue("The layout must compose without a blank-width waiting frame", compositions.isNotEmpty())
-                assertTrue("Only the actual pane/settings may reach article composition: $compositions",
-                    compositions.all { it == expected })
-                assertTrue("The actual pane must be measured without stale geometry: $measurements",
+                phaseReports += "$label: expected=$expected; measured=$measurements; drawn=$draws; composed=$compositions"
+                invalidComposition = invalidComposition || compositions.any { it != expected }
+                // Keep rendering failures immediate. Defer only the composition diagnostic so one
+                // native run reveals whether old-slot restarts ever affect any real resize frame.
+                assertTrue("The actual pane must be measured without stale geometry: ${phaseReports.joinToString("\n")}",
                     measurements.isNotEmpty() && measurements.all { it == expected })
-                assertTrue("Every visible resize frame must use the actual geometry: $draws",
+                assertTrue("Every visible resize frame must use the actual geometry: ${phaseReports.joinToString("\n")}",
                     draws.isNotEmpty() && draws.all { it == expected })
             }
         }
-        assertEveryComposition()
+        assertEveryComposition("initial")
         val scenarios = listOf(
             Triple(340.dp, 1f, ReadingColumnsPreference.Auto),
             Triple(800.dp, 1f, ReadingColumnsPreference.One),
             Triple(800.dp, 1f, ReadingColumnsPreference.Two),
             Triple(320.dp, 2f, ReadingColumnsPreference.Two),
         )
-        scenarios.forEach { (nextWidth, nextScale, nextPreference) ->
+        scenarios.forEachIndexed { index, (nextWidth, nextScale, nextPreference) ->
             compose.runOnIdle {
                 compositions.clear()
                 measurements.clear()
@@ -205,14 +209,14 @@ class FirstFrameArticleLayoutUiTest {
                     preference.value = nextPreference
                 }
             }
-            assertEveryComposition()
+            assertEveryComposition("resize-$index")
             compose.runOnIdle { visible.value = false }
             compose.waitForIdle()
             compose.runOnIdle {
                 compositions.clear(); measurements.clear(); draws.clear()
                 visible.value = true
             }
-            assertEveryComposition()
+            assertEveryComposition("remount-$index")
         }
         compose.runOnIdle {
             compositions.clear()
@@ -225,7 +229,11 @@ class FirstFrameArticleLayoutUiTest {
                 preset.value = ReadingLayoutPresetPreference.Phone
             }
         }
-        assertEveryComposition()
+        assertEveryComposition("phone-preset")
+        compose.runOnIdle {
+            assertTrue("Only the actual pane/settings may reach article composition: ${phaseReports.joinToString("\n")}",
+                !invalidComposition)
+        }
     }
 
     @Test fun firstFrameUsesScaffoldContentInsetsNotTheWholeDisplayWidth() {
