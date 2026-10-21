@@ -850,7 +850,9 @@ function goToPage(n) {
     document.body.style.transform = 'translateX(-' + (n * _pageStride) + 'px)';
 }
 function layoutViewport() {
-    _vw = window.innerWidth || document.documentElement.clientWidth || 360;
+    // innerWidth rounds CSS pixels on fractional-density WebViews. Columns use the
+    // actual layout width, so rounding only the translation stride accumulates drift.
+    _vw = document.documentElement.getBoundingClientRect().width || window.innerWidth || document.documentElement.clientWidth || 360;
     var vh = window.innerHeight || document.documentElement.clientHeight || 640;
     _pageStride = _vw;
     document.body.style.height = vh + 'px';

@@ -194,7 +194,12 @@ class EInkReaderAlignmentUiTest {
             swipe(start, end, 400)
         }
         compose.waitUntil(10_000) { identity.value == expected && page.get() == 1 && count.get() >= 13 }
-        compose.waitUntil(10_000) { geometry().let { it.getString("title").endsWith(expected.toString()) && it.getBoolean("ready") } }
+        compose.waitUntil(10_000) {
+            readGeometry()?.let {
+                it.getString("title").endsWith(expected.toString()) && it.getBoolean("ready") &&
+                    it.getInt("currentPage") == 0 && it.getInt("totalPages") == count.get()
+            } ?: false
+        }
         awaitVisualFrame()
     }
 
@@ -237,16 +242,21 @@ class EInkReaderAlignmentUiTest {
         val width = value.getDouble("viewportWidth")
         val padding = value.getDouble("paddingLeft")
         val fragments = value.getJSONArray("paragraphFragments")
+        val metadata = value.getJSONArray("metadataFragments")
         val tolerance = 1.25 // CSS px: covers raster/subpixel quantization, not page-by-page drift.
         if (abs(value.getDouble("scrollX")) > tolerance || abs(value.getDouble("scrollY")) > tolerance)
             violations += "$label: root scrolled (${value.getDouble("scrollX")}, ${value.getDouble("scrollY")})"
         if (value.getInt("currentPage") + 1 != page.get() || value.getInt("totalPages") != count.get())
             violations += "$label: native/DOM page state disagrees"
         val images = value.getJSONArray("visibleImages")
-        if (fragments.length() == 0 && (0 until images.length()).none { images.getJSONObject(it).getInt("naturalWidth") > 0 })
-            violations += "$label: no visible paragraph fragments or decoded ordinary images"
-        for (index in 0 until fragments.length()) {
-            val rect = fragments.getJSONObject(index)
+        if (fragments.length() == 0 && metadata.length() == 0 &&
+            (0 until images.length()).none { images.getJSONObject(it).getInt("naturalWidth") > 0 })
+            violations += "$label: no visible article text, metadata or decoded ordinary images"
+        // At very large system fonts the title/byline legitimately occupies page one.
+        // Its column box still has to satisfy the same margins as ordinary paragraphs.
+        val textBoxes = (0 until fragments.length()).map { fragments.getJSONObject(it) } +
+            (0 until metadata.length()).map { metadata.getJSONObject(it) }
+        for ((index, rect) in textBoxes.withIndex()) {
             val left = rect.getDouble("left")
             val rightMargin = width - rect.getDouble("right")
             if (abs(left - padding) > tolerance || abs(rightMargin - padding) > tolerance) {
@@ -280,17 +290,23 @@ class EInkReaderAlignmentUiTest {
         return requireNotNull(bounds)
     }
 
-    private fun geometry(): JSONObject {
+    private fun geometry(): JSONObject = requireNotNull(readGeometry()) { "Reader document is not ready for geometry capture" }
+
+    private fun readGeometry(): JSONObject? {
         val result = AtomicReference<String>()
         val ready = CountDownLatch(1)
         instrumentation.runOnMainSync {
             webView().evaluateJavascript("""
                 (function() {
+                    if (!document.body || !document.querySelector('h1') || typeof _pageStride === 'undefined') return null;
                     var body = document.body, css = getComputedStyle(body);
                     var width = document.documentElement.getBoundingClientRect().width;
                     function visible(r) { return r.width > 0 && r.height > 0 && r.right > 1 && r.left < width - 1; }
                     function rect(r) { return {left:r.left, right:r.right, top:r.top, bottom:r.bottom, width:r.width}; }
                     var paragraphs = Array.from(document.querySelectorAll('p.alignment-text')).flatMap(function(p) {
+                        return Array.from(p.getClientRects()).filter(visible).map(rect);
+                    });
+                    var metadata = Array.from(document.querySelectorAll('.eink-metadata')).flatMap(function(p) {
                         return Array.from(p.getClientRects()).filter(visible).map(rect);
                     });
                     var images = Array.from(document.images).filter(function(i) { return visible(i.getBoundingClientRect()); }).map(function(i) {
@@ -304,14 +320,16 @@ class EInkReaderAlignmentUiTest {
                         scrollX:scrollX, scrollY:scrollY, scrollWidth:body.scrollWidth, stride:_pageStride,
                         currentPage:_currentPage, totalPages:_totalPages, ready:_didFinishInitialPagination, transform:css.transform,
                         fontSize:css.fontSize, title:document.querySelector('h1').textContent,
-                        paragraphFragments:paragraphs, visibleImages:images,
+                        paragraphFragments:paragraphs, metadataFragments:metadata, visibleImages:images,
                         ordinaryImage:{complete:ordinary ? ordinary.complete : false, naturalWidth:ordinary ? ordinary.naturalWidth : 0},
                         lateImage:{complete:late ? late.complete : false, naturalWidth:late ? late.naturalWidth : 0}});
                 })()
             """.trimIndent()) { result.set(it); ready.countDown() }
         }
         assertTrue("Reader geometry result must arrive", ready.await(10, TimeUnit.SECONDS))
-        return JSONObject(JSONTokener(requireNotNull(result.get())).nextValue() as String)
+        // Navigation can briefly expose an empty document, or WebView can return JS null.
+        // Polling readiness must retry that state rather than casting JSON null to String.
+        return (JSONTokener(requireNotNull(result.get())).nextValue() as? String)?.let { JSONObject(it) }
     }
 
     private fun awaitVisualFrame() {
@@ -346,11 +364,12 @@ class EInkReaderAlignmentUiTest {
         File(outputDirectory(), "reader-alignment.json").writeText(JSONObject()
             .put("schema", 1).put("screenWidthDp", configuration.screenWidthDp)
             .put("densityDpi", metrics.densityDpi).put("systemFontScale", configuration.fontScale)
+            .put("fixtureParagraphs", paragraphCount())
             .put("samples", samples).put("violations", JSONArray(violations)).toString(2))
     }
 
     private fun fixture(): String = buildString {
-        repeat(180) { index ->
+        repeat(paragraphCount()) { index ->
             append("<p class=\"alignment-text\">第 ${index + 1} 段：")
             repeat(3) { append("这是普通中文阅读文章，窗外的阳光照亮书页，读者逐页浏览文字和照片。每一页两侧应当保留一致的空白，正文仍然自然排列。") }
             append("</p>")
@@ -358,6 +377,11 @@ class EInkReaderAlignmentUiTest {
             if (index == 2) append("<img id=\"late-image\" src=\"$IMAGE_ORIGIN/late.jpg\" alt=\"Delayed ordinary inline photo\">")
         }
     }
+
+    // Keep >=13 pages on the widest tablet, but stay below the production 500-page sanity
+    // cap on phones at 32px x system-font-1.6 after resizing. The same content is retained
+    // throughout each run's font changes, image loads and article swipe round trips.
+    private fun paragraphCount(): Int = if (instrumentation.targetContext.resources.configuration.screenWidthDp >= 600) 180 else 100
 
     companion object { private const val IMAGE_ORIGIN = "https://reader-alignment.invalid" }
 }
