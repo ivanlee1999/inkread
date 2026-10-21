@@ -429,7 +429,7 @@ fun FlowPage(
                             onFilterChange = { newFilter ->
                                 markAsRead = false
                                 viewModel.changeFilter(filterUiState.copy(filter = newFilter))
-                                einkCurrentPage = 0
+                                // The replacement pager resets the retained edition atomically.
                             },
                             onRefresh = { explicitEditionRefresh = true; viewModel.sync() },
                             onMarkAllAsRead = {

@@ -124,7 +124,9 @@ fun FolderNewspaperEdition(
     val previousLabel = stringResource(R.string.previous_page)
     val nextLabel = stringResource(R.string.next_page)
     BoxWithConstraints(modifier.fillMaxSize()) {
-        val metrics = resolveReadingLayout(maxWidth.value, density.fontScale,
+        val paneWidth = maxWidth
+        val paneHeight = maxHeight
+        val metrics = resolveReadingLayout(paneWidth.value, density.fontScale,
             LocalReadingLayoutPreset.current.preset, LocalReadingColumns.current.columns)
         val rows = remember(sections, expanded, metrics.publicationColumns) {
             folderNewspaperRows(sections, expanded, metrics.publicationColumns)
@@ -149,10 +151,10 @@ fun FolderNewspaperEdition(
                 items(rows, key = { it.key }) { render(it, FolderPreview.Full, false) }
             }
         } else {
-            val cache = remember(density.density, density.fontScale, typography, direction, metrics, countLabel, rows, maxWidth) {
+            val cache = remember(density.density, density.fontScale, typography, direction, metrics, countLabel, rows, paneWidth) {
                 mutableMapOf<FolderMeasureKey, Int>()
             }
-            val gestureKey = listOf(state.currentPage, state.layoutIdentity, maxWidth, maxHeight, density.fontScale)
+            val gestureKey = listOf(state.currentPage, state.layoutIdentity, paneWidth, paneHeight, density.fontScale)
             Column(Modifier.fillMaxSize()) {
                 SubcomposeLayout(
                     Modifier.weight(1f).fillMaxWidth().padding(horizontal = metrics.horizontalPaddingDp.dp)
@@ -168,7 +170,7 @@ fun FolderNewspaperEdition(
                         }
                         .eInkVerticalPageGesture(
                             gestureKey = gestureKey,
-                            currentGestureKey = { listOf(state.currentPage, state.layoutIdentity, maxWidth, maxHeight, density.fontScale) },
+                            currentGestureKey = { listOf(state.currentPage, state.layoutIdentity, paneWidth, paneHeight, density.fontScale) },
                             onTurn = { forward ->
                                 // This preserves the existing feeds-page pull-to-refresh boundary.
                                 if (!state.turn(forward) && !forward && state.currentPage == 0 && state.presentationAvailable) refresh()
@@ -217,10 +219,9 @@ fun FolderNewspaperEdition(
                                     stateDescription = "Enlarge the subscriptions pane to resume this page"
                                 })
                         }.single().measure(Constraints(maxWidth = width.coerceAtLeast(0)))
-                        layout(width, height) {
+                        return@SubcomposeLayout layout(width, height) {
                             if (notice.height <= height) notice.placeRelative(0, 0)
                         }
-                        return@SubcomposeLayout
                     }
                     val pages = packFolderNewspaperPages(measured, height)
                     state.updatePages(pages, listOf(width, height, density.fontScale, rows))
@@ -240,7 +241,7 @@ fun FolderNewspaperEdition(
                 }
                 // On unusually short/large-type panes gestures and accessibility actions stay
                 // available, while removing page furniture preserves complete content blocks.
-                if (maxHeight.value >= 144f * density.fontScale.coerceAtLeast(1f)) {
+                if (paneHeight.value >= 144f * density.fontScale.coerceAtLeast(1f)) {
                     FolderEditionControls(state, previousLabel, nextLabel)
                 }
             }
