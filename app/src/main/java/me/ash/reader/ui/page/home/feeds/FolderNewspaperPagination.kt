@@ -106,6 +106,56 @@ internal data class FolderNewspaperPage(val rows: List<MeasuredFolderRow>) {
     val heightPx: Int get() = rows.sumOf { it.heightPx }
 }
 
+/** Exact content equality with a bounded hash: a section can contain thousands of publications. */
+internal data class FolderMeasureKey(
+    val row: FolderNewspaperRow,
+    val width: Int,
+    val preview: FolderPreview,
+    val extraNames: Int,
+) {
+    override fun hashCode(): Int {
+        var result = width
+        result = 31 * result + preview.hashCode()
+        result = 31 * result + extraNames
+        result = 31 * result + (row.heading?.id?.hashCode() ?: 0)
+        result = 31 * result + row.continuation.hashCode()
+        row.slots.forEach { slot ->
+            result = 31 * result + slot.section.id.hashCode()
+            result = 31 * result + (slot.publication?.id?.hashCode() ?: 0)
+            result = 31 * result + slot.span
+            result = 31 * result + slot.featured.hashCode()
+        }
+        return result
+    }
+}
+
+/**
+ * Composition-local and recreated for every content/typography identity by the viewport.
+ * Natural row heights can survive height-only changes; only one exact page geometry is retained.
+ * No Compose nodes, interaction state, or image resources are retained here.
+ */
+internal class FolderNewspaperLayoutCache {
+    private val measurements = mutableMapOf<FolderMeasureKey, Int>()
+    private var rows: List<FolderNewspaperRow>? = null
+    private var width = -1
+    private var height = -1
+    private var pages: List<FolderNewspaperPage>? = null
+
+    fun measure(row: FolderNewspaperRow, width: Int, preview: FolderPreview, extraNames: Int,
+        measure: () -> Int): Int = measurements.getOrPut(FolderMeasureKey(row, width, preview, extraNames), measure)
+
+    fun partition(rows: List<FolderNewspaperRow>, width: Int, height: Int): List<FolderNewspaperPage>? =
+        if (this.rows === rows && this.width == width && this.height == height) pages else null
+
+    fun retainPartition(rows: List<FolderNewspaperRow>, width: Int, height: Int,
+        pages: List<FolderNewspaperPage>) {
+        this.rows = rows
+        this.width = width
+        this.height = height
+        this.pages = pages
+    }
+}
+
 /** Exact measured packing. Never rounds a viewport into a guessed number of subscriptions. */
 internal fun packFolderNewspaperPages(
     rows: List<MeasuredFolderRow>,

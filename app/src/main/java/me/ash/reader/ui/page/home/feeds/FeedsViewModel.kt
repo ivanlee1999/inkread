@@ -17,8 +17,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import me.ash.reader.R
@@ -83,6 +86,9 @@ class FeedsViewModel @Inject constructor(
     }
 
     private val accountFlow = accountService.currentAccountFlow
+    private val accountIdentityFlow = accountFlow
+        .mapNotNull { it }
+        .distinctUntilChangedBy { it.id to it.type }
 
     init {
         viewModelScope.launch {
@@ -92,7 +98,8 @@ class FeedsViewModel @Inject constructor(
         }
         viewModelScope.launch {
             filterStateUseCase.filterStateFlow.mapLatest { it.filter }
-                .combine(accountFlow) { filter, account ->
+                .distinctUntilChanged()
+                .combine(accountIdentityFlow) { filter, account ->
                     filter
                 }
                 .collect {

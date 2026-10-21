@@ -42,8 +42,8 @@ android {
         applicationId = "me.ash.reader"
         minSdk = 26
         targetSdk = 34
-        versionCode = 58
-        versionName = "0.16.13"
+        versionCode = 59
+        versionName = "0.16.14"
 
         buildConfigField(
             "String",
@@ -206,4 +206,9 @@ dependencies {
     testImplementation(libs.mockito.kotlin)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
+}
+
+// Opt-in native performance fixture. The shipping release source set is unchanged.
+if (providers.gradleProperty("enablePerformanceHarness").orNull == "true") {
+    apply(from = "performance.gradle.kts")
 }

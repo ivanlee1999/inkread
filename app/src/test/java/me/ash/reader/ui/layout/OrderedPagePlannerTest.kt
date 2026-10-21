@@ -97,6 +97,24 @@ class OrderedPagePlannerTest {
         assertTrue(planOrderedPages<Int>(emptyList(), 100).isEmpty())
     }
 
+    @Test fun beamMembershipNeverHashesOrComparesSourceContent() {
+        class Source(val index: Int, val preview: Int) {
+            override fun hashCode(): Int = error("Planning must not hash source content")
+            override fun equals(other: Any?): Boolean = error("Planning must not compare source content")
+        }
+        val groups = (0 until 90).map { index ->
+            OrderedPageGroup(listOf(
+                OrderedPageChoice(Source(index, 0), 170),
+                OrderedPageChoice(Source(index, 1), 140, detailPenalty = orderedCompactPenalty(170, 140)),
+                // Equivalent geometry is deduplicated without consulting the source value.
+                OrderedPageChoice(Source(index, 2), 170),
+            ), breakAfter = index % 17 == 16)
+        }
+        val pages = planOrderedPages(groups, 600)
+        assertEquals((0 until 90).toList(), pages.flatten().map { it.index })
+        assertTrue(pages.flatten().all { it.preview != 2 })
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun zeroHeightChoiceCannotCreateANoProgressPath() {
         planOrderedPages(listOf(OrderedPageGroup(listOf(OrderedPageChoice(1, 0)))), 100)

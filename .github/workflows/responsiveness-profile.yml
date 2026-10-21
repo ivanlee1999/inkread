@@ -1,0 +1,183 @@
+name: Optimized responsiveness comparison
+
+on:
+  # Bootstrap the new workflow on a PR without merging unvalidated code first.
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.github/workflows/responsiveness-profile.yml'
+      - 'app/build.gradle.kts'
+      - 'app/performance.gradle.kts'
+      - 'app/src/performance/**'
+      - 'app/src/main/java/me/ash/reader/ui/**'
+      - 'app/src/main/java/me/ash/reader/domain/data/**'
+      - 'app/src/main/java/me/ash/reader/infrastructure/android/**'
+      - 'app/src/main/java/me/ash/reader/infrastructure/rss/ArticleImageEnrichment.kt'
+      - 'scripts/performance/**'
+      - 'gradle/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+  workflow_dispatch:
+    inputs:
+      baseline-ref:
+        description: Exact baseline revision (0.16.13 release before responsiveness edits)
+        type: string
+        default: 70e1e8c4d5666b736fc713be2c13ea87af0e2813
+        required: true
+      candidate-ref:
+        description: Candidate revision; blank uses the workflow revision
+        type: string
+        default: ''
+      scales:
+        description: Fixed fixture sizes, comma-separated (small,medium,stress)
+        type: string
+        default: small,stress
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: responsiveness-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-comparison:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - width: 400
+            size: 400x1000
+          - width: 1000
+            size: 1000x1200
+    steps:
+      - name: Check out fixed harness
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          path: harness
+      - name: Check out exact baseline
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.baseline-ref || '70e1e8c4d5666b736fc713be2c13ea87af0e2813' }}
+          persist-credentials: false
+          path: baseline
+      - name: Check out candidate
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || inputs.candidate-ref || github.sha }}
+          persist-credentials: false
+          path: candidate
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - name: Prepare the same Android compile packages used by native UI verification
+        run: sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
+      - name: Overlay identical benchmark-only inputs, then build optimized APKs
+        run: |
+          set -euo pipefail
+          python3 harness/scripts/performance/test_tools.py
+          for side in baseline candidate; do
+            python3 harness/scripts/performance/overlay.py harness "$side"
+            (cd "$side" && ./gradlew --no-daemon --max-workers=2 -PenablePerformanceHarness=true assembleGithubPerformance)
+            mkdir -p "artifacts/$side"
+            mapfile -t apks < <(find "$side/app/build/outputs/apk/github/performance" -name '*.apk' -type f)
+            test "${#apks[@]}" -eq 1
+            cp "${apks[0]}" "artifacts/$side/performance.apk"
+            cp "$side/performance-provenance.json" "artifacts/$side/"
+            cp -r "$side/app/build/outputs/mapping/githubPerformance" "artifacts/$side/mapping"
+          done
+          python3 - <<'PY'
+          import json
+          a = json.load(open('artifacts/baseline/performance-provenance.json'))
+          b = json.load(open('artifacts/candidate/performance-provenance.json'))
+          assert a['harness_sha256'] == b['harness_sha256'], 'Baseline and candidate must use exactly the same harness'
+          PY
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Write paired emulator driver
+        env:
+          SCALES: ${{ inputs.scales }}
+          WIDTH: ${{ matrix.width }}
+          SIZE: ${{ matrix.size }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, shlex
+          import json
+          requested = os.environ.get('SCALES', '')
+          config = pathlib.Path('harness/scripts/performance/pr-config.json')
+          selected = json.loads(config.read_text()) if config.is_file() else {"scales": ["small"]}
+          assert set(selected) == {'scales'}, 'Only scale selection is configurable; the PR baseline stays fixed'
+          scales = requested.split(',') if requested else selected['scales']
+          assert isinstance(scales, list) and all(isinstance(scale, str) for scale in scales)
+          assert scales and len(scales) == len(set(scales)) and set(scales) <= {'small', 'medium', 'stress'}
+          command = '''#!/usr/bin/env bash
+          set -euo pipefail
+          adb shell wm size {size}
+          adb shell wm density 160
+          adb shell settings put system font_scale 1.0
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
+          adb shell svc wifi disable
+          adb shell svc data disable
+          if adb shell pm path com.google.android.apps.nexuslauncher | grep -q '^package:'; then
+            adb shell pm disable-user --user 0 com.google.android.apps.nexuslauncher
+            adb shell am force-stop com.google.android.apps.nexuslauncher
+          fi
+          BASELINE_SHA=$(git -C baseline rev-parse HEAD)
+          CANDIDATE_SHA=$(git -C candidate rev-parse HEAD)
+          HARNESS_SHA=$(python3 -c 'import json; print(json.load(open("artifacts/baseline/performance-provenance.json"))["harness_sha256"])')
+          python3 harness/scripts/performance/run.py \\
+            --baseline artifacts/baseline/performance.apk --baseline-sha "$BASELINE_SHA" \\
+            --candidate artifacts/candidate/performance.apk --candidate-sha "$CANDIDATE_SHA" \\
+            --harness-sha "$HARNESS_SHA" --output results --width {width} --scales {scales}
+          python3 harness/scripts/performance/summarize.py results
+          '''.format(size=shlex.quote(os.environ['SIZE']), width=shlex.quote(os.environ['WIDTH']), scales=shlex.quote(','.join(scales)))
+          pathlib.Path('run-performance.sh').write_text(command)
+          PY
+          chmod +x run-performance.sh
+      - name: Run repeated baseline/candidate pairs on one native AVD
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          cores: 2
+          ram-size: 4096M
+          disk-size: 6000M
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          script: ./run-performance.sh
+      - name: Write comparison summary
+        if: always()
+        run: test ! -f results/summary.md || cat results/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve native evidence and exact APK provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: responsiveness-${{ matrix.width }}dp-${{ github.run_id }}
+          path: |
+            results/**
+            artifacts/**
+            baseline/app/build/outputs/logs/**
+            candidate/app/build/outputs/logs/**
+          if-no-files-found: warn
+          retention-days: 30

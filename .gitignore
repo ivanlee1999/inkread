@@ -101,3 +101,6 @@ out/
 signature
 # Kotlin compiler local cache
 .kotlin/
+
+# Local performance-tool bytecode
+scripts/performance/__pycache__/

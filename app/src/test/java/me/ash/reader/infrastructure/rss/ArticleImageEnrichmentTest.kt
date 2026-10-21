@@ -17,6 +17,30 @@ class ArticleImageEnrichmentTest {
     private val url = "https://example.com/story?private_token=do-not-store"
     private val image = "https://example.com/photo.jpg"
 
+    @Test fun cacheKeyPreservesExistingLowercaseSha256Bytes() {
+        val random = java.util.Random(1001)
+        val urls = listOf("", url, "https://example.com/\u96ea?name=\u00e9&token=X%2FY+Z%3D",
+            "https://example.com/" + "a".repeat(8_000)) +
+            (0 until 100).map { "https://example.com/${random.nextLong()}?token=${random.nextLong()}" }
+        urls.forEach { candidate ->
+            val previous = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(candidate.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+            assertEquals(previous, articleImageCacheKey(candidate))
+            assertTrue(articleImageCacheKey(candidate).matches(Regex("[0-9a-f]{64}")))
+        }
+    }
+
+    @Test fun cacheRestoresAnEntryWrittenWithThePreviousKeyFormat() {
+        val file = File.createTempFile("article-image-legacy-key", ".json")
+        try {
+            val previousKey = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(url.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+            file.writeText("""[{"key":"$previousKey","expires":2000,"outcome":"FOUND","images":["$image"]}]""")
+            assertEquals(ArticleImageResult(listOf(image), ArticleImageOutcome.FOUND),
+                ArticleImageMetadataCache(now = { 1000 }, file = file).get(url))
+        } finally { file.delete() }
+    }
+
     @Test fun positiveNoImageAndFailureEntriesHaveSeparateTtls() {
         for ((outcome, ttl) in listOf(ArticleImageOutcome.FOUND to TimeUnit.HOURS.toMillis(24),
             ArticleImageOutcome.NO_IMAGE to TimeUnit.HOURS.toMillis(6), ArticleImageOutcome.FAILURE to TimeUnit.MINUTES.toMillis(15))) {

@@ -118,7 +118,9 @@ private const val MAX_CHOICES = 6
 private const val MAX_STATES = 24
 private const val MAX_GROUPS_PER_PAGE = 64
 
-private data class OrderedPageState<T>(
+// The retained beam combines sorted views of the same instances after geometry deduplication.
+// Identity membership is sufficient and must not hash arbitrary, potentially large source values.
+private class OrderedPageState<T>(
     val values: List<T> = emptyList(),
     val choiceIndices: List<Int> = emptyList(),
     val heightPx: Int = 0,

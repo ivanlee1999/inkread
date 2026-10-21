@@ -89,8 +89,7 @@ internal class ArticleImageMetadataCache(
         }
     }
 
-    private fun cacheKey(url: String): String = MessageDigest.getInstance("SHA-256")
-        .digest(url.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+    private fun cacheKey(url: String): String = articleImageCacheKey(url)
 
     private fun persist() {
         val target = file ?: return
@@ -112,6 +111,19 @@ internal class ArticleImageMetadataCache(
             if (temporary.length() <= 1024 * 1024) temporary.renameTo(target) else temporary.delete()
         }
     }
+}
+
+/** Keep persisted keys identical without allocating a Formatter for every digest byte. */
+internal fun articleImageCacheKey(url: String): String {
+    val digest = MessageDigest.getInstance("SHA-256").digest(url.toByteArray(Charsets.UTF_8))
+    val hex = "0123456789abcdef"
+    val chars = CharArray(digest.size * 2)
+    digest.forEachIndexed { index, byte ->
+        val value = byte.toInt() and 0xff
+        chars[index * 2] = hex[value ushr 4]
+        chars[index * 2 + 1] = hex[value and 0x0f]
+    }
+    return String(chars)
 }
 
 /** Striped locks deduplicate a URL, without an unbounded map or app-scope background crawl. */

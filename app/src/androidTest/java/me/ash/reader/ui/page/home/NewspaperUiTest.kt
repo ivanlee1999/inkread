@@ -1429,6 +1429,69 @@ class NewspaperUiTest {
         }
     }
 
+    @Test fun textOnlyPreviewsSkipPhotoWorkAndPhotoPreviewsStillResolveAfterToggling() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val previousLoader = Coil.imageLoader(context)
+        val cache = DiskCache.Builder().directory(File(context.cacheDir, "photo-policy-${System.nanoTime()}")).build()
+        val photo = "https://offline-fixture.invalid/policy-${System.nanoTime()}.jpg"
+        val editor = requireNotNull(cache.openEditor(photo))
+        earthriseFile().copyTo(editor.data.toFile(), overwrite = true)
+        editor.metadata.toFile().writeBytes(byteArrayOf())
+        editor.commit()
+        val fetches = AtomicInteger()
+        val loader = ImageLoader.Builder(context).diskCache(cache)
+            .memoryCachePolicy(CachePolicy.DISABLED).networkCachePolicy(CachePolicy.DISABLED)
+            .respectCacheHeaders(false).eventListener(object : coil.EventListener {
+                override fun fetchStart(request: ImageRequest, fetcher: coil.fetch.Fetcher, options: coil.request.Options) {
+                    if (request.data == photo) fetches.incrementAndGet()
+                }
+            }).build()
+        val feed = Feed(id = "photo-policy", name = "NASA / Bill Anders", url = "https://example.com", groupId = "g", accountId = 1)
+        val article = ArticleWithFeed(Article(id = "photo-policy", title = "Photo preparation follows the visible preview",
+            date = Date(0), img = photo, rawDescription = "<img src=\"$photo\">",
+            shortDescription = "The same saved photograph returns when a photo-capable preview is restored.",
+            link = "about:blank", feedId = feed.id, accountId = 1), feed)
+        val preview = mutableStateOf(me.ash.reader.ui.page.home.flow.NewspaperPreview.Minimal)
+        val images = mutableStateOf(FlowArticleListImagePreference.ON)
+        try {
+            Coil.setImageLoader(loader)
+            compose.setContent {
+                CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON, LocalFlowArticleListImage provides images.value) {
+                    AppTheme(useDarkTheme = false) {
+                        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+                            ArticleItem(articleWithFeed = article, preview = preview.value, isLead = true)
+                        }
+                    }
+                }
+            }
+            compose.waitForIdle()
+            compose.onAllNodesWithTag("article-photo", useUnmergedTree = true).assertCountEquals(0)
+            assertEquals("Minimal previews do not start image fetch/decode work", 0, fetches.get())
+            compose.runOnIdle { preview.value = me.ash.reader.ui.page.home.flow.NewspaperPreview.HeadlineOnly }
+            compose.waitForIdle()
+            compose.onAllNodesWithTag("article-photo", useUnmergedTree = true).assertCountEquals(0)
+            assertEquals("Headline-only previews do not start image fetch/decode work", 0, fetches.get())
+            compose.runOnIdle { preview.value = me.ash.reader.ui.page.home.flow.NewspaperPreview.Full }
+            waitForPhotoPixels()
+            assertTrue("Full previews resolve the disk-cached photo", fetches.get() > 0)
+            compose.runOnIdle { preview.value = me.ash.reader.ui.page.home.flow.NewspaperPreview.Minimal }
+            compose.onAllNodesWithTag("article-photo", useUnmergedTree = true).assertCountEquals(0)
+            val beforeCompact = fetches.get()
+            compose.runOnIdle { preview.value = me.ash.reader.ui.page.home.flow.NewspaperPreview.Compact }
+            waitForPhotoPixels()
+            assertTrue("Compact previews can prepare the photo again after a text-only preview", fetches.get() > beforeCompact)
+            compose.runOnIdle { images.value = FlowArticleListImagePreference.OFF }
+            compose.onAllNodesWithTag("article-photo", useUnmergedTree = true).assertCountEquals(0)
+            val beforeRestore = fetches.get()
+            compose.runOnIdle { images.value = FlowArticleListImagePreference.ON }
+            waitForPhotoPixels()
+            assertTrue("Restoring the preference starts a fresh photo producer", fetches.get() > beforeRestore)
+        } finally {
+            Coil.setImageLoader(previousLoader)
+            loader.shutdown()
+        }
+    }
+
     @Test fun savedMetadataPhotoAlternateSurvivesDecodeFailureAndMissingPhotosStayReadable() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val previousLoader = Coil.imageLoader(context)

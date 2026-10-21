@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapNotNull
@@ -38,7 +40,12 @@ class GroupWithFeedsListUseCase @Inject constructor(
 ) {
 
     private var currentJob: Job? = null
-    private val accountFlow = accountService.currentAccountFlow.mapNotNull { it }
+    private val accountFlow = accountService.currentAccountFlow
+        .mapNotNull { it }
+        .distinctUntilChangedBy { it.id to it.type }
+    private val hideEmptyGroupsFlow = settingsProvider.settingsFlow
+        .map { it.hideEmptyGroups.value }
+        .distinctUntilChanged()
 
     init {
         applicationScope.launch {
@@ -48,6 +55,7 @@ class GroupWithFeedsListUseCase @Inject constructor(
         }
         applicationScope.launch {
             filterStateUseCase.filterStateFlow.map { it.filter }
+                .distinctUntilChanged()
                 .combine(accountFlow) { filter, account ->
                     filter
                 }.collectLatest {
@@ -68,8 +76,6 @@ class GroupWithFeedsListUseCase @Inject constructor(
     private val feedsFlow: MutableStateFlow<List<GroupWithFeed>> = MutableStateFlow(emptyList())
 
     private val defaultGroupId get() = accountService.getCurrentAccountId().getDefaultGroupId()
-
-    private val hideEmptyGroups get() = settingsProvider.settings.hideEmptyGroups.value
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private fun pullAllFeeds(): Job {
@@ -96,7 +102,7 @@ class GroupWithFeedsListUseCase @Inject constructor(
 
         return applicationScope.launch {
 
-            feedsFlow.combine(starredCountMap) { groupWithFeedsList, starredCountMap ->
+            combine(feedsFlow, starredCountMap, hideEmptyGroupsFlow) { groupWithFeedsList, starredCountMap, hideEmptyGroups ->
                 val result = mutableListOf<GroupWithFeed>()
                 for (groupItem in groupWithFeedsList) {
 
@@ -132,11 +138,10 @@ class GroupWithFeedsListUseCase @Inject constructor(
         val unreadCountMapFlow = rssService.get().pullImportant(isStarred = false, isUnread = true)
         return applicationScope.launch {
             combine(
-                feedsFlow, unreadCountMapFlow, diffMapHolder.diffMapSnapshotFlow
-            ) { groupWithFeedsList, unreadCountMap, diffMap ->
+                feedsFlow, unreadCountMapFlow, diffMapHolder.diffMapSnapshotFlow, hideEmptyGroupsFlow
+            ) { groupWithFeedsList, unreadCountMap, diffMap, hideEmptyGroups ->
                 val result = mutableListOf<GroupWithFeed>()
-                val unreadDiffs = diffMap.values.filter { it.isUnread }
-                val readDiffs = diffMap.values.filterNot { it.isUnread }
+                val deltasByFeed = unreadCountDeltasByFeed(diffMap.values)
 
                 for (groupItem in groupWithFeedsList) {
 
@@ -144,7 +149,7 @@ class GroupWithFeedsListUseCase @Inject constructor(
                         val feedId = feed.id
                         val feedCount = unreadCountMap[feedId] ?: 0
                         val combinedFeedCount =
-                            feedCount + unreadDiffs.count { it.feedId == feedId } - readDiffs.count { it.feedId == feedId }
+                            feedCount + (deltasByFeed[feedId] ?: 0)
                         feed.copy(important = combinedFeedCount.coerceAtLeast(0))
                     }
 

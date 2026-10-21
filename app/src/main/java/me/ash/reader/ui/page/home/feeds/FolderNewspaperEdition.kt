@@ -102,7 +102,6 @@ class FolderNewspaperState {
     }
 }
 
-private data class FolderMeasureKey(val row: FolderNewspaperRow, val width: Int, val preview: FolderPreview, val extraNames: Int)
 private data class FolderMeasureSlot(val key: String, val preview: FolderPreview, val extraNames: Int)
 
 /**
@@ -159,7 +158,7 @@ fun FolderNewspaperEdition(
             }
         } else {
             val cache = remember(density.density, density.fontScale, typography, direction, metrics, countLabel, rows, paneWidth) {
-                mutableMapOf<FolderMeasureKey, Int>()
+                FolderNewspaperLayoutCache()
             }
             val gestureKey = listOf(state.currentPage, state.layoutIdentity, paneWidth, paneHeight, density.fontScale)
             SubcomposeLayout(
@@ -187,8 +186,7 @@ fun FolderNewspaperEdition(
                 val width = constraints.maxWidth
                 val natural = Constraints(minWidth = width, maxWidth = width, maxHeight = Constraints.Infinity)
                 fun measureVariant(row: FolderNewspaperRow, preview: FolderPreview, extraNames: Int): MeasuredFolderRow {
-                    val key = FolderMeasureKey(row, width, preview, extraNames)
-                    val measured = cache.getOrPut(key) {
+                    val measured = cache.measure(row, width, preview, extraNames) {
                         subcompose(FolderMeasureSlot(row.key, preview, extraNames)) {
                             render(row, preview, extraNames, true)
                         }.single().measure(natural).height
@@ -203,35 +201,39 @@ fun FolderNewspaperEdition(
                     }
                     return result
                 }
-                val measured = rows.flatMap { row ->
-                    val original = measure(row)
-                    if (original.heightPx <= height || row.heading == null || row.continuation) {
-                        listOf(original)
-                    } else {
-                        // Extremely short panes can separate a complete section block from
-                        // its publication row, but can never crop either at the page edge.
-                        listOf(
-                            measure(FolderNewspaperRow(listOf(FolderNewspaperSlot(row.heading,
-                                span = metrics.publicationColumns)))),
-                            measure(row.copy(continuation = true)),
-                        )
+                val pages = cache.partition(rows, width, height) ?: run {
+                    val measured = rows.flatMap { row ->
+                        val original = measure(row)
+                        if (original.heightPx <= height || row.heading == null || row.continuation) {
+                            listOf(original)
+                        } else {
+                            // Extremely short panes can separate a complete section block from
+                            // its publication row, but can never crop either at the page edge.
+                            listOf(
+                                measure(FolderNewspaperRow(listOf(FolderNewspaperSlot(row.heading,
+                                    span = metrics.publicationColumns)))),
+                                measure(row.copy(continuation = true)),
+                            )
+                        }
+                    }
+                    if (measured.any { it.heightPx > height }) {
+                        // A transient pane smaller than a touch target cannot show a complete
+                        // subscription. Retain every source and its anchor; do not clip/drop it.
+                        state.suspendPresentation()
+                        val notice = subcompose("folder-insufficient-space") {
+                            Text("More space is needed to show subscriptions", maxLines = 1,
+                                modifier = Modifier.semantics {
+                                    stateDescription = "Enlarge the subscriptions pane to resume this page"
+                                })
+                        }.single().measure(Constraints(maxWidth = width.coerceAtLeast(0)))
+                        return@SubcomposeLayout layout(width, height) {
+                            if (notice.height <= height) notice.placeRelative(0, 0)
+                        }
+                    }
+                    fillFolderNewspaperPages(measured, height, ::measureVariant).also {
+                        cache.retainPartition(rows, width, height, it)
                     }
                 }
-                if (measured.any { it.heightPx > height }) {
-                    // A transient pane smaller than a touch target cannot show a complete
-                    // subscription. Retain every source and its anchor; do not clip/drop it.
-                    state.suspendPresentation()
-                    val notice = subcompose("folder-insufficient-space") {
-                        Text("More space is needed to show subscriptions", maxLines = 1,
-                            modifier = Modifier.semantics {
-                                stateDescription = "Enlarge the subscriptions pane to resume this page"
-                            })
-                    }.single().measure(Constraints(maxWidth = width.coerceAtLeast(0)))
-                    return@SubcomposeLayout layout(width, height) {
-                        if (notice.height <= height) notice.placeRelative(0, 0)
-                    }
-                }
-                val pages = fillFolderNewspaperPages(measured, height, ::measureVariant)
                 state.updatePages(pages, listOf(width, height, density.fontScale, rows))
                 val visible = pages.getOrNull(state.currentPage)?.rows.orEmpty()
                 val placeables = visible.map { row ->
