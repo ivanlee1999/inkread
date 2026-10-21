@@ -50,6 +50,7 @@ import me.ash.reader.infrastructure.di.IODispatcher
 import me.ash.reader.infrastructure.preference.PullToLoadNextFeedPreference
 import me.ash.reader.infrastructure.preference.SettingsProvider
 import me.ash.reader.infrastructure.rss.ReaderCacheHelper
+import me.ash.reader.ui.page.home.flow.NewspaperViewportState
 import timber.log.Timber
 
 private const val TAG = "FlowViewModel"
@@ -165,6 +166,21 @@ constructor(
         conditions: MarkAsReadConditions,
         isUnread: Boolean,
     ) {
+        // Capture the cutoff once for both the retained edition and the database operation.
+        val before = conditions.toDate()
+        val target = ReadStatusScope(groupId, feedId, articleId, before?.time)
+        newspaperViewportState.items.filterIsInstance<ArticleFlowItem.Article>().forEach {
+            val item = it.articleWithFeed
+            if (target.matches(item.article.id, item.article.feedId, item.feed.groupId, item.article.date.time)) {
+                // A retained story may still have an opposite pending toggle. Reconcile that
+                // exact existing diff so it cannot override this newer explicit bulk action.
+                val pending = diffMapHolder.diffMap[item.article.id]
+                if (pending != null && pending.isUnread != isUnread) {
+                    diffMapHolder.updateDiff(item, isUnread = isUnread)
+                }
+                newspaperViewportState.recordReadStatus(item.article.id, isUnread)
+            }
+        }
         applicationScope.launch(ioDispatcher) {
             rssService
                 .get()
@@ -172,13 +188,14 @@ constructor(
                     groupId = groupId,
                     feedId = feedId,
                     articleId = articleId,
-                    before = conditions.toDate(),
+                    before = before,
                     isUnread = isUnread,
                 )
         }
     }
 
     fun updateStarredStatus(articleId: String?, isStarred: Boolean) {
+        articleId?.let { newspaperViewportState.recordStarredStatus(it, isStarred) }
         applicationScope.launch(ioDispatcher) {
             if (articleId != null) {
                 rssService.get().markAsStarred(articleId = articleId, isStarred = isStarred)
@@ -283,6 +300,9 @@ constructor(
     private val _readerState: MutableStateFlow<ReaderState> = MutableStateFlow(ReaderState())
     val readerStateStateFlow = _readerState.asStateFlow()
 
+    internal val newspaperViewportState = NewspaperViewportState()
+    private val readerArticleSequence = ReaderArticleSequence<ArticleWithFeed> { it.article.id }
+
     private var articleLoadJob: Job? = null
     private var fullContentJob: Job? = null
 
@@ -292,11 +312,26 @@ constructor(
     private val currentFeed: Feed?
         get() = readingUiState.value.articleWithFeed?.feed
 
+    /** Called by the paged list before navigation, including stories retained after becoming read. */
+    internal fun captureReaderSequence(pagerIdentity: Any, items: List<ArticleFlowItem>) {
+        readerArticleSequence.update(pagerIdentity,
+            items.filterIsInstance<ArticleFlowItem.Article>().map {
+                if (newspaperViewportState.ownsPager(pagerIdentity)) newspaperViewportState.currentArticle(it.articleWithFeed)
+                else it.articleWithFeed
+            })
+    }
+
     fun initData(articleId: String, listIndex: Int? = null) {
         articleLoadJob?.cancel()
         fullContentJob?.cancel()
+        // Claim the visible reader immediately, including a suspended database lookup.
+        // Hardware keys must not fall through to the article list while this loads.
+        _readingUiState.value = ReadingUiState()
+        _readerState.value = ReaderState(articleId = articleId)
         articleLoadJob = viewModelScope.launch {
             val snapshotList = articleListUseCase.itemSnapshotList
+            val pagerIdentity = articleListUseCase.pagerFlow.value.pager
+            readerArticleSequence.update(pagerIdentity, snapshotList.filterIsInstance<ArticleFlowItem.Article>().map { it.articleWithFeed })
 
             val itemByIndex =
                 listIndex?.let { snapshotList.getOrNull(it) as? ArticleFlowItem.Article }
@@ -304,8 +339,9 @@ constructor(
             // Resolution order:
             // 1. Item at listIndex if its ID matches the requested articleId
             // 2. Search the snapshot list by articleId
-            // 3. Query the database
-            val item = when {
+            // 3. The retained reader/edition identity
+            // 4. Query the database
+            val foundItem = when {
                 itemByIndex != null && itemByIndex.articleWithFeed.article.id == articleId ->
                     itemByIndex.articleWithFeed
                 else -> {
@@ -314,8 +350,12 @@ constructor(
                             item.articleWithFeed.article.id == articleId
                     } as? ArticleFlowItem.Article
                     found?.articleWithFeed
+                        ?: readerArticleSequence.find(pagerIdentity, articleId)
                         ?: rssService.get().findArticleById(articleId)
                 }
+            }
+            val item = foundItem?.let {
+                if (newspaperViewportState.ownsPager(pagerIdentity)) newspaperViewportState.currentArticle(it) else it
             }
 
             ensureActive()
@@ -329,6 +369,7 @@ constructor(
             if (diffMapHolder.checkIfUnread(item)) {
                 diffMapHolder.updateDiff(item, isUnread = false)
             }
+            newspaperViewportState.recordReadStatus(item.article.id, false)
             item.run {
                 _readingUiState.update {
                     it.copy(articleWithFeed = this, isStarred = article.isStarred, isUnread = false)
@@ -353,6 +394,7 @@ constructor(
     }
 
     fun clearReadingData() {
+        readerArticleSequence.clear()
         articleLoadJob?.cancel()
         fullContentJob?.cancel()
         _readingUiState.update { ReadingUiState() }
@@ -412,17 +454,18 @@ constructor(
     }
 
     fun updateReadStatus(isUnread: Boolean) {
-        readingUiState.value.articleWithFeed?.let {
-            diffMapHolder.updateDiff(it, isUnread = isUnread)
-        }
+        val article = readingUiState.value.articleWithFeed ?: return
+        diffMapHolder.updateDiff(article, isUnread = isUnread)
+        newspaperViewportState.recordReadStatus(article.article.id, isUnread)
         _readingUiState.update {
-            it.copy(isUnread = diffMapHolder.checkIfUnread(it.articleWithFeed!!))
+            it.copy(isUnread = diffMapHolder.checkIfUnread(article))
         }
     }
 
     fun updateStarredStatus(isStarred: Boolean) {
         val article = currentArticle ?: return
         val service = rssService.get()
+        newspaperViewportState.recordStarredStatus(article.id, isStarred)
         _readingUiState.update { it.copy(isStarred = isStarred) }
         applicationScope.launch(ioDispatcher) {
             service.markAsStarred(articleId = article.id, isStarred = isStarred)
@@ -434,50 +477,29 @@ constructor(
     }
 
     fun ReaderState.prefetchArticleId(): ReaderState {
-        val items = articleListUseCase.itemSnapshotList
-        val currentId = currentArticle?.id
-        val index =
-            items.indexOfFirst { item ->
-                item is ArticleFlowItem.Article && item.articleWithFeed.article.id == currentId
+        val liveItems = articleListUseCase.itemSnapshotList
+        val items = readerArticleSequence.update(articleListUseCase.pagerFlow.value.pager,
+            liveItems.filterIsInstance<ArticleFlowItem.Article>().map { it.articleWithFeed })
+        val currentId = articleId ?: return this
+        val index = items.indexOfFirst { it.article.id == currentId }
+        fun neighbour(offset: Int): ReaderState.PrefetchResult? =
+            items.getOrNull(index + offset)?.takeIf { index >= 0 }?.let { item ->
+                ReaderState.PrefetchResult(
+                    articleId = item.article.id,
+                    // This remains a lookup hint only; initData always validates its ID.
+                    index = liveItems.indexOfFirst {
+                        it is ArticleFlowItem.Article && it.articleWithFeed.article.id == item.article.id
+                    },
+                )
             }
-        var previousArticle: ReaderState.PrefetchResult? = null
-        var nextArticle: ReaderState.PrefetchResult? = null
-
-        if (index >= 0) {
-            val prevIterator = items.listIterator(index)
-            while (prevIterator.hasPrevious()) {
-                val previousIndex = prevIterator.previousIndex()
-                val prev = prevIterator.previous()
-                if (prev is ArticleFlowItem.Article) {
-                    previousArticle =
-                        ReaderState.PrefetchResult(
-                            articleId = prev.articleWithFeed.article.id,
-                            index = previousIndex,
-                        )
-                    break
-                }
-            }
-            val nextIterator = items.listIterator(index + 1)
-            while (nextIterator.hasNext()) {
-                val nextIndex = nextIterator.nextIndex()
-                val next = nextIterator.next()
-                if (
-                    next is ArticleFlowItem.Article && next.articleWithFeed.article.id != currentId
-                ) {
-                    nextArticle =
-                        ReaderState.PrefetchResult(
-                            articleId = next.articleWithFeed.article.id,
-                            index = nextIndex,
-                        )
-                    break
-                }
-            }
+        val liveIndex = liveItems.indexOfFirst {
+            it is ArticleFlowItem.Article && it.articleWithFeed.article.id == currentId
         }
-
-        val articleOrdinal = if (index != -1) items.take(index + 1).count { it is ArticleFlowItem.Article } else null
-        val totalArticleCount = items.count { it is ArticleFlowItem.Article }.takeIf { it > 0 }
-        Timber.d("$previousArticle, $nextArticle, $listIndex")
-        return copy(nextArticle = nextArticle, previousArticle = previousArticle, listIndex = index, articleOrdinal = articleOrdinal, totalArticleCount = totalArticleCount)
+        return copy(
+            nextArticle = neighbour(1), previousArticle = neighbour(-1), listIndex = liveIndex,
+            articleOrdinal = (index + 1).takeIf { index >= 0 },
+            totalArticleCount = items.size.takeIf { it > 0 },
+        )
     }
 
     fun downloadImage(

@@ -50,6 +50,10 @@ fun NewspaperFolderHeader(
     onExpanded: () -> Unit = {},
     onLongClick: () -> Unit = {},
     onClick: () -> Unit = {},
+    inset: Boolean = true,
+    compact: Boolean = false,
+    countLabel: String? = null,
+    measuring: Boolean = false,
 ) {
     val fontScale = LocalDensity.current.fontScale
     BoxWithConstraints(modifier.fillMaxWidth()) {
@@ -59,14 +63,14 @@ fun NewspaperFolderHeader(
             preset = LocalReadingLayoutPreset.current.preset,
             columnPreference = LocalReadingColumns.current.columns,
         )
-        Column(Modifier.padding(horizontal = layout.horizontalPaddingDp.dp)) {
+        Column(Modifier.padding(horizontal = if (inset) layout.horizontalPaddingDp.dp else 0.dp)) {
             HorizontalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.onSurface)
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Row(
                     modifier = Modifier
                         .weight(1f)
-                        .heightIn(min = 72.dp)
-                        .testTag("folder-open:$name")
+                        .heightIn(min = if (compact) 48.dp else 72.dp)
+                        .then(if (measuring) Modifier else Modifier.testTag("folder-open:$name"))
                         .combinedClickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
@@ -74,7 +78,7 @@ fun NewspaperFolderHeader(
                             onClick = onClick,
                             onLongClick = onLongClick,
                         )
-                        .padding(vertical = 12.dp),
+                        .padding(vertical = if (compact) 4.dp else 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
@@ -86,18 +90,19 @@ fun NewspaperFolderHeader(
                             fontFamily = FontFamily.Serif,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 2,
+                            maxLines = if (compact) 1 else 2,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        if (feedCount != null) {
+                        if (feedCount != null && !compact) {
                             Text(
-                                text = "${stringResource(R.string.feeds)} · $feedCount",
+                                text = "${stringResource(R.string.feeds)} · $feedCount" +
+                                    if (countLabel == null) "" else "   $important · $countLabel",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
                         }
                     }
-                    if (important != 0) {
+                    if (important != 0 && countLabel == null) {
                         Text(
                             text = important.toString(),
                             style = MaterialTheme.typography.titleMedium,
@@ -110,7 +115,7 @@ fun NewspaperFolderHeader(
                 Box(
                     modifier = Modifier
                         .size(48.dp)
-                        .testTag("folder-expand:$name")
+                        .then(if (measuring) Modifier else Modifier.testTag("folder-expand:$name"))
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,

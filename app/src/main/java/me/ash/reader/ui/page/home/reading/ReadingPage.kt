@@ -24,6 +24,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -46,6 +47,8 @@ import kotlin.math.abs
 import kotlinx.coroutines.launch
 import me.ash.reader.R
 import me.ash.reader.infrastructure.android.TextToSpeechManager
+import me.ash.reader.infrastructure.android.VolumeKeyEventBus
+import me.ash.reader.infrastructure.android.VolumeKeyPriority
 import me.ash.reader.infrastructure.preference.LocalOpenLink
 import me.ash.reader.infrastructure.preference.LocalOpenLinkSpecificBrowser
 import me.ash.reader.infrastructure.preference.LocalPullToSwitchArticle
@@ -82,6 +85,10 @@ fun ReadingPage(
     val isPullToSwitchArticleEnabled = LocalPullToSwitchArticle.current.value
     val readingUiState = viewModel.readingUiState.collectAsStateValue()
     val readerState = viewModel.readerStateStateFlow.collectAsStateValue()
+    // Keep reader ownership during loading, so keys cannot turn or mark the list
+    // underneath it. The ready content collects without a second registration.
+    val volumeKeyOwner = remember(readerState.articleId) { Any() }
+    EInkReaderVolumeReservation(isEInkMode && readerState.articleId != null, volumeKeyOwner)
     val boldCharacters = LocalReadingBoldCharacters.current
     val coroutineScope = rememberCoroutineScope()
 
@@ -152,6 +159,8 @@ fun ReadingPage(
                                 }
                         ) {
                             EInkPaginatedContent(
+                                reserveVolumeKeys = false,
+                                volumeKeyOwner = volumeKeyOwner,
                                 articleId = readerState.articleId,
                                 contentPadding = paddings,
                                 content = readerState.content.text ?: "",
@@ -429,5 +438,15 @@ fun ReadingPage(
             },
             onDismissRequest = { showFullScreenImageViewer = false },
         )
+    }
+}
+
+@Composable
+internal fun EInkReaderVolumeReservation(enabled: Boolean, owner: Any = VolumeKeyPriority.HIGH) {
+    DisposableEffect(enabled, owner) {
+        if (enabled) VolumeKeyEventBus.register(VolumeKeyPriority.HIGH, owner)
+        onDispose {
+            if (enabled) VolumeKeyEventBus.unregister(VolumeKeyPriority.HIGH, owner)
+        }
     }
 }

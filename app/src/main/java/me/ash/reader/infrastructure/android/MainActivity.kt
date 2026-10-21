@@ -214,7 +214,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         Log.d("InkRead", "dispatchKeyEvent: code=${event.keyCode} action=${event.action} repeat=${event.repeatCount}")
-        if (settingsProvider.settings.einkMode.isEInkMode()) {
+        if (settingsProvider.settings.einkMode.isEInkMode() && VolumeKeyEventBus.hasActiveConsumer()) {
             when (event.keyCode) {
                 KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_UP -> {
                     if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
@@ -234,7 +234,7 @@ class MainActivity : AppCompatActivity() {
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         // Volume keys are already handled in dispatchKeyEvent; just consume them
         // here to prevent any fallthrough (e.g. from WebView focus stealing).
-        if (settingsProvider.settings.einkMode.isEInkMode()) {
+        if (settingsProvider.settings.einkMode.isEInkMode() && VolumeKeyEventBus.hasActiveConsumer()) {
             when (keyCode) {
                 KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_UP -> return true
             }
@@ -243,7 +243,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
-        if (settingsProvider.settings.einkMode.isEInkMode()) {
+        if (settingsProvider.settings.einkMode.isEInkMode() && VolumeKeyEventBus.hasActiveConsumer()) {
             when (keyCode) {
                 KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_UP -> return true
             }

@@ -32,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -46,6 +47,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import me.ash.reader.R
+import java.text.NumberFormat
 
 /** Article-list navigation lives in the existing masthead count, never over the reading pane. */
 @Composable
@@ -58,6 +60,7 @@ fun EInkArticlePageControl(
     modifier: Modifier = Modifier,
     lastSyncTime: Long? = null,
     navigationKey: Any? = null,
+    compactCount: Boolean = false,
 ) {
     // A replacement feed/filter must not inherit the old feed's open controls.
     var expanded by remember(navigationKey) { mutableStateOf(false) }
@@ -85,7 +88,9 @@ fun EInkArticlePageControl(
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
-            text = stringResource(R.string.articles_count, articleCount),
+            text = if (compactCount) {
+                NumberFormat.getIntegerInstance(LocalConfiguration.current.locales[0]).format(articleCount)
+            } else stringResource(R.string.articles_count, articleCount),
             modifier = Modifier.clearAndSetSemantics { },
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Bold,

@@ -85,7 +85,7 @@ jobs:
           cat > release-notes.md <<EOF_NOTES
           Built by GitHub Actions from commit ${{ github.sha }}.
 
-          InkRead $VERSION replaces the permanent e-ink article pagination strip with a compact count/page control in the newspaper header. Tap it for navigation when needed; otherwise stories use the reclaimed space down to Android's safe inset. Newspaper mosaics remain responsive to pane width, font size and saved presets, with stable source ordering as photos load. Image discovery, static gestures and validated read-state safeguards are retained.
+          InkRead $VERSION fits complete newspaper preview blocks to the actual available screen instead of dividing articles into fixed-count slices. A single compact article header preserves category, count and actions without the redundant brand bar. Reader return retains the active edition and page even when read articles disappear from the unread query. Folder and subscription pages use editorial section blocks with measured page boundaries, real counts and separate open/expand actions. Page, reader and volume-key gestures are guarded against interrupted interactions; forward-page read marking is limited to the articles actually displayed. Images, saved phone/tablet presets and animation-free operation are retained.
 
           Uses the existing application ID and repository signing identity. No database migration is required. Native Android emulator tests cover narrow and tablet reading flows; physical BOOX refresh behavior still needs device verification.
           EOF_NOTES

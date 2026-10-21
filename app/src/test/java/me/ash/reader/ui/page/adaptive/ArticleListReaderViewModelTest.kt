@@ -1,6 +1,7 @@
 package me.ash.reader.ui.page.adaptive
 
 import androidx.lifecycle.ViewModelStore
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.paging.ItemSnapshotList
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
@@ -27,6 +28,8 @@ import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withContext
 import me.ash.reader.domain.data.ArticlePagingListUseCase
 import me.ash.reader.domain.data.FilterState
+import me.ash.reader.domain.data.Diff
+import me.ash.reader.domain.data.DiffMapHolder
 import me.ash.reader.domain.data.FilterStateUseCase
 import me.ash.reader.domain.data.GroupWithFeedsListUseCase
 import me.ash.reader.domain.data.PagerData
@@ -35,6 +38,7 @@ import me.ash.reader.domain.model.article.ArticleFlowItem
 import me.ash.reader.domain.model.article.ArticleWithFeed
 import me.ash.reader.domain.model.feed.Feed
 import me.ash.reader.domain.model.group.GroupWithFeed
+import me.ash.reader.domain.model.general.MarkAsReadConditions
 import me.ash.reader.domain.service.AbstractRssRepository
 import me.ash.reader.domain.service.RssService
 import me.ash.reader.domain.service.SyncWorker
@@ -46,6 +50,7 @@ import org.junit.Before
 import org.junit.Test
 import org.mockito.invocation.InvocationOnMock
 import org.mockito.kotlin.any
+import org.mockito.kotlin.doAnswer
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.verify
@@ -186,6 +191,105 @@ class ArticleListReaderViewModelTest {
         assertEquals(ReaderState.FullContent("ready A"), fixture.viewModel.readerStateStateFlow.value.content)
     }
 
+    @Test fun `reader retains neighbours when current unread article disappears`() = runTest(dispatcher) {
+        val a = article("A")
+        val b = article("B")
+        val c = article("C")
+        val fixture = fixture(a, b, c)
+        fixture.viewModel.initData(b.article.id, 1)
+        runCurrent()
+        whenever(fixture.paging.itemSnapshotList).thenReturn(ItemSnapshotList(
+            placeholdersBefore = 0, placeholdersAfter = 0,
+            items = listOf(a, c).map { ArticleFlowItem.Article(it) },
+        ))
+
+        // Its old index now names C, but opening B must still resolve B by identity.
+        fixture.viewModel.initData(b.article.id, 1)
+        runCurrent()
+        val state = fixture.viewModel.readerStateStateFlow.value
+        assertEquals(b.article.id, state.articleId)
+        assertEquals(a.article.id, state.previousArticle?.articleId)
+        assertEquals(c.article.id, state.nextArticle?.articleId)
+        assertEquals(2, state.articleOrdinal)
+        assertEquals(3, state.totalArticleCount)
+        verify(fixture.repository, never()).findArticleById(b.article.id)
+
+        fixture.viewModel.initData(c.article.id, state.nextArticle?.index)
+        runCurrent()
+        assertEquals(b.article.id, fixture.viewModel.readerStateStateFlow.value.previousArticle?.articleId)
+    }
+
+    @Test fun `loading claims requested reader identity before suspended lookup`() = runTest(dispatcher) {
+        val a = article("A")
+        val fixture = fixture()
+        val lookup = CompletableDeferred<ArticleWithFeed?>()
+        whenever(fixture.repository.findArticleById(a.article.id)).thenSuspend { lookup.await() }
+        fixture.viewModel.initData(a.article.id)
+        assertEquals(a.article.id, fixture.viewModel.readerStateStateFlow.value.articleId)
+        assertEquals(ReaderState.Loading, fixture.viewModel.readerStateStateFlow.value.content)
+        assertNull(fixture.viewModel.readingUiState.value.articleWithFeed)
+        fixture.viewModel.updateReadStatus(false) // A loading toolbar must be a safe no-op.
+        runCurrent()
+        lookup.complete(a)
+        runCurrent()
+    }
+
+    @Test fun `retained edition seeds neighbours when reopening a story removed from unread`() = runTest(dispatcher) {
+        val a = article("A")
+        val b = article("B")
+        val c = article("C")
+        val fixture = fixture(c)
+        fixture.viewModel.captureReaderSequence(fixture.paging.pagerFlow.value.pager,
+            listOf(a, b, c).map { ArticleFlowItem.Article(it) })
+        fixture.viewModel.initData(b.article.id, 1)
+        runCurrent()
+        val state = fixture.viewModel.readerStateStateFlow.value
+        assertEquals(b.article.id, state.articleId)
+        assertEquals(a.article.id, state.previousArticle?.articleId)
+        assertEquals(c.article.id, state.nextArticle?.articleId)
+        assertEquals(2, state.articleOrdinal)
+        verify(fixture.repository, never()).findArticleById(b.article.id)
+    }
+
+    @Test fun `bulk database read action mirrors only its exact retained edition scope`() = runTest(dispatcher) {
+        val a = article("A")
+        val b = article("B").let { it.copy(feed = it.feed.copy(groupId = "other-group")) }
+        val fixture = fixture(a, b)
+        val edition = fixture.viewModel.newspaperViewportState
+        edition.acceptSnapshot(fixture.paging.pagerFlow.value.pager,
+            listOf(a, b).map { ArticleFlowItem.Article(it) })
+        fixture.viewModel.updateReadStatus(a.feed.groupId, null, null, MarkAsReadConditions.All, false)
+        assertEquals(false, edition.currentArticle(a).article.isUnread)
+        assertEquals(true, edition.currentArticle(b).article.isUnread)
+        runCurrent()
+        verify(fixture.repository).markAsRead(a.feed.groupId, null, null, null, false)
+    }
+
+    @Test fun `new bulk read reconciles an older pending unread only inside its edition scope`() = runTest(dispatcher) {
+        val a = article("A")
+        val b = article("B").let { it.copy(feed = it.feed.copy(groupId = "other-group")) }
+        val fixture = fixture(a, b)
+        val edition = fixture.viewModel.newspaperViewportState
+        edition.acceptSnapshot(fixture.paging.pagerFlow.value.pager,
+            listOf(a, b).map { ArticleFlowItem.Article(it) })
+        fixture.diffs.diffMap[a.article.id] = Diff(isUnread = true, articleWithFeed = a)
+        fixture.diffs.diffMap[b.article.id] = Diff(isUnread = true, articleWithFeed = b)
+        // DiffMapHolder removes an existing opposite diff when updateDiff supplies a value.
+        doAnswer {
+            fixture.diffs.diffMap.remove(a.article.id)
+            null
+        }.whenever(fixture.diffs).updateDiff(a, isUnread = false)
+
+        fixture.viewModel.updateReadStatus(a.feed.groupId, null, null, MarkAsReadConditions.All, false)
+        assertEquals(false, fixture.diffs.diffMap[a.article.id]?.isUnread ?: edition.currentArticle(a).article.isUnread)
+        assertEquals(false, edition.currentArticle(a).article.isUnread)
+        assertEquals(true, fixture.diffs.diffMap[b.article.id]?.isUnread)
+        verify(fixture.diffs).updateDiff(a, isUnread = false)
+        verify(fixture.diffs, never()).updateDiff(b, isUnread = false)
+        runCurrent()
+        verify(fixture.repository).markAsRead(a.feed.groupId, null, null, null, false)
+    }
+
     private fun fixture(
         vararg articles: ArticleWithFeed,
         applicationScheduler: TestCoroutineScheduler = dispatcher.scheduler,
@@ -197,6 +301,8 @@ class ArticleListReaderViewModelTest {
         val groups: GroupWithFeedsListUseCase = mock()
         val filters: FilterStateUseCase = mock()
         val workManager: WorkManager = mock()
+        val diffs: DiffMapHolder = mock()
+        whenever(diffs.diffMap).thenReturn(mutableStateMapOf())
         whenever(rssService.get()).thenReturn(repository)
         whenever(paging.pagerFlow).thenReturn(MutableStateFlow(PagerData()))
         whenever(paging.itemSnapshotList).thenReturn(ItemSnapshotList(
@@ -219,7 +325,7 @@ class ArticleListReaderViewModelTest {
             rssService = rssService,
             ioDispatcher = applicationDispatcher,
             applicationScope = applicationScope,
-            diffMapHolder = mock(),
+            diffMapHolder = diffs,
             filterStateUseCase = filters,
             groupWithFeedsListUseCase = groups,
             settingsProvider = mock(),
@@ -230,7 +336,7 @@ class ArticleListReaderViewModelTest {
             workManager = workManager,
         )
         stores += ViewModelStore().apply { put("reader", viewModel) }
-        return Fixture(viewModel, cache, repository)
+        return Fixture(viewModel, cache, repository, paging, diffs)
     }
 
     private fun article(name: String, fullContent: Boolean = false): ArticleWithFeed = ArticleWithFeed(
@@ -248,6 +354,8 @@ class ArticleListReaderViewModelTest {
         val viewModel: ArticleListReaderViewModel,
         val cache: ReaderCacheHelper,
         val repository: AbstractRssRepository,
+        val paging: ArticlePagingListUseCase,
+        val diffs: DiffMapHolder,
     )
 
     // Mockito strips the final continuation from ordinary arguments. Resume the raw

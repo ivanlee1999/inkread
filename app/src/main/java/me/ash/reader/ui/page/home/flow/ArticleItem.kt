@@ -4,7 +4,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -18,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.FiberManualRecord
@@ -57,6 +57,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -87,6 +88,7 @@ import me.ash.reader.ui.component.menu.AnimatedDropdownMenu
 import me.ash.reader.ui.ext.requiresBidi
 import me.ash.reader.ui.ext.surfaceColorAtElevation
 import me.ash.reader.ui.layout.resolveArticleImageHeightDp
+import me.ash.reader.ui.page.home.reading.readerArticleSwipe
 import me.ash.reader.ui.page.settings.color.flow.generateArticleWithFeedPreview
 import me.ash.reader.ui.theme.applyTextDirection
 import me.ash.reader.ui.theme.palette.onDark
@@ -96,9 +98,13 @@ fun ArticleItem(
     modifier: Modifier = Modifier,
     articleWithFeed: ArticleWithFeed,
     isUnread: Boolean = articleWithFeed.article.isUnread,
+    emphasizeUnread: Boolean? = null,
     feedUnreadCount: Int = 0,
     isLead: Boolean = false,
     storyStyle: NewspaperStoryStyle = NewspaperStoryStyle.Standard,
+    preview: NewspaperPreview? = null,
+    previewHeight: Dp = Dp.Unspecified,
+    measurementOnly: Boolean = false,
     onClick: (ArticleWithFeed) -> Unit = {},
     onLongClick: (() -> Unit)? = null,
 ) {
@@ -108,7 +114,7 @@ fun ArticleItem(
     // Saved feed HTML/JSON can be substantial. Parse it away from the UI thread, and scope the
     // work to this exact visible article and image preference. A changed key cancels the old
     // producer, so disabling images cannot publish stale candidates or start a late lookup.
-    val image = key(imagesEnabled, article.img, article.rawDescription, article.link) {
+    val image = if (measurementOnly) null else key(imagesEnabled, article.img, article.rawDescription, article.link) {
         val request by produceState<Any?>(initialValue = null) {
             if (imagesEnabled) {
                 value = withContext(Dispatchers.Default) {
@@ -126,6 +132,11 @@ fun ArticleItem(
         feedUnreadCount = feedUnreadCount,
         isLead = isLead,
         storyStyle = storyStyle,
+        preview = preview,
+        previewHeight = previewHeight,
+        measurementOnly = measurementOnly,
+        reserveImage = preview != null && (!article.img.isNullOrBlank() || article.link.startsWith("http", ignoreCase = true) || (article.rawDescription.contains("<img", ignoreCase = true) || article.rawDescription.contains("image", ignoreCase = true) || article.rawDescription.contains("<enclosure", ignoreCase = true))),
+        emphasizeUnread = emphasizeUnread,
         title = article.title,
         shortDescription = article.shortDescription,
         timeString = article.dateString,
@@ -146,6 +157,11 @@ fun ArticleItem(
     feedUnreadCount: Int = 0,
     isLead: Boolean = false,
     storyStyle: NewspaperStoryStyle = NewspaperStoryStyle.Standard,
+    preview: NewspaperPreview? = null,
+    previewHeight: Dp = Dp.Unspecified,
+    measurementOnly: Boolean = false,
+    reserveImage: Boolean = false,
+    emphasizeUnread: Boolean? = null,
     title: String = "",
     shortDescription: String = "",
     timeString: String? = null,
@@ -163,13 +179,16 @@ fun ArticleItem(
     val articleListReadIndicator = LocalFlowArticleListReadIndicator.current
 
     val showReadIndicator = articleListReadIndicator != FlowArticleReadIndicatorPreference.None
-    val showImage = articleListImage.value && imgData != null &&
-        (imgData !is String || imgData.isNotBlank())
-    val showSource = articleListFeedIcon.value || articleListFeedName.value ||
-        isStarred || (showReadIndicator && isUnread)
+    val showImage = articleListImage.value &&
+        preview != NewspaperPreview.Minimal && preview != NewspaperPreview.HeadlineOnly &&
+        (if (preview != null) reserveImage else (imgData != null && (imgData !is String || imgData.isNotBlank())))
+    val showSource = preview != NewspaperPreview.HeadlineOnly &&
+        (preview != null || articleListFeedIcon.value || articleListFeedName.value || isStarred ||
+            (showReadIndicator && (isUnread || preview != null)))
     // An editorial block, not a dashboard card. The list owns the rules between rows.
-    // No fixed text height: large type and longer headlines remain reachable by scrolling.
-    BoxWithConstraints(modifier.fillMaxWidth().combinedClickable(
+    // Paged previews have whole-line limits; continuous mode keeps unbounded headlines.
+    BoxWithConstraints(modifier.fillMaxWidth()
+        .then(if (preview != null) Modifier.heightIn(min = 48.dp) else Modifier).combinedClickable(
         interactionSource = remember { MutableInteractionSource() },
         indication = null,
         role = Role.Button,
@@ -179,13 +198,14 @@ fun ArticleItem(
         val compactColumn = !isLead && maxWidth < 220.dp * textScale
         val isFeature = isLead || storyStyle == NewspaperStoryStyle.Feature
         val isBrief = storyStyle == NewspaperStoryStyle.Brief
-        val showDescription = articleListDesc != FlowArticleListDescPreference.NONE && shortDescription.isNotBlank()
+        val showDescription = preview != NewspaperPreview.Minimal && preview != NewspaperPreview.HeadlineOnly &&
+            articleListDesc != FlowArticleListDescPreference.NONE && shortDescription.isNotBlank()
         val sidePhoto = isFeature && showDescription && maxWidth >= 280.dp * textScale
         val wideLead = isLead && maxWidth >= 600.dp * textScale
         val description: @Composable () -> Unit = {
             if (showDescription) {
                 Text(
-                    modifier = Modifier.testTag("article-description"),
+                    modifier = Modifier.then(if (measurementOnly) Modifier else Modifier.testTag("article-description")),
                     text = shortDescription,
                     color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.bodyMedium.copy(
@@ -193,7 +213,7 @@ fun ArticleItem(
                         lineHeight = if (wideLead) 24.sp else if (isLead) 21.sp else 20.sp,
                     ).applyTextDirection(shortDescription.requiresBidi()),
                     fontFamily = FontFamily.Serif,
-                    maxLines = if (articleListDesc == FlowArticleListDescPreference.LONG) {
+                    maxLines = if (preview == NewspaperPreview.Compact) 2 else if (articleListDesc == FlowArticleListDescPreference.LONG) {
                         if (isLead) 6 else if (isBrief) 3 else 5
                     } else {
                         if (isLead) 4 else if (isBrief) 2 else 3
@@ -203,20 +223,30 @@ fun ArticleItem(
             }
         }
         Column(
-            modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 12.dp),
+            modifier = Modifier.fillMaxWidth().padding(
+                top = if (preview == NewspaperPreview.HeadlineOnly) 0.dp else 10.dp,
+                bottom = if (preview == NewspaperPreview.HeadlineOnly) 0.dp else 12.dp),
             verticalArrangement = Arrangement.spacedBy(if (isLead) 8.dp else 6.dp),
         ) {
             // The reference is a newspaper, not a photo feed: the headline always comes first.
             Text(
-                modifier = Modifier.testTag("article-headline").semantics { heading() },
+                modifier = Modifier.then(if (measurementOnly) Modifier else Modifier.testTag("article-headline")).semantics { heading() },
                 text = title,
                 color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.titleLarge.copy(
-                    fontSize = when { wideLead -> 34.sp; isLead -> 27.sp; isFeature -> 24.sp; compactColumn -> 18.sp; else -> 21.sp },
-                    lineHeight = when { wideLead -> 39.sp; isLead -> 31.sp; isFeature -> 29.sp; compactColumn -> 23.sp; else -> 26.sp },
+                    fontSize = when { preview == NewspaperPreview.HeadlineOnly -> 18.sp; wideLead -> 34.sp; isLead -> 27.sp; isFeature -> 24.sp; compactColumn -> 18.sp; else -> 21.sp },
+                    lineHeight = when { preview == NewspaperPreview.HeadlineOnly -> 23.sp; wideLead -> 39.sp; isLead -> 31.sp; isFeature -> 29.sp; compactColumn -> 23.sp; else -> 26.sp },
                 ).applyTextDirection(title.requiresBidi()),
                 fontFamily = FontFamily.Serif,
-                fontWeight = if (isUnread || isLead) FontWeight.Bold else FontWeight.Medium,
+                fontWeight = if ((emphasizeUnread ?: isUnread) || isLead) FontWeight.Bold else FontWeight.Medium,
+                maxLines = when (preview) {
+                    NewspaperPreview.Full -> if (isLead) 5 else 4
+                    NewspaperPreview.Compact -> 3
+                    NewspaperPreview.Minimal -> 2
+                    NewspaperPreview.HeadlineOnly -> 1
+                    null -> Int.MAX_VALUE
+                },
+                overflow = TextOverflow.Ellipsis,
             )
             // A compact source line replaces card chrome. It uses real feed metadata only.
             if (showSource) {
@@ -226,7 +256,8 @@ fun ArticleItem(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     if (articleListFeedIcon.value) {
-                        FeedIcon(feedName = feedName, iconUrl = feedIconUrl, animate = false)
+                        if (measurementOnly) Spacer(Modifier.size(20.dp))
+                        else FeedIcon(feedName = feedName, iconUrl = feedIconUrl, animate = false)
                     }
                     if (articleListFeedName.value) {
                         Text(
@@ -235,11 +266,13 @@ fun ArticleItem(
                             color = MaterialTheme.colorScheme.onSurface,
                             style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp, lineHeight = 16.sp),
                             fontWeight = FontWeight.Bold,
-                            maxLines = 2,
+                            maxLines = if (preview != null) 1 else 2,
                             overflow = TextOverflow.Ellipsis,
                         )
                     } else Spacer(Modifier.weight(1f))
                     if (isStarred) StarredIcon()
+                    else if (preview != null) Spacer(Modifier.size(with(LocalDensity.current) { LocalTextStyle.current.fontSize.toDp() }))
+                    if (showReadIndicator && !isUnread && preview != null) Spacer(Modifier.size(10.dp))
                     if (showReadIndicator && isUnread) {
                         Icon(
                             imageVector = Icons.Outlined.FiberManualRecord,
@@ -252,20 +285,23 @@ fun ArticleItem(
             }
             if (sidePhoto && showImage) {
                 Row(
-                    Modifier.fillMaxWidth().testTag(if (isLead) "article-lead-body" else "article-feature-body"),
+                    Modifier.fillMaxWidth().then(if (measurementOnly) Modifier else Modifier.testTag(if (isLead) "article-lead-body" else "article-feature-body")),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.Top,
                 ) {
                     Box(Modifier.weight(0.58f)) { description() }
-                    Box(Modifier.weight(0.42f)) { ArticlePhoto(data = imgData, isLead = isLead) }
+                    Box(Modifier.weight(0.42f)) { ArticlePhoto(data = imgData, isLead = isLead, compact = preview == NewspaperPreview.Compact, measurementOnly = measurementOnly, stableGeometry = preview != null) }
                 }
             } else {
                 description()
-                if (showImage) ArticlePhoto(data = imgData, isLead = isLead, isBrief = isBrief)
+                if (showImage) ArticlePhoto(data = imgData, isLead = isLead, isBrief = isBrief, compact = preview == NewspaperPreview.Compact, measurementOnly = measurementOnly, stableGeometry = preview != null)
             }
-            if (articleListDate.value && !timeString.isNullOrBlank()) {
+            if (preview != NewspaperPreview.HeadlineOnly && articleListDate.value && !timeString.isNullOrBlank()) {
                 Text(
+                    modifier = Modifier.then(if (measurementOnly) Modifier else Modifier.testTag("article-time")),
                     text = timeString,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.labelSmall.copy(fontSize = 12.sp, lineHeight = 16.sp),
                 )
@@ -275,18 +311,22 @@ fun ArticleItem(
 }
 
 @Composable
-private fun ArticlePhoto(data: Any?, isLead: Boolean, isBrief: Boolean = false) {
+private fun ArticlePhoto(data: Any?, isLead: Boolean, isBrief: Boolean = false, compact: Boolean = false, measurementOnly: Boolean = false, stableGeometry: Boolean = false) {
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val height = resolveArticleImageHeightDp(maxWidth.value, isLead).dp.let {
-            if (isBrief) it.coerceAtMost(96.dp) else it
+            if (compact) it.coerceAtMost(72.dp) else if (isBrief) it.coerceAtMost(96.dp) else it
         }
         val density = LocalDensity.current
         // Match the decoded image to the actual column, including high-density BOOX screens.
         val imageSize = with(density) {
             coil.size.Size(maxWidth.roundToPx().coerceAtLeast(1), height.roundToPx().coerceAtLeast(1))
         }
+        if (measurementOnly || data == null) {
+            Spacer(Modifier.fillMaxWidth().height(height).then(if (measurementOnly) Modifier else Modifier.testTag("article-photo")))
+            return@BoxWithConstraints
+        }
         RYAsyncImage(
-            modifier = Modifier.fillMaxWidth().height(height).testTag("article-photo"),
+            modifier = Modifier.fillMaxWidth().height(height).then(if (measurementOnly) Modifier else Modifier.testTag("article-photo")),
             data = data,
             scale = Scale.FILL,
             precision = Precision.INEXACT,
@@ -294,7 +334,7 @@ private fun ArticlePhoto(data: Any?, isLead: Boolean, isBrief: Boolean = false) 
             contentScale = ContentScale.Crop,
             // Preserve source colors for color e-ink displays; never animate editorial images.
             animate = false,
-            hideOnError = true,
+            hideOnError = !stableGeometry,
         )
     }
 }
@@ -318,9 +358,13 @@ fun StarredIcon(modifier: Modifier = Modifier) {
 fun SwipeableArticleItem(
     articleWithFeed: ArticleWithFeed,
     isUnread: Boolean = articleWithFeed.article.isUnread,
+    emphasizeUnread: Boolean? = null,
     feedUnreadCount: Int = 0,
     isLead: Boolean = false,
     storyStyle: NewspaperStoryStyle = NewspaperStoryStyle.Standard,
+    preview: NewspaperPreview? = null,
+    previewHeight: Dp = Dp.Unspecified,
+    measurementOnly: Boolean = false,
     articleListTonalElevation: Int = 0,
     onClick: (ArticleWithFeed) -> Unit = {},
     isSwipeEnabled: () -> Boolean = { true },
@@ -344,7 +388,7 @@ fun SwipeableArticleItem(
 
     SwipeActionBox(
         articleWithFeed = articleWithFeed,
-        isSwipeEnabled = isSwipeEnabled,
+        isSwipeEnabled = { !isMenuExpanded && isSwipeEnabled() },
         onToggleStarred = onToggleStarred,
         onToggleRead = onToggleRead,
     ) {
@@ -370,9 +414,13 @@ fun SwipeableArticleItem(
             ArticleItem(
                 articleWithFeed = articleWithFeed,
                 isUnread = isUnread,
+                emphasizeUnread = emphasizeUnread,
                 feedUnreadCount = feedUnreadCount,
                 isLead = isLead,
                 storyStyle = storyStyle,
+                preview = preview,
+                previewHeight = previewHeight,
+                measurementOnly = measurementOnly,
                 onClick = onClick,
                 onLongClick = onLongClick,
             )
@@ -435,28 +483,19 @@ private fun SwipeActionBox(
         return
     }
 
-    val threshold = with(LocalDensity.current) { 60.dp.toPx() }
     val direction = if (LocalLayoutDirection.current == LayoutDirection.Rtl) -1f else 1f
-    // Preserve configured swipe shortcuts without translating cards, ripples, or spring reset.
-    Box(modifier.pointerInput(articleWithFeed, onSwipeStartToEnd, onSwipeEndToStart, threshold, direction) {
-        var distance = 0f
-        detectHorizontalDragGestures(
-            onDragStart = { distance = 0f },
-            onDragCancel = { distance = 0f },
-            onDragEnd = {
-                when {
-                    !isSwipeEnabled() -> Unit
-                    distance * direction > threshold -> onSwipeStartToEnd?.invoke(articleWithFeed)
-                    distance * direction < -threshold -> onSwipeEndToStart?.invoke(articleWithFeed)
-                }
-                distance = 0f
-            },
-            onHorizontalDrag = { change, amount ->
-                change.consume()
-                distance += amount
-            },
-        )
-    }) { content() }
+    val physicalRight = if (direction > 0f) onSwipeStartToEnd else onSwipeEndToStart
+    val physicalLeft = if (direction > 0f) onSwipeEndToStart else onSwipeStartToEnd
+    // Keep the user's exact 60dp start/end actions, but share cancellation/OS-edge safety
+    // with the reader. Neither a second pointer nor a menu-open drag can mutate a story.
+    Box(modifier.readerArticleSwipe(
+        gestureKey = listOf(articleWithFeed, swipeToStartAction, swipeToEndAction, direction),
+        enabled = true,
+        onPrevious = physicalRight?.let { action -> { action(articleWithFeed) } },
+        onNext = physicalLeft?.let { action -> { action(articleWithFeed) } },
+        thresholdDp = 60.dp,
+        isGestureEnabled = isSwipeEnabled,
+    )) { content() }
 
 }
 

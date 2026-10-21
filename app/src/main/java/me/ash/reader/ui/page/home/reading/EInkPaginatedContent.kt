@@ -11,9 +11,6 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,8 +34,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -76,7 +71,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
 
@@ -100,6 +94,8 @@ fun EInkPaginatedContent(
     onNavigateToStylePage: (() -> Unit)? = null,
     currentArticleIndex: Int? = null,
     totalArticleCount: Int? = null,
+    reserveVolumeKeys: Boolean = true,
+    volumeKeyOwner: Any? = null,
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -133,8 +129,6 @@ fun EInkPaginatedContent(
     var lastLoadedHtmlKey by remember { mutableStateOf("") }
 
     var showBoundaryText by remember { mutableStateOf<String?>(null) }
-    val density = LocalDensity.current
-    val articleSwipeThreshold = remember(density) { with(density) { 56.dp.toPx() } }
 
     // Bottom bar auto-hide state
     var bottomBarVisible by rememberSaveable { mutableStateOf(false) }
@@ -202,9 +196,14 @@ fun EInkPaginatedContent(
     // Register as HIGH-priority volume key consumer so that when the article
     // (ReadingPage) is visible it receives events exclusively, preventing the
     // FlowPage (list) from also reacting in two-pane layouts.
-    val volumeKeyFlow = remember { VolumeKeyEventBus.register(VolumeKeyPriority.HIGH) }
-    DisposableEffect(Unit) {
-        onDispose { VolumeKeyEventBus.unregister(VolumeKeyPriority.HIGH) }
+    val localVolumeKeyOwner = remember(articleId) { Any() }
+    val owner = volumeKeyOwner ?: localVolumeKeyOwner
+    val volumeKeyFlow = remember(owner) { VolumeKeyEventBus.events(VolumeKeyPriority.HIGH, owner) }
+    DisposableEffect(reserveVolumeKeys, owner) {
+        if (reserveVolumeKeys) VolumeKeyEventBus.register(VolumeKeyPriority.HIGH, owner)
+        onDispose {
+            if (reserveVolumeKeys) VolumeKeyEventBus.unregister(VolumeKeyPriority.HIGH, owner)
+        }
     }
     val documentGeneration = remember(articleId, link, content, einkFontSize, einkEnglishFont, einkChineseFont,
         englishFontFilePath, chineseFontFilePath, title, feedName, author, publishedDate,
@@ -277,9 +276,9 @@ fun EInkPaginatedContent(
         totalPages = navController.totalPages
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(volumeKeyFlow) {
         volumeKeyFlow.collect { event ->
-            if (VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.HIGH)) {
+            if (VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.HIGH, owner)) {
                 Log.d("InkRead", "Volume key event received: $event")
                 when (event) {
                     VolumeKeyEvent.NEXT -> nextPage()
@@ -445,52 +444,17 @@ fun EInkPaginatedContent(
             Row(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(Unit) {
-                        // Use awaitEachGesture so each gesture starts fresh.
-                        // Only consume events after touch slop is crossed as a horizontal drag —
-                        // this lets child clickable tap zones still receive short taps for page turning.
-                        awaitEachGesture {
-                            val down = awaitFirstDown(requireUnconsumed = false)
-                            // Do NOT consume the down yet — let child clickables see it too.
-                            var totalDragX = 0f
-                            var totalDragY = 0f
-                            var isDragConfirmed = false
-                            var pointer = down
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                val dragChange = event.changes.firstOrNull { it.id == down.id } ?: break
-                                if (!dragChange.pressed) break // finger lifted
-                                val delta = dragChange.positionChange()
-                                totalDragX += delta.x
-                                totalDragY += delta.y
-                                if (!isDragConfirmed) {
-                                    val distX = kotlin.math.abs(totalDragX)
-                                    val distY = kotlin.math.abs(totalDragY)
-                                    if (distX > viewConfiguration.touchSlop && distX > distY * 1.2f) {
-                                        // Confirmed horizontal drag — now start consuming
-                                        isDragConfirmed = true
-                                    } else if (distY > viewConfiguration.touchSlop && distY > distX * 2f) {
-                                        // Clearly vertical intent — bail out, let child handle it
-                                        break
-                                    }
-                                }
-                                if (isDragConfirmed) {
-                                    dragChange.consume()
-                                }
-                            }
-                            // Gesture ended — switch article if pagination is ready or
-                            // page count is known (totalPages > 0 means JS ran successfully)
-                            if (isDragConfirmed && (isInitialPaginationReady || totalPages > 0)) {
-                                if (totalDragX < -articleSwipeThreshold && currentOnNextArticle != null) {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    currentOnNextArticle?.invoke()
-                                } else if (totalDragX > articleSwipeThreshold && currentOnPrevArticle != null) {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    currentOnPrevArticle?.invoke()
-                                }
-                            }
-                        }
-                    },
+                    .readerArticleSwipe(
+                        gestureKey = documentGeneration to currentPage,
+                        enabled = isInitialPaginationReady || totalPages > 0,
+                        consumeRejectedVertical = true,
+                        onPrevious = currentOnPrevArticle?.let { action ->
+                            { haptic.performHapticFeedback(HapticFeedbackType.LongPress); action() }
+                        },
+                        onNext = currentOnNextArticle?.let { action ->
+                            { haptic.performHapticFeedback(HapticFeedbackType.LongPress); action() }
+                        },
+                    ),
             ) {
                 Box(
                     modifier = Modifier
