@@ -7,7 +7,7 @@ on:
     paths:
       - '.github/workflows/responsiveness-profile.yml'
       - 'app/build.gradle.kts'
-      - 'app/performance.gradle.kts'
+      - 'app/performance.gradle'
       - 'app/src/performance/**'
       - 'app/src/main/java/me/ash/reader/ui/**'
       - 'app/src/main/java/me/ash/reader/domain/data/**'

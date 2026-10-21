@@ -1,0 +1,16 @@
+// Applied only with -PenablePerformanceHarness=true. Never modifies the shipping release.
+// Groovy uses the existing Android extension without a separate script AGP compile classpath.
+android {
+    buildTypes {
+        performance {
+            initWith release
+            matchingFallbacks = ['release']
+            debuggable false
+            minifyEnabled true
+            shrinkResources true
+            applicationIdSuffix '.performance'
+            // Disposable fixture APK. No release credentials are needed by this variant.
+            signingConfig signingConfigs.debug
+        }
+    }
+}

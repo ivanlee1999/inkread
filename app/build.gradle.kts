@@ -210,5 +210,5 @@ dependencies {
 
 // Opt-in native performance fixture. The shipping release source set is unchanged.
 if (providers.gradleProperty("enablePerformanceHarness").orNull == "true") {
-    apply(from = "performance.gradle.kts")
+    apply(from = "performance.gradle")
 }

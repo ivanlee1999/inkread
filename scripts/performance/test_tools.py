@@ -98,7 +98,7 @@ class HarnessTest(unittest.TestCase):
             second = overlay.overlay(source, target)
             self.assertEqual(first, second)
             self.assertEqual((target / "app/src/main/sentinel").read_text(), "target")
-            self.assertEqual((target / "app/build.gradle.kts").read_text().count('apply(from = "performance.gradle.kts")'), 1)
+            self.assertEqual((target / "app/build.gradle.kts").read_text().count('apply(from = "performance.gradle")'), 1)
             # Reject untracked production additions before writing anything.
             (target / "app/src/main/untracked").write_text("not committed")
             with self.assertRaises(SystemExit):
@@ -111,6 +111,12 @@ class HarnessTest(unittest.TestCase):
                 overlay.overlay(source, target)
             subprocess.run(["git", "-C", str(target), "restore", "--staged", "--worktree", "app/src/main/sentinel"], check=True)
             (target / "app/build.gradle.kts").write_text("untrusted build modification")
+            with self.assertRaises(SystemExit):
+                overlay.overlay(source, target)
+            # An old committed applied-Kotlin hook must not silently coexist with Groovy.
+            (target / "app/build.gradle.kts").write_text('apply(from = "performance.gradle.kts")\n')
+            subprocess.run(["git", "-C", str(target), "add", "app/build.gradle.kts"], check=True)
+            subprocess.run(["git", "-C", str(target), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "legacy hook"], check=True)
             with self.assertRaises(SystemExit):
                 overlay.overlay(source, target)
 

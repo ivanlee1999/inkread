@@ -8,10 +8,10 @@ import sys
 
 HOOK = '''\n// Opt-in native performance fixture. The shipping release source set is unchanged.
 if (providers.gradleProperty("enablePerformanceHarness").orNull == "true") {
-    apply(from = "performance.gradle.kts")
+    apply(from = "performance.gradle")
 }
 '''
-FILES = ["app/performance.gradle.kts", "app/src/performance/AndroidManifest.xml",
+FILES = ["app/performance.gradle", "app/src/performance/AndroidManifest.xml",
          "app/src/performance/java/me/ash/reader/performance/PerformanceActivity.kt",
          "app/src/performance/java/me/ash/reader/performance/PerformanceFixture.kt"]
 
@@ -29,6 +29,8 @@ def overlay(source, target):
     build = target / "app/build.gradle.kts"
     committed_build = subprocess.check_output(["git", "-C", str(target), "show", "HEAD:app/build.gradle.kts"], text=True)
     if 'apply(from = "performance.gradle.kts")' in committed_build:
+        raise SystemExit("Legacy Kotlin performance hook is incompatible; update the target harness first")
+    if 'apply(from = "performance.gradle")' in committed_build:
         if HOOK.strip() not in committed_build:
             raise SystemExit("Existing performance hook differs; refusing an ambiguous overlay")
         expected_build = committed_build
