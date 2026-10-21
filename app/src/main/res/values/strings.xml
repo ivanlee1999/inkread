@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="inkread_brand" translatable="false">InkRead</string>
     <string name="read_you" translatable="false">Read You</string>
     <string name="all">All</string>
     <plurals name="all_desc">
@@ -400,11 +401,19 @@
 
     <!-- Responsive newspaper layout -->
     <string name="layout_preset">Layout preset</string>
-    <string name="layout_preset_description">For article lists and subscriptions. Columns adapt to the available window width and text size, including split-screen.</string>
+    <string name="layout_preset_description">Spacing for article lists, subscriptions, and folders. The separate Columns setting applies to every preset, including Phone.</string>
     <string name="layout_preset_auto">Auto</string>
     <string name="layout_preset_phone">Phone</string>
     <string name="layout_preset_tablet">Tablet</string>
-    <string name="layout_preset_auto_description">Automatically adapts to the available space.</string>
-    <string name="layout_preset_phone_description">Always use a single column.</string>
-    <string name="layout_preset_tablet_description">Prefer columns when there is enough room for readable text.</string>
+    <string name="layout_preset_auto_description">Adapt spacing to the available window, including split-screen.</string>
+    <string name="layout_preset_phone_description">Compact spacing with newspaper columns on phones and larger screens.</string>
+    <string name="layout_preset_tablet_description">Roomier spacing on wide windows; compact columns remain available on phones.</string>
+    <string name="reading_columns">Columns</string>
+    <string name="reading_columns_description">Shared by article lists, subscriptions, and folders. The lead article stays full width. Very narrow windows or large accessibility text may use one column to keep text readable.</string>
+    <string name="reading_columns_auto">Auto</string>
+    <string name="reading_columns_one">One column</string>
+    <string name="reading_columns_two">Two columns</string>
+    <string name="reading_columns_auto_description">Two-column phone editions and richer three- or four-column tablet blocks when text fits.</string>
+    <string name="reading_columns_one_description">One full-width column for every article and publication.</string>
+    <string name="reading_columns_two_description">Two columns on phones and tablets when text fits comfortably.</string>
 </resources>

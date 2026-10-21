@@ -53,6 +53,7 @@ fun Preferences.toSettings(): Settings {
 
         // Reading page
         readingLayoutPreset = ReadingLayoutPresetPreference.fromPreferences(this),
+        readingColumns = ReadingColumnsPreference.fromPreferences(this),
         readingRenderer = ReadingRendererPreference.fromPreferences(this),
         readingBoldCharacters = ReadingBoldCharactersPreference.fromPreferences(this),
         readingTheme = ReadingThemePreference.fromPreferences(this),

@@ -105,6 +105,7 @@ class SettingsProvider @Inject constructor(
 
             // Reading page
             LocalReadingLayoutPreset provides settings.readingLayoutPreset,
+            LocalReadingColumns provides settings.readingColumns,
             LocalReadingRenderer provides settings.readingRenderer,
             LocalReadingBoldCharacters provides settings.readingBoldCharacters,
             LocalReadingTheme provides settings.readingTheme,

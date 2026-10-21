@@ -7,16 +7,14 @@ import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -61,6 +59,7 @@ import androidx.work.WorkInfo
 import kotlin.collections.set
 import kotlinx.coroutines.launch
 import me.ash.reader.R
+import me.ash.reader.infrastructure.preference.LocalEInkMode
 import me.ash.reader.infrastructure.preference.LocalFeedsFilterBarPadding
 import me.ash.reader.infrastructure.preference.LocalFeedsFilterBarStyle
 import me.ash.reader.infrastructure.preference.LocalFeedsFilterBarTonalElevation
@@ -70,9 +69,10 @@ import me.ash.reader.infrastructure.preference.LocalFeedsTopBarTonalElevation
 import me.ash.reader.infrastructure.preference.LocalNewVersionNumber
 import me.ash.reader.infrastructure.preference.LocalSkipVersionNumber
 import me.ash.reader.ui.component.FilterBar
-import me.ash.reader.ui.component.base.DisplayText
+import me.ash.reader.ui.component.base.NewspaperMasthead
 import me.ash.reader.ui.component.base.FeedbackIconButton
 import me.ash.reader.ui.component.base.RYScaffold
+import me.ash.reader.ui.component.base.newspaperSwipeScroll
 import me.ash.reader.ui.component.scrollbar.drawVerticalScrollIndicator
 import me.ash.reader.ui.ext.collectAsStateValue
 import me.ash.reader.ui.ext.currentAccountId
@@ -104,6 +104,7 @@ fun FeedsPage(
     var accountTabVisible by remember { mutableStateOf(false) }
 
     val scope = rememberCoroutineScope()
+    val einkMode = LocalEInkMode.current.isEInkMode()
     val context = LocalContext.current
     val hapticFeedback = LocalHapticFeedback.current
     val topBarTonalElevation = LocalFeedsTopBarTonalElevation.current
@@ -134,11 +135,12 @@ fun FeedsPage(
     val owner = LocalLifecycleOwner.current
 
     var isSyncing by remember { mutableStateOf(false) }
-    val syncingState = rememberPullToRefreshState()
     val syncingScope = rememberCoroutineScope()
     val doSync: () -> Unit = {
-        isSyncing = true
-        syncingScope.launch { feedsViewModel.sync() }
+        if (!isSyncing) {
+            isSyncing = true
+            syncingScope.launch { feedsViewModel.sync() }
+        }
     }
 
     DisposableEffect(owner) {
@@ -179,6 +181,7 @@ fun FeedsPage(
     BackHandler(true) { context.findActivity()?.moveTaskToBack(false) }
 
     RYScaffold(
+        reserveBottomBarSpace = true,
         topBarTonalElevation = topBarTonalElevation.value.dp,
         //        containerTonalElevation = groupListTonalElevation.value.dp,
         topBar = {
@@ -195,7 +198,11 @@ fun FeedsPage(
                         indication = null,
                         interactionSource = remember { MutableInteractionSource() },
                     ),
-                title = {},
+                title = {
+                    if (einkMode && isSyncing) {
+                        Text(stringResource(R.string.syncing), style = MaterialTheme.typography.labelLarge)
+                    }
+                },
                 navigationIcon = {
                     FeedbackIconButton(
                         modifier = Modifier.size(20.dp),
@@ -228,13 +235,30 @@ fun FeedsPage(
             )
         },
         content = {
-            PullToRefreshBox(state = syncingState, isRefreshing = isSyncing, onRefresh = doSync) {
-                LazyColumn(modifier = Modifier.fillMaxSize().drawVerticalScrollIndicator(listState), state = listState) {
+            FeedsRefreshContainer(einkMode = einkMode, isSyncing = isSyncing, onRefresh = doSync) {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize()
+                        .newspaperSwipeScroll(
+                            listState,
+                            enabled = einkMode,
+                            onPreviousBoundary = doSync,
+                        )
+                        .drawVerticalScrollIndicator(listState),
+                    state = listState,
+                    contentPadding = PaddingValues(bottom = 16.dp),
+                    userScrollEnabled = !einkMode,
+                ) {
                     item {
-                        DisplayText(text = feedsUiState.account?.name ?: "", desc = "") {
-                            hapticFeedback.performHapticFeedback(HapticFeedbackType.ContextClick)
-                            accountTabVisible = true
-                        }
+                        NewspaperMasthead(
+                            title = feedsUiState.account?.name ?: "",
+                            modifier = Modifier.clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) {
+                                hapticFeedback.performHapticFeedback(HapticFeedbackType.ContextClick)
+                                accountTabVisible = true
+                            },
+                        )
                     }
                     item {
                         FeedsBanner(
@@ -247,7 +271,7 @@ fun FeedsPage(
                     }
 
                     item {
-                        Spacer(modifier = Modifier.height(24.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -265,14 +289,15 @@ fun FeedsPage(
                                     if (hasGroupVisible) collapseAllGroups() else expandAllGroups()
                                 },
                                 modifier = Modifier
-                                    .padding(end = 8.dp)
-                                    .size(28.dp),
+                                    .size(48.dp),
                             ) {
                                 Icon(
                                     imageVector =
                                         if (hasGroupVisible) Icons.Rounded.UnfoldLess
                                         else Icons.Rounded.UnfoldMore,
-                                    contentDescription = stringResource(R.string.unfold_less),
+                                    contentDescription = stringResource(
+                                        if (hasGroupVisible) R.string.unfold_less else R.string.unfold_more
+                                    ),
                                     tint = MaterialTheme.colorScheme.primary,
                                 )
                             }
@@ -289,6 +314,7 @@ fun FeedsPage(
                                 },
                                 group = group,
                                 important = groupImportant,
+                                feedCount = feeds.size,
                                 onExpanded = {
                                     groupsVisible[group.id] =
                                         groupsVisible
@@ -321,14 +347,6 @@ fun FeedsPage(
                                 }
                             }
                         }
-                    }
-
-                    item {
-                        Spacer(modifier = Modifier.height(128.dp))
-                        Spacer(
-                            modifier =
-                                Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars)
-                        )
                     }
                 }
             }
@@ -369,4 +387,26 @@ fun FeedsPage(
         },
         onDismissRequest = { accountTabVisible = false },
     )
+}
+
+/** E-ink uses a deliberate down-swipe at the top and static toolbar feedback, never a spinner. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FeedsRefreshContainer(
+    einkMode: Boolean,
+    isSyncing: Boolean,
+    onRefresh: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    if (einkMode) {
+        content()
+    } else {
+        PullToRefreshBox(
+            state = rememberPullToRefreshState(),
+            isRefreshing = isSyncing,
+            onRefresh = onRefresh,
+        ) {
+            content()
+        }
+    }
 }

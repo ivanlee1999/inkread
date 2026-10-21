@@ -32,6 +32,9 @@ jobs:
           - name: wide
             size: 800x1100
             width: 800
+          - name: broad-tablet
+            size: 1000x1200
+            width: 1000
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -57,6 +60,13 @@ jobs:
           set -euo pipefail
           adb shell wm size ${{ matrix.size }}
           adb shell wm density 160
+          # The google_apis image's Pixel Launcher can ANR and steal modal-window focus.
+          # Disable only that launcher in this disposable AVD; keep app Back tests unchanged.
+          if adb shell pm path com.google.android.apps.nexuslauncher | grep -q '^package:'; then
+            adb shell pm disable-user --user 0 com.google.android.apps.nexuslauncher
+            adb shell am force-stop com.google.android.apps.nexuslauncher
+            adb shell pm list packages -d | tr -d '\r' | grep -qx 'package:com.google.android.apps.nexuslauncher'
+          fi
           result=0
           ./gradlew --no-daemon --max-workers=2 connectedGithubDebugAndroidTest \
             -Pandroid.testInstrumentationRunnerArguments.class=me.ash.reader.ui.page.home.NewspaperUiTest \
@@ -71,7 +81,7 @@ jobs:
           destination = pathlib.Path("newspaper-screenshots")
           destination.mkdir(exist_ok=True)
           width = ${{ matrix.width }}
-          names = ("subscriptions", "articles", "articles-image-large-font", "articles-large-font-end", "photos-auto", "photos-phone", "photos-tablet", "photos-off", "photos-cached-offline")
+          names = ("subscriptions", "subscriptions-gestures", "folders", "folders-collapsed", "articles-footer-insets", "articles", "articles-end", "articles-image-large-font", "articles-large-font-end", "photos-auto", "photos-phone", "photos-tablet", "photos-off", "photos-cached-offline", "editorial-templates", "photos-alternate", "photos-missing")
           for name in names:
               filename = f"newspaper-{name}-{width}.png"
               matches = list(root.rglob(filename))
