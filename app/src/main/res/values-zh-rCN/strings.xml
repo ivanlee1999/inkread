@@ -368,4 +368,7 @@
     <string name="reading_columns_auto_description">手机使用双栏；平板在文字可读时使用三栏或四栏报纸版式。</string>
     <string name="reading_columns_one_description">每篇文章和订阅均使用通栏。</string>
     <string name="reading_columns_two_description">手机和平板优先使用双栏，同时保持文字清晰易读。</string>
+    <string name="article_page_controls">页面导航</string>
+    <string name="article_page_control_description">%1$d 篇文章。第 %2$d 页，共 %3$d 页。</string>
+    <string name="article_page_position">第 %1$d 页，共 %2$d 页</string>
 </resources>

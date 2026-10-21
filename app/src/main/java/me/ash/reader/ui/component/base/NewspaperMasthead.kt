@@ -19,13 +19,31 @@ import androidx.compose.ui.unit.sp
 
 /** Compact edition furniture using real screen context, never invented news or weather. */
 @Composable
-fun NewspaperMasthead(title: String, details: String? = null, modifier: Modifier = Modifier) {
+fun NewspaperMasthead(
+    title: String,
+    details: String? = null,
+    modifier: Modifier = Modifier,
+    detailsContent: (@Composable () -> Unit)? = null,
+) {
     val fontScale = LocalDensity.current.fontScale
     BoxWithConstraints(modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 16.dp)) {
         val wide = maxWidth.value >= 560f * fontScale
         Column(Modifier.testTag("newspaper-masthead")) {
             HorizontalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.onSurface)
-            if (wide && !details.isNullOrBlank()) {
+            if (detailsContent != null) {
+                // Interactive edition details replace the existing count, not a new header row.
+                // Keep a full touch target alongside the title even on a narrow article pane.
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = if (wide) 0.dp else 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    MastheadTitle(title, Modifier.weight(1f))
+                    Box(Modifier.widthIn(max = minOf(240.dp, maxWidth * 0.42f))) {
+                        detailsContent()
+                    }
+                }
+            } else if (wide && !details.isNullOrBlank()) {
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(20.dp)) {
