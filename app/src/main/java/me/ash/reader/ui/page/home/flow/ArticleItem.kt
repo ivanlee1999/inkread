@@ -104,6 +104,8 @@ fun ArticleItem(
     storyStyle: NewspaperStoryStyle = NewspaperStoryStyle.Standard,
     preview: NewspaperPreview? = null,
     previewHeight: Dp = Dp.Unspecified,
+    extraDescriptionLines: Int = 0,
+    extraHeadlineLines: Int = 0,
     measurementOnly: Boolean = false,
     onClick: (ArticleWithFeed) -> Unit = {},
     onLongClick: (() -> Unit)? = null,
@@ -134,6 +136,8 @@ fun ArticleItem(
         storyStyle = storyStyle,
         preview = preview,
         previewHeight = previewHeight,
+        extraDescriptionLines = extraDescriptionLines,
+        extraHeadlineLines = extraHeadlineLines,
         measurementOnly = measurementOnly,
         reserveImage = preview != null && (!article.img.isNullOrBlank() || article.link.startsWith("http", ignoreCase = true) || (article.rawDescription.contains("<img", ignoreCase = true) || article.rawDescription.contains("image", ignoreCase = true) || article.rawDescription.contains("<enclosure", ignoreCase = true))),
         emphasizeUnread = emphasizeUnread,
@@ -159,6 +163,8 @@ fun ArticleItem(
     storyStyle: NewspaperStoryStyle = NewspaperStoryStyle.Standard,
     preview: NewspaperPreview? = null,
     previewHeight: Dp = Dp.Unspecified,
+    extraDescriptionLines: Int = 0,
+    extraHeadlineLines: Int = 0,
     measurementOnly: Boolean = false,
     reserveImage: Boolean = false,
     emphasizeUnread: Boolean? = null,
@@ -213,11 +219,11 @@ fun ArticleItem(
                         lineHeight = if (wideLead) 24.sp else if (isLead) 21.sp else 20.sp,
                     ).applyTextDirection(shortDescription.requiresBidi()),
                     fontFamily = FontFamily.Serif,
-                    maxLines = if (preview == NewspaperPreview.Compact) 2 else if (articleListDesc == FlowArticleListDescPreference.LONG) {
+                    maxLines = (if (preview == NewspaperPreview.Compact) 2 else if (articleListDesc == FlowArticleListDescPreference.LONG) {
                         if (isLead) 6 else if (isBrief) 3 else 5
                     } else {
                         if (isLead) 4 else if (isBrief) 2 else 3
-                    },
+                    }) + if (preview != null) extraDescriptionLines.coerceIn(0, 24) else 0,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -241,7 +247,7 @@ fun ArticleItem(
                 fontWeight = if ((emphasizeUnread ?: isUnread) || isLead) FontWeight.Bold else FontWeight.Medium,
                 maxLines = when (preview) {
                     NewspaperPreview.Full -> if (isLead) 5 else 4
-                    NewspaperPreview.Compact -> 3
+                    NewspaperPreview.Compact -> 3 + extraHeadlineLines.coerceIn(0, if (isLead) 2 else 1)
                     NewspaperPreview.Minimal -> 2
                     NewspaperPreview.HeadlineOnly -> 1
                     null -> Int.MAX_VALUE
@@ -364,6 +370,8 @@ fun SwipeableArticleItem(
     storyStyle: NewspaperStoryStyle = NewspaperStoryStyle.Standard,
     preview: NewspaperPreview? = null,
     previewHeight: Dp = Dp.Unspecified,
+    extraDescriptionLines: Int = 0,
+    extraHeadlineLines: Int = 0,
     measurementOnly: Boolean = false,
     articleListTonalElevation: Int = 0,
     onClick: (ArticleWithFeed) -> Unit = {},
@@ -420,6 +428,8 @@ fun SwipeableArticleItem(
                 storyStyle = storyStyle,
                 preview = preview,
                 previewHeight = previewHeight,
+                extraDescriptionLines = extraDescriptionLines,
+                extraHeadlineLines = extraHeadlineLines,
                 measurementOnly = measurementOnly,
                 onClick = onClick,
                 onLongClick = onLongClick,

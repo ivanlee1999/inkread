@@ -77,3 +77,20 @@ internal fun newspaperRows(
 
 internal fun List<NewspaperRow>.rowForSourceIndex(index: Int): Int =
     indexOfFirst { index in it.indices }.coerceAtLeast(0)
+
+/** Bounded, viewport-only alternatives. The continuous edition keeps its editorial rhythm. */
+internal fun newspaperViewportTemplates(row: NewspaperRow, columns: Int): List<NewspaperRow> {
+    if (row.isDate || row.isLead) return listOf(row)
+    val lanes = columns.coerceIn(1, 4)
+    if (row.indices.size > lanes) return listOf(row)
+    val styles = row.slots.flatMap { slot -> slot.indices.map { it to slot.style } }.toMap()
+    val baseSpan = lanes / row.indices.size
+    val remainder = lanes % row.indices.size
+    val even = row.copy(slots = row.indices.mapIndexed { position, index ->
+        NewspaperSlot(listOf(index), baseSpan + if (position < remainder) 1 else 0,
+            styles.getValue(index))
+    })
+    // A partial last/date-bounded row has no neighboring stories to reserve lanes for.
+    // Do not let a shorter narrow photograph win by keeping the remaining columns empty.
+    return if (row.slots.sumOf { it.span } < lanes) listOf(even) else listOf(row, even).distinct()
+}

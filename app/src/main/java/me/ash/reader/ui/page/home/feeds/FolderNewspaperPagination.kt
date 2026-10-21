@@ -1,5 +1,10 @@
 package me.ash.reader.ui.page.home.feeds
 
+import me.ash.reader.ui.layout.OrderedPageChoice
+import me.ash.reader.ui.layout.OrderedPageGroup
+import me.ash.reader.ui.layout.orderedCompactPenalty
+import me.ash.reader.ui.layout.planOrderedPages
+
 /** Immutable, display-only edition data. Every caption and count comes from a subscription. */
 data class FolderPublication(
     val id: String,
@@ -92,6 +97,8 @@ internal data class MeasuredFolderRow(
     val row: FolderNewspaperRow,
     val heightPx: Int,
     val preview: FolderPreview = FolderPreview.Full,
+    /** Extra actual publication names in a collapsed section's directory digest. */
+    val extraPublicationNames: Int = 0,
 )
 
 internal data class FolderNewspaperPage(val rows: List<MeasuredFolderRow>) {
@@ -120,6 +127,115 @@ internal fun packFolderNewspaperPages(
     }
     if (page.isNotEmpty()) pages += FolderNewspaperPage(page.toList())
     return pages
+}
+
+/**
+ * Compare bounded whole-page choices, not only the row that happened to hit the page edge.
+ * Immutable ordered rows remain the indivisible units, including expanded section headings.
+ * Compact retains section titles, counts and actions, omitting optional digests and limiting
+ * publication titles to two lines. Minimal/HeadlineOnly are only tiny-viewport safety fallbacks.
+ *
+ * The shared planner balances measured empty space against the cost of reduced detail. Once
+ * page membership is fixed, restore Full previews first, then buy actual subscription names
+ * with the remaining space. At most one Compact probe and six detail probes are needed per
+ * source row; the caller caches measurements across layout passes and page turns.
+ */
+internal fun fillFolderNewspaperPages(
+    rows: List<MeasuredFolderRow>,
+    viewportHeightPx: Int,
+    measure: (FolderNewspaperRow, FolderPreview, Int) -> MeasuredFolderRow,
+): List<FolderNewspaperPage> {
+    require(viewportHeightPx > 0)
+    rows.forEach { row ->
+        require(row.heightPx in 1..viewportHeightPx) { "A complete folder row must fit its viewport" }
+    }
+    if (rows.isEmpty()) return emptyList()
+    // A genuinely short edition already fits naturally. There is no reason to measure a
+    // lower-detail alternative or turn a sparse last page into synthetic full-height boxes.
+    val planned = if (rows.sumOf { it.heightPx.toLong() } <= viewportHeightPx) {
+        listOf(rows)
+    } else {
+        val groups = rows.map { row ->
+            val units = row.row.keys.size.coerceAtLeast(1)
+            val choices = buildList {
+                add(OrderedPageChoice(row, row.heightPx, units))
+                if (row.preview == FolderPreview.Full) {
+                    val compact = measure(row.row, FolderPreview.Compact, 0)
+                    require(compact.row == row.row && compact.preview == FolderPreview.Compact)
+                    if (compact.heightPx in 1 until row.heightPx) {
+                        add(OrderedPageChoice(compact, compact.heightPx, units,
+                            orderedCompactPenalty(row.heightPx, compact.heightPx)))
+                    }
+                }
+            }
+            OrderedPageGroup(choices)
+        }
+        planOrderedPages(groups, viewportHeightPx)
+    }
+    return planned.map { page ->
+        var spare = viewportHeightPx - page.sumOf { it.heightPx }
+        // Restore normal title/digest previews across the page before buying extra names in
+        // an earlier row. Optional enrichment must never starve a later row's Full preview.
+        val restored = page.map restore@ { current ->
+            if (current.preview != FolderPreview.Compact) return@restore current
+            val budget = current.heightPx + spare
+            val full = measure(current.row, FolderPreview.Full, 0)
+            require(full.row == current.row && full.preview == FolderPreview.Full)
+            if (full.heightPx !in 1..budget) return@restore current
+            spare -= full.heightPx - current.heightPx
+            full
+        }
+        val enriched = restored.map enrich@ { current ->
+            // Do not reverse an accessibility fallback chosen for a tiny viewport.
+            if (current.preview != FolderPreview.Full) return@enrich current
+            val budget = current.heightPx + spare
+            var best = current
+            val extraLimit = current.row.slots.maxOfOrNull { slot ->
+                if (slot.publication != null) 0 else
+                    (slot.section.publications.size - if (slot.featured) 3 else 2).coerceAtLeast(0)
+            }?.coerceAtMost(32) ?: 0
+            var low = 1
+            var high = extraLimit
+            while (low <= high) {
+                val extra = low + (high - low) / 2
+                val candidate = measure(current.row, FolderPreview.Full, extra)
+                require(candidate.row == current.row && candidate.preview == FolderPreview.Full)
+                if (candidate.heightPx in 1..budget) {
+                    best = candidate
+                    low = extra + 1
+                } else {
+                    high = extra - 1
+                }
+            }
+            spare -= best.heightPx - current.heightPx
+            best
+        }
+        FolderNewspaperPage(enriched)
+    }
+}
+
+internal data class FolderReadingAnchor(val key: String, val sectionId: String?)
+
+/** Keep the reading source even when reflow places earlier sources above it on the new page. */
+internal fun folderReadingAnchor(
+    page: FolderNewspaperPage?,
+    preferred: FolderReadingAnchor? = null,
+): FolderReadingAnchor? {
+    val keys = page?.keys.orEmpty()
+    if (keys.isEmpty()) return preferred
+    val key = preferred?.key?.takeIf { it in keys }
+        ?: preferred?.sectionId?.let { section ->
+            "folder:$section".takeIf { it in keys }
+                ?: page?.rows?.asSequence()?.flatMap { it.row.slots.asSequence() }
+                    ?.firstOrNull { it.section.id == section }?.key
+        }
+        ?: keys.first()
+    val section = page?.rows?.firstNotNullOfOrNull { measured ->
+        val row = measured.row
+        row.heading?.takeIf { !row.continuation && "folder:${it.id}" == key }?.id
+            ?: row.slots.firstOrNull { it.key == key }?.section?.id
+    }
+    return FolderReadingAnchor(key, section)
 }
 
 internal fun folderPageForAnchor(

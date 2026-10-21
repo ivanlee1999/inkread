@@ -44,6 +44,7 @@ class FolderNewspaperState {
     private var requestedSection: String? = null
     private var restoredAnchor: String? = null
     private var restoredSection: String? = null
+    private var readingAnchor: FolderReadingAnchor? = null
     internal var presentationAvailable by mutableStateOf(false)
         private set
 
@@ -52,9 +53,8 @@ class FolderNewspaperState {
     companion object {
         val Saver = listSaver<FolderNewspaperState, String>(
             save = { state ->
-                val row = state.pages.getOrNull(state.currentPage)?.rows?.firstOrNull()?.row
-                listOf(state.currentPage.toString(), row?.keys?.firstOrNull().orEmpty(),
-                    row?.sectionIds?.firstOrNull().orEmpty())
+                val anchor = state.currentReadingAnchor()
+                listOf(state.currentPage.toString(), anchor?.key.orEmpty(), anchor?.sectionId.orEmpty())
             },
             restore = { saved -> FolderNewspaperState().also {
                 it.currentPage = saved[0].toIntOrNull() ?: 0
@@ -66,9 +66,18 @@ class FolderNewspaperState {
 
     fun anchorFolder(id: String) { requestedSection = id }
 
+    private fun currentReadingAnchor(): FolderReadingAnchor? =
+        requestedSection?.let { FolderReadingAnchor("folder:$it", it) }
+            ?: restoredAnchor?.let { FolderReadingAnchor(it, restoredSection) }
+            ?: readingAnchor
+            ?: folderReadingAnchor(pages.getOrNull(currentPage))
+
     fun firstPage() {
         requestedSection = null
+        restoredAnchor = null
+        restoredSection = null
         currentPage = 0
+        readingAnchor = folderReadingAnchor(pages.firstOrNull())
     }
 
     fun turn(forward: Boolean): Boolean {
@@ -76,27 +85,32 @@ class FolderNewspaperState {
         val next = currentPage + if (forward) 1 else -1
         if (next !in pages.indices) return false
         requestedSection = null
+        restoredAnchor = null
+        restoredSection = null
         currentPage = next
+        // Only explicit navigation replaces the logical source with the new page's first one.
+        readingAnchor = folderReadingAnchor(pages[next])
         return true
     }
 
     internal fun updatePages(next: List<FolderNewspaperPage>, identity: Any) {
         presentationAvailable = true
         if (pages == next && layoutIdentity == identity && requestedSection == null && restoredAnchor == null) return
-        val old = pages.getOrNull(currentPage)?.rows?.firstOrNull()?.row
-        val anchor = requestedSection?.let { "folder:$it" } ?: restoredAnchor ?: old?.keys?.firstOrNull()
-        val section = requestedSection ?: restoredSection ?: old?.sectionIds?.firstOrNull()
-        val target = folderPageForAnchor(next, anchor, section, currentPage)
+        val anchor = currentReadingAnchor()
+        val target = folderPageForAnchor(next, anchor?.key, anchor?.sectionId, currentPage)
         pages = next
         currentPage = target
+        // Automatic font/column/direction changes may put the same source mid-page. Preserve
+        // that source for subsequent reflows and saving; do not drift to the new first row.
+        readingAnchor = folderReadingAnchor(next.getOrNull(target), anchor)
         requestedSection = null
         if (next.isNotEmpty()) { restoredAnchor = null; restoredSection = null }
         layoutIdentity = identity
     }
 }
 
-private data class FolderMeasureKey(val row: FolderNewspaperRow, val width: Int, val preview: FolderPreview)
-private data class FolderMeasureSlot(val key: String, val preview: FolderPreview)
+private data class FolderMeasureKey(val row: FolderNewspaperRow, val width: Int, val preview: FolderPreview, val extraNames: Int)
+private data class FolderMeasureSlot(val key: String, val preview: FolderPreview, val extraNames: Int)
 
 /**
  * Real directory UI, also used by native tests. Insets/chrome are outside the measured viewport.
@@ -137,18 +151,18 @@ fun FolderNewspaperEdition(
         val openPublication by rememberUpdatedState(onOpenPublication)
         val publicationOptions by rememberUpdatedState(onPublicationOptions)
         val refresh by rememberUpdatedState(onRefresh)
-        val render: @Composable (FolderNewspaperRow, FolderPreview, Boolean) -> Unit = { row, preview, measuring ->
-            FolderNewspaperRowContent(row, metrics.publicationColumns, metrics.columnSpacingDp.dp,
+        val render: @Composable (FolderNewspaperRow, FolderPreview, Int, Boolean) -> Unit = { row, preview, extraNames, measuring ->
+            FolderNewspaperRowContent(row, metrics.columnSpacingDp.dp,
                 preview, expanded, countLabel, measuring,
                 onOpenFolder = openFolder,
                 onToggleFolder = { id -> state.anchorFolder(id); toggleFolder(id) },
                 onFolderOptions = folderOptions,
                 onOpenPublication = openPublication,
-                onPublicationOptions = publicationOptions)
+                onPublicationOptions = publicationOptions, extraPublicationNames = extraNames)
         }
         if (!paged) {
             LazyColumn(Modifier.fillMaxSize().padding(horizontal = metrics.horizontalPaddingDp.dp), state = listState) {
-                items(rows, key = { it.key }) { render(it, FolderPreview.Full, false) }
+                items(rows, key = { it.key }) { render(it, FolderPreview.Full, 0, false) }
             }
         } else {
             val cache = remember(density.density, density.fontScale, typography, direction, metrics, countLabel, rows, paneWidth) {
@@ -180,20 +194,22 @@ fun FolderNewspaperEdition(
                     val height = constraints.maxHeight.coerceAtLeast(1)
                     val width = constraints.maxWidth
                     val natural = Constraints(minWidth = width, maxWidth = width, maxHeight = Constraints.Infinity)
-                    fun measure(row: FolderNewspaperRow): MeasuredFolderRow {
-                        var selected = FolderPreview.Full
-                        var measured = 0
-                        for (preview in FolderPreview.entries) {
-                            val key = FolderMeasureKey(row, width, preview)
-                            measured = cache.getOrPut(key) {
-                                subcompose(FolderMeasureSlot(row.key, preview)) {
-                                    render(row, preview, true)
-                                }.single().measure(natural).height
-                            }
-                            selected = preview
-                            if (measured <= height) break
+                    fun measureVariant(row: FolderNewspaperRow, preview: FolderPreview, extraNames: Int): MeasuredFolderRow {
+                        val key = FolderMeasureKey(row, width, preview, extraNames)
+                        val measured = cache.getOrPut(key) {
+                            subcompose(FolderMeasureSlot(row.key, preview, extraNames)) {
+                                render(row, preview, extraNames, true)
+                            }.single().measure(natural).height
                         }
-                        return MeasuredFolderRow(row, measured, selected)
+                        return MeasuredFolderRow(row, measured, preview, extraNames)
+                    }
+                    fun measure(row: FolderNewspaperRow): MeasuredFolderRow {
+                        var result = measureVariant(row, FolderPreview.Full, 0)
+                        for (preview in FolderPreview.entries.drop(1)) {
+                            if (result.heightPx <= height) break
+                            result = measureVariant(row, preview, 0)
+                        }
+                        return result
                     }
                     val measured = rows.flatMap { row ->
                         val original = measure(row)
@@ -223,12 +239,12 @@ fun FolderNewspaperEdition(
                             if (notice.height <= height) notice.placeRelative(0, 0)
                         }
                     }
-                    val pages = packFolderNewspaperPages(measured, height)
+                    val pages = fillFolderNewspaperPages(measured, height, ::measureVariant)
                     state.updatePages(pages, listOf(width, height, density.fontScale, rows))
                     val visible = pages.getOrNull(state.currentPage)?.rows.orEmpty()
                     val placeables = visible.map { row ->
                         subcompose("visible:${row.row.key}") {
-                            render(row.row, row.preview, false)
+                            render(row.row, row.preview, row.extraPublicationNames, false)
                         }.single().measure(natural)
                     }
                     layout(width, height) {

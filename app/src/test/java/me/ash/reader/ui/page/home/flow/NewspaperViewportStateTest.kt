@@ -144,6 +144,45 @@ class NewspaperViewportStateTest {
         assertTrue(state.turn(false, true) { throw AssertionError("Backward reflow marked a page") })
     }
 
+    @Test fun repeatedWideNarrowReflowsRetainTheLogicalArticleRatherThanTheNewPageFirst() {
+        val pager = Any()
+        val state = NewspaperViewportState()
+        state.acceptSnapshot(pager, listOf(article("a", 4), article("b", 3), article("c", 2), article("d", 1)))
+        val narrow = pages(listOf(0), listOf(1), listOf(2), listOf(3))
+        state.updatePages(narrow, "narrow")
+        nextWithoutMarking(state)
+        nextWithoutMarking(state)
+        present(state)
+        repeat(3) {
+            state.updatePages(pages(listOf(0, 1, 2), listOf(3)), "wide")
+            assertTrue("c" in displayed(state))
+            present(state)
+            state.recordReadStatus("c", false)
+            state.updatePages(narrow, "narrow")
+            assertEquals(listOf("c"), displayed(state))
+            assertFalse(state.turn(true, true) { error("Unpresented reflow marked articles") })
+            present(state)
+        }
+        // A real navigation changes the logical position; it is not permanently pinned to c.
+        assertTrue(state.turn(true, false) {})
+        present(state)
+        state.updatePages(pages(listOf(0, 1, 2, 3)), "all-wide")
+        present(state)
+        state.updatePages(narrow, "narrow-again")
+        assertEquals(listOf("d"), displayed(state))
+    }
+
+    @Test fun resettingEditionClearsTheLogicalArticleAnchor() {
+        val state = NewspaperViewportState()
+        state.acceptSnapshot(Any(), listOf(article("a"), article("b")))
+        state.updatePages(pages(listOf(0), listOf(1)), "narrow")
+        nextWithoutMarking(state)
+        present(state)
+        state.acceptSnapshot(Any(), listOf(article("new"), article("b")))
+        state.updatePages(pages(listOf(0), listOf(1)), "narrow")
+        assertEquals(listOf("new"), displayed(state))
+    }
+
     @Test fun explicitAscendingDirectionSupportsSingleStoryAndEqualDateDisjointContinuation() {
         for (nextDate in listOf(10L, 11L)) {
             val pager = Any()

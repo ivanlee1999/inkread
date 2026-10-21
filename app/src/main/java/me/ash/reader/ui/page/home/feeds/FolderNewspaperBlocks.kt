@@ -45,6 +45,7 @@ private fun FolderSectionBlock(
     countLabel: String,
     modifier: Modifier = Modifier,
     measuring: Boolean = false,
+    extraPublicationNames: Int = 0,
     onOpen: () -> Unit,
     onExpand: () -> Unit,
     onOptions: () -> Unit,
@@ -101,8 +102,10 @@ private fun FolderSectionBlock(
             if (preview == FolderPreview.Full && section.publications.isNotEmpty()) {
                 HorizontalDivider(thickness = 0.5.dp, color = color)
                 // These are actual subscribed publications, not fabricated news teasers.
-                section.publications.take(if (featured) 3 else 2).forEach { publication ->
-                    Text(publication.name, style = MaterialTheme.typography.bodySmall,
+                section.publications.take((if (featured) 3 else 2) + extraPublicationNames).forEach { publication ->
+                    Text(publication.name,
+                        modifier = if (measuring) Modifier else Modifier.testTag("folder-digest:${section.id}:${publication.id}"),
+                        style = MaterialTheme.typography.bodySmall,
                         color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
@@ -128,7 +131,6 @@ private fun FolderSectionBlock(
 @Composable
 internal fun FolderNewspaperRowContent(
     row: FolderNewspaperRow,
-    columns: Int,
     spacing: Dp,
     preview: FolderPreview,
     expanded: Set<String>,
@@ -139,6 +141,7 @@ internal fun FolderNewspaperRowContent(
     onFolderOptions: (String) -> Unit,
     onOpenPublication: (String) -> Unit,
     onPublicationOptions: (String) -> Unit,
+    extraPublicationNames: Int = 0,
 ) {
     val color = MaterialTheme.colorScheme.onSurface
     val direction = LocalLayoutDirection.current
@@ -147,7 +150,8 @@ internal fun FolderNewspaperRowContent(
         row.heading?.let { section ->
             if (!row.continuation) {
                 NewspaperFolderHeader(section.name, section.count, section.publications.size,
-                    isExpanded = true, inset = false, compact = preview != FolderPreview.Full,
+                    isExpanded = true, inset = false,
+                    compact = preview == FolderPreview.Minimal || preview == FolderPreview.HeadlineOnly,
                     countLabel = countLabel, measuring = measuring,
                     modifier = if (measuring) Modifier else Modifier.testTag("folder-block:${section.id}"),
                     onClick = { onOpenFolder(section.id) },
@@ -161,9 +165,8 @@ internal fun FolderNewspaperRowContent(
                 HorizontalDivider(thickness = 0.5.dp, color = color)
             }
         }
-        val occupied = row.slots.sumOf { it.span }
-        val remaining = (columns - occupied).coerceAtLeast(0)
-        val weights = row.slots.map { it.span } + if (remaining > 0) listOf(remaining) else emptyList()
+        // A short final row uses its real columns, not a reserved empty publication lane.
+        val weights = row.slots.map { it.span }
         Row(Modifier.fillMaxWidth().drawBehind {
             val gap = spacing.toPx()
             val unit = (size.width - gap * (weights.size - 1)) / weights.sum().coerceAtLeast(1)
@@ -179,6 +182,7 @@ internal fun FolderNewspaperRowContent(
                 if (slot.publication == null) {
                     FolderSectionBlock(slot.section, slot.section.id in expanded, slot.featured,
                         preview, countLabel, Modifier.weight(slot.span.toFloat()), measuring = measuring,
+                        extraPublicationNames = extraPublicationNames,
                         onOpen = { onOpenFolder(slot.section.id) },
                         onExpand = { onToggleFolder(slot.section.id) },
                         onOptions = { onFolderOptions(slot.section.id) })
@@ -192,7 +196,6 @@ internal fun FolderNewspaperRowContent(
                         countLabel = countLabel)
                 }
             }
-            if (remaining > 0) Spacer(Modifier.weight(remaining.toFloat()))
         }
         if (row.heading != null) HorizontalDivider(thickness = 0.5.dp, color = color)
     }

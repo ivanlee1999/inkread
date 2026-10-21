@@ -82,6 +82,11 @@ jobs:
           destination.mkdir(exist_ok=True)
           width = ${{ matrix.width }}
           names = ("subscriptions", "subscriptions-gestures", "folders", "folders-collapsed", "articles-footer-insets", "articles", "articles-end", "articles-image-large-font", "articles-large-font-end", "photos-auto", "photos-phone", "photos-tablet", "photos-off", "photos-cached-offline", "editorial-templates", "photos-alternate", "photos-missing", "compact-count-closed", "compact-count-open", "compact-count-large-font", "compact-footerless-end", "viewport-cjk-first", "viewport-cjk-second", "viewport-cjk-last", "viewport-cjk-large-font", "viewport-delayed-photo", "viewport-failed-photo", "viewport-resized-anchor", "viewport-header-actions", "folders-first", "folders-last", "folders-expanded", "folders-large-font", "folders-rtl")
+          extra = ("viewport-cjk-middle", "folders-middle", "density-append-locked", "density-long-excerpt", "density-sparse-story", "density-long-folder", "density-sparse-folder")
+          mixed = tuple(f"density-mixed-{scale}-{images}-{page}" for scale in (100, 160, 200) for images in ("photos", "text") for page in ("first", "middle", "last"))
+          folders = tuple(f"density-folders-{scale}-{page}" for scale in (100, 160, 200) for page in ("first", "middle", "last"))
+          names += extra + mixed + folders
+          density_names = {"viewport-cjk-first", "viewport-cjk-second", "viewport-cjk-middle", "viewport-cjk-last", "viewport-cjk-large-font", "viewport-delayed-photo", "viewport-failed-photo", "viewport-resized-anchor", "folders-first", "folders-middle", "folders-last", "folders-expanded", "folders-large-font", "folders-rtl"} | {name for name in names if name.startswith("density-")}
           for name in names:
               filename = f"newspaper-{name}-{width}.png"
               matches = list(root.rglob(filename))
@@ -91,11 +96,22 @@ jobs:
               assert data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) > 100, f"Invalid PNG: {source}"
               image_width, image_height = struct.unpack(">II", data[16:24])
               assert image_width == width and image_height > 0, f"Unexpected screenshot dimensions: {source}: {image_width}x{image_height}"
-              if name.startswith(("compact-", "viewport-")) or name in ("folders-first", "folders-last", "folders-expanded", "folders-large-font", "folders-rtl"):
+              if name.startswith(("compact-", "viewport-", "density-")) or name in ("folders-first", "folders-middle", "folders-last", "folders-expanded", "folders-large-font", "folders-rtl"):
                   height = int("${{ matrix.size }}".split("x")[1])
                   assert image_height == height, f"Production paged screens must be captured at full native screen height: {source}: {image_width}x{image_height}"
               shutil.copy2(source, destination / filename)
               print(f"Collected {filename}: {image_width}x{image_height}, {len(data)} bytes")
+              if name in density_names:
+                  import json
+                  reports = list(root.rglob(f"newspaper-{name}-{width}.density.json"))
+                  assert len(reports) == 1, f"Expected density report for {filename}"
+                  report = json.loads(reports[0].read_text())
+                  assert report["schema"] == 1 and report["screenWidthDp"] == width
+                  assert report["nativeScreenPx"] == [image_width, image_height]
+                  assert 0 <= report["contentCoverage"] <= 1 and report["viewportAreaPx"] > 0
+                  assert report["contentAreaPx"] <= report["viewportAreaPx"]
+                  assert report["renderedTextLines"] > 0 and report["sourceIds"], f"Missing real content evidence: {filename}"
+                  shutil.copy2(reports[0], destination / reports[0].name)
           PYTHON
           exit "$result"
           SCRIPT
