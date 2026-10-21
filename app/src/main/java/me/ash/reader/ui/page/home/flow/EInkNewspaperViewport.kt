@@ -94,8 +94,8 @@ internal fun EInkNewspaperViewport(
     // Each subcomposition owns the immutable source that its row indexes. An existing slot can
     // recompose before the parent's next measure removes it after a filter/reset; it must never
     // resolve its old row against the shared lambda's newest (possibly empty) source.
-    val body: @Composable (NewspaperRow, List<ArticleFlowItem>, NewspaperPreview, Boolean, Dp) -> Unit = { row, source, preview, measure, height ->
-        NewspaperViewportRow(state, row, source, columns, horizontalPadding, columnSpacing, preview, height,
+    val body: @Composable (MeasuredNewspaperRow, List<ArticleFlowItem>, Boolean, Dp) -> Unit = { measured, source, measure, height ->
+        NewspaperViewportRow(state, measured.row, source, columns, horizontalPadding, columnSpacing, measured.preview, height, measured.extraDescriptionLines,
             measure, diffMap, feedUnreadCounts, articleListTonalElevation, onClick,
             onToggleStarred, onToggleRead, onMarkAboveAsRead, onMarkBelowAsRead, onShare)
     }
@@ -141,60 +141,88 @@ internal fun EInkNewspaperViewport(
             cacheBounds[0] = width; cacheBounds[1] = height
         }
         val measureConstraints = Constraints(minWidth = width, maxWidth = width)
-        fun measureRow(row: NewspaperRow): MeasuredNewspaperRow? {
-            for (preview in NewspaperPreview.entries) {
-                val cacheKey = listOf(row, preview, width, height, items[row.indices.first()])
-                val rowHeight = measurements.getOrPut(cacheKey) {
-                    val slotHeight = ((height - 2).coerceAtLeast(1) / row.slots.maxOf { it.indices.size }).toDp()
-                    subcompose(listOf("measure", editionRevision, row, preview)) {
-                        body(row, items, preview, true, slotHeight)
-                    }.single().measure(measureConstraints).height
-                }
-                if (rowHeight <= height) return MeasuredNewspaperRow(row, rowHeight, preview)
+        fun measureRow(candidate: MeasuredNewspaperRow): MeasuredNewspaperRow {
+            val row = candidate.row
+            val cacheKey = listOf(row, candidate.preview, candidate.extraDescriptionLines,
+                width, height, items[row.indices.first()])
+            val rowHeight = measurements.getOrPut(cacheKey) {
+                val slotHeight = ((height - 2).coerceAtLeast(1) / row.slots.maxOf { it.indices.size }).toDp()
+                subcompose(listOf("measure", editionRevision, row, candidate.preview, candidate.extraDescriptionLines)) {
+                    body(candidate, items, true, slotHeight)
+                }.single().measure(measureConstraints).height
             }
-            return null
+            return candidate.copy(heightPx = rowHeight)
+        }
+        fun variants(row: NewspaperRow): List<MeasuredNewspaperRow> {
+            if (row.isDate) return listOf(measureRow(MeasuredNewspaperRow(row, 0)))
+                .filter { it.heightPx <= height }
+            val templates = newspaperViewportTemplates(row, columns)
+            val ordinary = listOf(NewspaperPreview.Full, NewspaperPreview.Compact).flatMap { preview ->
+                templates.map { measureRow(MeasuredNewspaperRow(it, 0, preview)) }
+                    .filter { it.heightPx <= height }.sortedBy { it.heightPx }
+            }
+            if (ordinary.isNotEmpty()) return ordinary
+            for (preview in listOf(NewspaperPreview.Minimal, NewspaperPreview.HeadlineOnly)) {
+                val fitted = templates.map { measureRow(MeasuredNewspaperRow(it, 0, preview)) }
+                    .filter { it.heightPx <= height }.sortedBy { it.heightPx }
+                if (fitted.isNotEmpty()) return fitted
+            }
+            return emptyList()
         }
         val breaks = state.pageBreaksFor(geometry)
-        val pages = if (pageCache.rows === rows && pageCache.geometry == geometry && pageCache.breaks == breaks) {
+        val basePages = if (pageCache.rows === rows && pageCache.geometry == geometry && pageCache.breaks == breaks) {
             pageCache.pages
         } else {
-        var cannotFit = false
-        val measured = rows.flatMap { row ->
-            val fitted = measureRow(row)
-            when {
-                fitted != null -> listOf(fitted)
-                row.isDate -> emptyList()
-                else -> row.indices.mapNotNull { index ->
-                    // A stacked mosaic may exceed even a headline-only viewport. Unstack whole
-                    // stories instead of shrinking the user's chosen font or cutting a line.
-                    measureRow(NewspaperRow(listOf(index), false, false,
-                        listOf(NewspaperSlot(listOf(index), span = columns)))).also { if (it == null) cannotFit = true }
+            var cannotFit = false
+            val measured = rows.flatMap { row ->
+                val fitted = variants(row)
+                when {
+                    fitted.isNotEmpty() -> listOf(fitted)
+                    row.isDate -> emptyList()
+                    else -> row.indices.mapNotNull { index ->
+                        // A stacked mosaic may exceed even a headline-only viewport. Unstack whole
+                        // stories instead of shrinking the user's chosen font or cutting a line.
+                        variants(NewspaperRow(listOf(index), false, false,
+                            listOf(NewspaperSlot(listOf(index), span = columns)))).takeIf { it.isNotEmpty() }
+                            .also { if (it == null) cannotFit = true }
+                    }
                 }
             }
+            if (cannotFit) {
+                // Never omit an unfittable article or count it as displayed/read. This is only
+                // possible in a transient/minuscule pane: keep the edition and wait for usable space.
+                state.suspendPresentation()
+                val notice = subcompose("insufficient-story-space") {
+                    Text("More space is needed to show articles", maxLines = 1)
+                }.single().measure(measureConstraints)
+                return@SubcomposeLayout layout(width, height) { if (notice.height <= height) notice.placeRelative(0, 0) }
+            }
+            packNewspaperViewportVariants(measured.size, height, breaks) { measured[it] }.also {
+                if (pageCache.geometry != geometry) pageCache.enriched.clear()
+                pageCache.enriched.keys.retainAll(it.toSet())
+                pageCache.rows = rows; pageCache.geometry = geometry; pageCache.breaks = breaks; pageCache.pages = it
+            }
         }
-        if (cannotFit) {
-            // Never omit an unfittable article or count it as displayed/read. This is only
-            // possible in a transient/minuscule pane: keep the edition and wait for usable space.
-            state.suspendPresentation()
-            val notice = subcompose("insufficient-story-space") {
-                Text("More space is needed to show articles", maxLines = 1)
-            }.single().measure(measureConstraints)
-            return@SubcomposeLayout layout(width, height) { if (notice.height <= height) notice.placeRelative(0, 0) }
-        }
-        packNewspaperViewportPages(measured, height, breaks).also {
-            pageCache.rows = rows; pageCache.geometry = geometry; pageCache.breaks = breaks; pageCache.pages = it
-        }
-        }
+        var pages = basePages.map { pageCache.enriched[it] ?: it }
         if (!state.updatePages(pages, geometry, items, editionRevision)) {
             return@SubcomposeLayout layout(width, height) {}
         }
-        val current = pages.getOrNull(state.currentPage)
+        val baseCurrent = basePages.getOrNull(state.currentPage)
+        val current = baseCurrent?.let { page ->
+            pageCache.enriched.getOrPut(page) { enrichNewspaperViewportPage(page, height, ::measureRow) }
+        }
+        if (current != null && current != pages[state.currentPage]) {
+            pages = pages.mapIndexed { index, page -> if (index == state.currentPage) current else page }
+            if (!state.updatePages(pages, geometry, items, editionRevision)) {
+                return@SubcomposeLayout layout(width, height) {}
+            }
+        }
         val displayed = current?.indices.orEmpty()
         val placeables = current?.rows.orEmpty().map { measuredRow ->
             val row = measuredRow.row
             val slotHeight = ((height - 2).coerceAtLeast(1) / row.slots.maxOf { it.indices.size }).toDp()
             subcompose(listOf("display", editionRevision, row.indices)) {
-                body(row, items, measuredRow.preview, false, slotHeight)
+                body(measuredRow, items, false, slotHeight)
             }.single().measure(measureConstraints)
         }
         layout(width, height) {
@@ -218,6 +246,7 @@ private fun NewspaperViewportRow(
     columnSpacing: Dp,
     preview: NewspaperPreview,
     previewHeight: Dp,
+    extraDescriptionLines: Map<Int, Int>,
     measurementOnly: Boolean,
     diffMap: Map<String, Diff>,
     feedUnreadCounts: Map<String, Int>,
@@ -262,7 +291,8 @@ private fun NewspaperViewportRow(
                                 if (measurementOnly) {
                                     ArticleItem(articleWithFeed = item, feedUnreadCount = 0,
                                         isLead = row.isLead, storyStyle = slot.style,
-                                        preview = preview, previewHeight = previewHeight, measurementOnly = true)
+                                        preview = preview, previewHeight = previewHeight,
+                                        extraDescriptionLines = extraDescriptionLines[index] ?: 0, measurementOnly = true)
                                 } else {
                                     val current = state.currentArticle(item)
                                     SwipeableArticleItem(articleWithFeed = current,
@@ -272,6 +302,7 @@ private fun NewspaperViewportRow(
                                         feedUnreadCount = feedUnreadCounts[item.feed.id] ?: 0,
                                         isLead = row.isLead, storyStyle = slot.style,
                                         preview = preview, previewHeight = previewHeight,
+                                        extraDescriptionLines = extraDescriptionLines[index] ?: 0,
                                         articleListTonalElevation = tonalElevation,
                                         onClick = { onClick(it, index) },
                                         onToggleStarred = onToggleStarred, onToggleRead = onToggleRead,
@@ -294,4 +325,5 @@ private class ViewportPageCache {
     var geometry: Any? = null
     var breaks: Set<Int> = emptySet()
     var pages: List<NewspaperViewportPage> = emptyList()
+    val enriched = mutableMapOf<NewspaperViewportPage, NewspaperViewportPage>()
 }

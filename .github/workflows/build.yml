@@ -85,7 +85,7 @@ jobs:
           cat > release-notes.md <<EOF_NOTES
           Built by GitHub Actions from commit ${{ github.sha }}.
 
-          InkRead $VERSION fits complete newspaper preview blocks to the actual available screen instead of dividing articles into fixed-count slices. A single compact article header preserves category, count and actions without the redundant brand bar. Reader return retains the active edition and page even when read articles disappear from the unread query. Folder and subscription pages use editorial section blocks with measured page boundaries, real counts and separate open/expand actions. Page, reader and volume-key gestures are guarded against interrupted interactions; forward-page read marking is limited to the articles actually displayed. Images, saved phone/tablet presets and animation-free operation are retained.
+          InkRead $VERSION makes newspaper pages more content-aware: measured preview variants and bounded row rebalancing admit more complete stories before starting a new screen, while spare room shows longer real excerpts or more actual publication names. Folder and article layouts preserve source order, readable type, image geometry and whole-preview screen boundaries. Retained reader progress, visible-only forward read marking, saved phone/tablet presets and animation-free gestures are preserved. Short final pages can still contain whitespace when there is no more real content to display.
 
           Uses the existing application ID and repository signing identity. No database migration is required. Native Android emulator tests cover narrow and tablet reading flows; physical BOOX refresh behavior still needs device verification.
           EOF_NOTES

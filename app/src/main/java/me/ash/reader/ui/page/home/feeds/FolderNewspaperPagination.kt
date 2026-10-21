@@ -92,6 +92,8 @@ internal data class MeasuredFolderRow(
     val row: FolderNewspaperRow,
     val heightPx: Int,
     val preview: FolderPreview = FolderPreview.Full,
+    /** Extra actual publication names in a collapsed section's directory digest. */
+    val extraPublicationNames: Int = 0,
 )
 
 internal data class FolderNewspaperPage(val rows: List<MeasuredFolderRow>) {
@@ -119,6 +121,110 @@ internal fun packFolderNewspaperPages(
         height += row.heightPx
     }
     if (page.isNotEmpty()) pages += FolderNewspaperPage(page.toList())
+    return pages
+}
+
+/**
+ * Fit another complete row before leaving a large hole at the foot of the page. Compact rows
+ * retain section titles, counts and actions, omitting optional digests and limiting publication
+ * titles to two lines. The last row may trade preview detail for the next row, but we never
+ * search combinations of a page.
+ * Minimal/HeadlineOnly are reserved for genuinely short viewports, not density optimisation.
+ *
+ * Once membership is fixed, remaining space buys actual subscription names, not extra padding.
+ * At most two compact candidates and a bounded binary search of detail counts are needed per
+ * row. The caller caches native measurements, so page turns do not recompose these candidates.
+ */
+internal fun fillFolderNewspaperPages(
+    rows: List<MeasuredFolderRow>,
+    viewportHeightPx: Int,
+    measure: (FolderNewspaperRow, FolderPreview, Int) -> MeasuredFolderRow,
+): List<FolderNewspaperPage> {
+    require(viewportHeightPx > 0)
+    val pages = mutableListOf<FolderNewspaperPage>()
+    var page = mutableListOf<MeasuredFolderRow>()
+    var used = 0
+
+    fun compact(row: MeasuredFolderRow): MeasuredFolderRow {
+        if (row.preview != FolderPreview.Full) return row
+        return measure(row.row, FolderPreview.Compact, 0).takeIf {
+            it.heightPx in 1 until row.heightPx
+        } ?: row
+    }
+
+    fun finishPage() {
+        if (page.isEmpty()) return
+        var spare = viewportHeightPx - used
+        // Restore normal title/digest previews across the page before buying extra names in
+        // an earlier row. Optional enrichment must never starve a later row's Full preview.
+        val restored = page.map { current ->
+            if (current.preview != FolderPreview.Compact) return@map current
+            val budget = current.heightPx + spare
+            val full = measure(current.row, FolderPreview.Full, 0)
+            if (full.heightPx !in 1..budget) return@map current
+            spare -= full.heightPx - current.heightPx
+            full
+        }
+        val enriched = restored.map { current ->
+            // Do not reverse an accessibility fallback chosen for a tiny viewport.
+            if (current.preview != FolderPreview.Full) return@map current
+            val budget = current.heightPx + spare
+            var best = current
+            val extraLimit = current.row.slots.maxOfOrNull { slot ->
+                if (slot.publication != null) 0 else
+                    (slot.section.publications.size - if (slot.featured) 3 else 2).coerceAtLeast(0)
+            }?.coerceAtMost(32) ?: 0
+            var low = 1
+            var high = extraLimit
+            while (low <= high) {
+                val extra = low + (high - low) / 2
+                val candidate = measure(current.row, FolderPreview.Full, extra)
+                if (candidate.heightPx in 1..budget) {
+                    best = candidate
+                    low = extra + 1
+                } else {
+                    high = extra - 1
+                }
+            }
+            spare -= best.heightPx - current.heightPx
+            best
+        }
+        pages += FolderNewspaperPage(enriched)
+        page = mutableListOf()
+        used = 0
+    }
+
+    rows.forEach { row ->
+        require(row.heightPx in 1..viewportHeightPx) { "A complete folder row must fit its viewport" }
+        if (used + row.heightPx <= viewportHeightPx) {
+            page += row
+            used += row.heightPx
+        } else {
+            val smaller = compact(row)
+            if (used + smaller.heightPx <= viewportHeightPx) {
+                page += smaller
+                used += smaller.heightPx
+            } else {
+                val last = page.lastOrNull()
+                val smallerLast = last?.let(::compact)
+                val reclaimed = if (last == null || smallerLast == null) 0
+                    else last.heightPx - smallerLast.heightPx
+                val next = listOf(row, smaller).firstOrNull {
+                    used - reclaimed + it.heightPx <= viewportHeightPx
+                }
+                if (next != null && smallerLast != null) {
+                    page[page.lastIndex] = smallerLast
+                    page += next
+                    used += next.heightPx - reclaimed
+                } else {
+                    finishPage()
+                    page += row
+                    used = row.heightPx
+                }
+            }
+        }
+    }
+    finishPage()
     return pages
 }
 

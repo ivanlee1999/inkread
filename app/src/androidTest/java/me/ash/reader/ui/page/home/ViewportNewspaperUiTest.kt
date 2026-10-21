@@ -22,6 +22,7 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -83,6 +84,7 @@ class ViewportNewspaperUiTest {
             seen += ids
             if (page == 0) { waitForPhotograph(); capture("viewport-cjk-first") }
             if (page == 1) capture("viewport-cjk-second")
+            if (page == pageCount / 2) capture("viewport-cjk-middle")
             if (page == pageCount - 1) capture("viewport-cjk-last")
             if (page < pageCount - 1) nextWithHeader()
         }
@@ -119,6 +121,102 @@ class ViewportNewspaperUiTest {
                 if (scale == 2f && images) capture("viewport-cjk-large-font")
             }
         }
+    }
+
+    @Test fun mixedLengthEditionCapturesRealContentDensityAtEveryFontAndImageSetting() {
+        val fixture = Fixture(mixedArticles(photoUrls()))
+        compose.setContent { Screen(fixture) }
+        awaitEdition(fixture)
+        val expected = fixture.source.value.filterIsInstance<ArticleFlowItem.Article>().map { it.articleWithFeed.article.id }
+        for (scale in listOf(1f, 1.6f, 2f)) {
+            for (images in listOf(true, false)) {
+                compose.runOnIdle { fixture.fontScale.value = scale; fixture.images.value = images }
+                compose.waitForIdle()
+                while (compose.runOnIdle { fixture.state.currentPage > 0 }) previousWithHeader()
+                fixture.marked.clear()
+                val count = compose.runOnIdle { fixture.state.pages.size }
+                val seen = mutableListOf<String>()
+                repeat(count) { page ->
+                    seen += assertWholePage(fixture)
+                    if (page == 0 || page == count / 2 || page == count - 1) {
+                        waitForPhotographsIfPresent()
+                        listOf("first" to 0, "middle" to count / 2, "last" to count - 1).filter { it.second == page }.forEach { (position, _) ->
+                            capture("density-mixed-${(scale * 100).toInt()}-${if (images) "photos" else "text"}-$position")
+                        }
+                    }
+                    if (page < count - 1) nextWithHeader()
+                }
+                assertEquals("The mixed edition remains a complete source partition at font=$scale, photos=$images", expected, seen)
+                assertEquals("Density changes never mark the final page or an unseen source", expected.dropLast(assertWholePage(fixture).size), fixture.marked)
+                if (!images) compose.onAllNodesWithTag("article-photo", useUnmergedTree = true).assertCountEquals(0)
+            }
+        }
+    }
+
+    @Test fun appendingSourcesCannotRefillOrRecomposeAnAlreadyPrintedLastPage() {
+        val photos = photoUrls()
+        val fixture = Fixture(articles(photos, count = 8))
+        compose.setContent { Screen(fixture) }
+        awaitEdition(fixture)
+        while (compose.runOnIdle { fixture.state.currentPage < fixture.state.pages.lastIndex }) nextWithHeader()
+        waitForPhotographsIfPresent()
+        val originalPages = pageIds(fixture)
+        val last = assertWholePage(fixture)
+        val bounds = wholeBlockBounds(fixture)
+        val marked = fixture.marked.toList()
+        compose.runOnIdle { fixture.source.value = articles(photos, count = 20) }
+        compose.waitUntil(15_000) { fixture.state.items.filterIsInstance<ArticleFlowItem.Article>().size == 20 }
+        compose.waitForIdle()
+        assertEquals("An appended source cannot backfill any frozen page", originalPages, pageIds(fixture).take(originalPages.size))
+        assertEquals("The previously printed last page remains visible", last, assertWholePage(fixture))
+        assertEquals("Real excerpt growth is frozen along with page membership", bounds, wholeBlockBounds(fixture))
+        assertEquals("Appending is not a forward turn", marked, fixture.marked)
+        capture("density-append-locked")
+        val appended = mutableListOf<String>()
+        while (compose.runOnIdle { fixture.state.currentPage < fixture.state.pages.lastIndex }) {
+            nextWithHeader()
+            appended += assertWholePage(fixture)
+        }
+        assertEquals((8 until 20).map { "viewport-$it" }, appended)
+    }
+
+    @Test fun availableSpaceShowsAdditionalWholeExcerptLinesInsteadOfBlankCardHeight() {
+        val original = articles(emptyList(), count = 1).filterIsInstance<ArticleFlowItem.Article>().single()
+        val excerpt = """
+            城市图书馆在完成一年的修缮后重新向读者开放。改造没有增加建筑面积，而是重新安排了原来分散的阅览区、儿童活动室和地方文献室。靠近街道的一层保留了无需预约的公共座位，临窗的长桌则配备了阅读灯和电源。工作人员表示，他们希望这里不仅是借书的地方，也是居民在工作和家庭之外可以安静停留的空间。
+            设计团队先后访问了周边学校、社区中心和老年读书会，记录人们使用旧馆时遇到的实际困难。有的读者需要更清晰的指示牌，有的人希望找到能够交谈的区域，也有人特别珍惜不受打扰的座位。新的布局因此没有采用统一的开放大厅，而是用书架和走廊形成不同尺度的小空间，让安静阅读、讨论和亲子活动能够同时进行。
+            地方文献室收藏了过去几十年的报纸、地图和居民捐赠的照片。馆员正在逐步整理这些材料，并为无法亲自来馆的研究者提供目录查询。数字化并不意味着所有原件都将退出使用：纸张的尺寸、批注、折痕和装订方式同样保存着历史信息。团队希望在保护原件的同时，让更多普通读者知道自己所在街区的故事。
+            开放后的第一个月，图书馆将根据真实使用情况调整座位和活动安排。工作人员会观察哪些时段最拥挤、哪些通道容易形成障碍，也会通过简短访谈收集意见。负责人强调，这次改造不是一次完成的展示项目，而是一项需要长期维护的公共服务。阅读者的日常习惯，比开幕当天的照片更能说明空间是否真正发挥了作用。
+        """.trimIndent().replace("\n", " ")
+        val story = original.articleWithFeed.article.copy(title = "城市图书馆重新开放：从借书到共同生活的空间", shortDescription = excerpt,
+            rawDescription = "", img = null).also { it.dateString = "09:35 PM" }
+        val fixture = Fixture(listOf(ArticleFlowItem.Article(original.articleWithFeed.copy(article = story))))
+        compose.setContent { Screen(fixture) }
+        awaitEdition(fixture)
+        assertWholePage(fixture)
+        val layout = mutableListOf<TextLayoutResult>()
+        compose.onNodeWithTag("article-description", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layout) }
+        assertEquals(excerpt, layout.single().layoutInput.text.text)
+        assertTrue("A real long excerpt displays more than the former maximum six lead lines when there is room", layout.single().lineCount > 6)
+        assertEquals("Extra lines keep the selected accessibility text scale", 1f, layout.single().layoutInput.density.fontScale, 0f)
+        capture("density-long-excerpt")
+    }
+
+    @Test fun genuinelyShortStoryDoesNotInventContentOrReserveAnAbsentPhotograph() {
+        val original = articles(emptyList(), count = 1).filterIsInstance<ArticleFlowItem.Article>().single()
+        val short = original.articleWithFeed.article.copy(title = "Library update", shortDescription = "The library reopens on Monday.",
+            rawDescription = "", img = null, link = "about:blank").also { it.dateString = "09:35 PM" }
+        val fixture = Fixture(listOf(ArticleFlowItem.Article(original.articleWithFeed.copy(article = short))))
+        compose.setContent { Screen(fixture) }
+        awaitEdition(fixture)
+        val id = assertWholePage(fixture).single()
+        compose.onAllNodesWithTag("article-photo", useUnmergedTree = true).assertCountEquals(0)
+        val block = compose.onNodeWithTag("article-block-$id", useUnmergedTree = true).getUnclippedBoundsInRoot()
+        val viewport = compose.onNodeWithTag("newspaper-viewport").getUnclippedBoundsInRoot()
+        assertTrue("A genuinely short source stays naturally sized, rather than adding fake fill", block.bottom - block.top < (viewport.bottom - viewport.top) * 0.5f)
+        assertEquals("The short source appears once", listOf(listOf(id)), pageIds(fixture))
+        capture("density-sparse-story")
     }
 
     @Test fun failedAndDelayedPhotosKeepTheSameMeasuredPagesAndWholeBlocks() {
@@ -726,6 +824,9 @@ class ViewportNewspaperUiTest {
         assertTrue("Every nonempty screen has at least one complete preview", expected.isNotEmpty())
         val viewport = compose.onNodeWithTag("newspaper-viewport").getUnclippedBoundsInRoot()
         val safe = compose.onNodeWithTag("safe-screen-content").getUnclippedBoundsInRoot()
+        val measuredHeight = compose.runOnIdle { fixture.state.pages[fixture.state.currentPage].heightPx }
+        val viewportPx = compose.onNodeWithTag("newspaper-viewport").fetchSemanticsNode().boundsInRoot
+        assertTrue("Sum of real row measurements cannot exceed the content viewport", measuredHeight <= viewportPx.height + 1f)
         val header = compose.onNodeWithTag("article-list-header").getUnclippedBoundsInRoot()
         assertTrue("Article viewport starts below actual compact header", viewport.top >= header.bottom - 1.dp)
         assertTrue("Actual Android safe-inset viewport contains the page", viewport.bottom <= safe.bottom + 1.dp)
@@ -811,6 +912,42 @@ class ViewportNewspaperUiTest {
                 rawDescription = "", shortDescription = "2026-10-21 浙江 近日，在公开场合谈到人工智能、城市生活和文化观察。我们希望读者能从容看完每一张真正适合屏幕的报纸页面，不必在页内继续滚动寻找被裁切的文章。".repeat(if (oversized) 8 else 2),
                 img = photos.takeIf { it.isNotEmpty() && index % 4 != 3 }?.let { it[index % it.size] },
                 link = "about:blank", feedId = feed.id, accountId = 1, isUnread = true).apply { dateString = "${9 + index % 12}:35 PM" }, feed))
+        }
+    }
+
+    /** Different real excerpt lengths, photo presence, source labels and scripts, not equal-height filler. */
+    private fun mixedArticles(photos: List<String>): List<ArticleFlowItem> {
+        val briefs = listOf(
+            "A new reading room opens beside the river this weekend.",
+            "城市档案馆重新开放。读者可以预约查阅旧地图与地方报纸。",
+            "Researchers compare the latest observations with a decade of field notes. Their early results are useful, but the team cautions that a longer study is needed before drawing a firm conclusion.",
+            "从街道到公共图书馆，人们正在重新讨论城市空间的日常用途。观察者记录了不同年龄居民的生活习惯，也保留了那些不容易被数据描述的小故事。",
+        )
+        return articles(photos, count = 17).mapIndexed { sourceIndex, item ->
+            if (item !is ArticleFlowItem.Article) item else {
+                val index = sourceIndex - 1
+                val story = item.articleWithFeed.article
+                val title = when (index % 5) {
+                    0 -> "${index + 1}. 城市里的新图书馆 / A place to read"
+                    1 -> "${index + 1}. Field notes: a quiet morning"
+                    else -> story.title
+                }
+                ArticleFlowItem.Article(item.articleWithFeed.copy(article = story.copy(title = title,
+                    shortDescription = briefs[index % briefs.size].repeat(1 + index % 4),
+                    img = if (index % 3 == 1) null else story.img).also { it.dateString = story.dateString }))
+            }
+        }
+    }
+
+    private fun waitForPhotographsIfPresent() {
+        val photos = compose.onAllNodes(hasTestTag("article-photo") and hasAnyAncestor(hasTestTag("newspaper-viewport")), useUnmergedTree = true)
+        photos.fetchSemanticsNodes().indices.forEach { index ->
+            compose.waitUntil(10_000) {
+                val bitmap = photos[index].captureToImage().asAndroidBitmap()
+                val pixels = IntArray(bitmap.width * bitmap.height)
+                bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+                pixels.count { Color.blue(it) > Color.red(it) + 8 && Color.blue(it) > Color.green(it) + 2 } > 20
+            }
         }
     }
 
@@ -900,15 +1037,6 @@ class ViewportNewspaperUiTest {
     }
 
     private fun capture(name: String) {
-        compose.waitForIdle()
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val context = instrumentation.targetContext
-        val additionalOutput = InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")
-        val directory = if (additionalOutput.isNullOrBlank()) File(context.getExternalFilesDir(null), "newspaper-screenshots") else File(additionalOutput)
-        check(directory.isDirectory || directory.mkdirs())
-        val output = File(directory, "newspaper-$name-${context.resources.configuration.screenWidthDp}.png")
-        val bitmap = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
-        output.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
-        check(output.length() > 0)
+        NativePageDensityCapture.capture(compose, name, "newspaper-viewport", recordDensity = name != "viewport-header-actions")
     }
 }

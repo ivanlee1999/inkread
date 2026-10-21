@@ -1,6 +1,5 @@
 package me.ash.reader.ui.page.home
 
-import android.graphics.Bitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
@@ -23,7 +22,6 @@ import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import androidx.test.platform.app.InstrumentationRegistry
 import me.ash.reader.domain.model.general.Filter
 import me.ash.reader.infrastructure.preference.*
 import me.ash.reader.ui.component.FilterBar
@@ -35,7 +33,6 @@ import me.ash.reader.ui.theme.AppTheme
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
-import java.io.File
 
 /** Real production folder bodies, measured inside real scaffold/filter-bar safe bounds. */
 class ViewportFolderUiTest {
@@ -75,6 +72,7 @@ class ViewportFolderUiTest {
         do {
             assertCompleteRows(state)
             compose.runOnIdle { seen += state.pages[state.currentPage].keys; count = state.pageCount }
+            if (state.currentPage == count / 2) capture("folders-middle")
             if (state.currentPage + 1 == count) break
             compose.onNodeWithTag("folder-next-page").performClick()
             compose.waitForIdle()
@@ -170,6 +168,76 @@ class ViewportFolderUiTest {
         assertEquals(expected, seen)
     }
 
+    @Test fun shortAndLongFolderDigestsKeepWholeSourcesAtEveryFontSize() {
+        val data = sections(15).mapIndexed { index, section ->
+            val names = listOf("Brief", "A longer publication covering science and the natural world",
+                "世界新闻与城市文化观察", "Field Notes", "Books, design, and independent voices")
+            section.copy(publications = (0 until listOf(0, 1, 3, 7, 12)[index % 5]).map { feed ->
+                FolderPublication("${section.id}f$feed", names[feed % names.size], "publication${feed + 1}.example", count = feed)
+            })
+        }
+        val state = FolderNewspaperState()
+        var scale by mutableFloatStateOf(1f)
+        compose.setContent {
+            val original = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(original.density, scale)) {
+                Fixture(data, state)
+            }
+        }
+        val expected = data.map { "folder:${it.id}" }
+        for (font in listOf(1f, 1.6f, 2f)) {
+            compose.runOnIdle { scale = font }
+            compose.waitForIdle()
+            compose.runOnIdle { state.firstPage() }
+            compose.waitForIdle()
+            val count = state.pageCount
+            val seen = mutableListOf<String>()
+            repeat(count) { page ->
+                assertCompleteRows(state)
+                seen += state.pages[state.currentPage].keys
+                listOf("first" to 0, "middle" to count / 2, "last" to count - 1).filter { it.second == page }.forEach { (position, _) ->
+                    capture("density-folders-${(font * 100).toInt()}-$position")
+                }
+                if (page < count - 1) {
+                    compose.onNodeWithTag("folder-next-page").performClick()
+                    compose.waitForIdle()
+                }
+            }
+            assertEquals("Actual folder sources remain whole and ordered at font=$font", expected, seen)
+            assertEquals("A digest never duplicates its folder source", seen.size, seen.distinct().size)
+        }
+    }
+
+    @Test fun availableSpaceShowsAdditionalRealPublicationNamesRatherThanLargerCards() {
+        val data = sections(1)
+        val state = FolderNewspaperState()
+        compose.setContent { Fixture(data, state) }
+        compose.waitForIdle()
+        assertCompleteRows(state)
+        val digests = compose.onAllNodes(SemanticsMatcher("real publication digest") { node ->
+            node.config.getOrElse(SemanticsProperties.TestTag) { "" }.startsWith("folder-digest:g0:")
+        }, useUnmergedTree = true).fetchSemanticsNodes()
+        assertTrue("The same seven-publication folder uses spare space for more than the old three-name featured digest", digests.size > 3)
+        val names = digests.flatMap { it.config[SemanticsProperties.Text] }.map { it.text }
+        assertEquals("Additional digest lines are an ordered prefix of actual subscriptions", data.single().publications.take(names.size).map { it.name }, names)
+        assertEquals("Digest detail does not manufacture extra source blocks", listOf(listOf("folder:g0")), state.pages.map { it.keys })
+        capture("density-long-folder")
+    }
+
+    @Test fun singleShortFolderKeepsHonestWhitespaceInsteadOfInventingPublications() {
+        val data = listOf(FolderSection("small", "Reading", listOf(FolderPublication("one", "Field Notes", "notes.example", count = 1))))
+        val state = FolderNewspaperState()
+        compose.setContent { Fixture(data, state) }
+        compose.waitForIdle()
+        assertCompleteRows(state)
+        assertEquals(listOf(listOf("folder:small")), state.pages.map { it.keys })
+        val block = compose.onNodeWithTag("folder-block:small", useUnmergedTree = true).getUnclippedBoundsInRoot()
+        val viewport = compose.onNodeWithTag("folder-viewport").getUnclippedBoundsInRoot()
+        assertTrue("Scant source content remains naturally sized, not stretched to fake density", block.bottom - block.top < (viewport.bottom - viewport.top) * 0.5f)
+        compose.onAllNodesWithText("Field Notes", useUnmergedTree = true).assertCountEquals(1)
+        capture("density-sparse-folder")
+    }
+
     @Test fun swipeBoundariesAndSavedStateKeepTheSameCompletePage() {
         val data = sections()
         var current: FolderNewspaperState? = null
@@ -206,11 +274,21 @@ class ViewportFolderUiTest {
         val viewport = compose.onNodeWithTag("folder-viewport").getUnclippedBoundsInRoot()
         val rows = state.pages[state.currentPage].rows
         assertTrue(rows.isNotEmpty())
+        val viewportPx = compose.onNodeWithTag("folder-viewport").fetchSemanticsNode().boundsInRoot
+        assertTrue("Measured content, not allocated rectangles, fits the viewport", state.pages[state.currentPage].heightPx <= viewportPx.height + 1f)
         rows.forEach { row ->
             val bounds = compose.onNodeWithTag("folder-row:${row.row.key}", useUnmergedTree = true).getUnclippedBoundsInRoot()
             assertTrue("No top clipping: $bounds in $viewport", bounds.top >= viewport.top - 1.dp)
             assertTrue("Complete final row: $bounds in $viewport", bounds.bottom <= viewport.bottom + 1.dp)
             assertTrue(bounds.left >= viewport.left - 1.dp && bounds.right <= viewport.right + 1.dp)
+            val text = compose.onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsProperties.Text) and
+                hasAnyAncestor(hasTestTag("folder-row:${row.row.key}")), useUnmergedTree = true)
+            text.fetchSemanticsNodes().indices.forEach { index ->
+                val child = text[index].getUnclippedBoundsInRoot()
+                assertTrue("A title, count, or real publication name must not cross its whole row: $child in $bounds",
+                    child.top >= bounds.top - 1.dp && child.bottom <= bounds.bottom + 1.dp &&
+                        child.left >= bounds.left - 1.dp && child.right <= bounds.right + 1.dp)
+            }
         }
         val bar = compose.onNodeWithTag("folder-fixture-filter").getUnclippedBoundsInRoot()
         assertTrue("Body avoids the filter bar", viewport.bottom <= bar.top + 1.dp)
@@ -223,6 +301,13 @@ class ViewportFolderUiTest {
             else "feed:${tag.substringAfter(':')}"
         }
         assertEquals("Only the measured page is placed", state.pages[state.currentPage].keys, actualKeys)
+        compose.onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsProperties.VerticalScrollAxisRange) and
+            hasAnyAncestor(hasTestTag("folder-viewport")), useUnmergedTree = true).assertCountEquals(0)
+        val scroll = compose.onNodeWithTag("folder-viewport").fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange]
+        compose.runOnIdle {
+            assertEquals("Accessibility scroll remains a whole page, never a partial pixel offset", state.currentPage.toFloat(), scroll.value(), 0f)
+            assertEquals((state.pageCount - 1).toFloat(), scroll.maxValue(), 0f)
+        }
     }
 
     @OptIn(ExperimentalMaterial3Api::class)
@@ -257,14 +342,6 @@ class ViewportFolderUiTest {
     }
 
     private fun capture(name: String) {
-        compose.waitForIdle()
-        val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val output = InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")
-        val directory = if (output.isNullOrBlank()) File(context.getExternalFilesDir(null), "newspaper-screenshots") else File(output)
-        check(directory.isDirectory || directory.mkdirs())
-        val file = File(directory, "newspaper-$name-${context.resources.configuration.screenWidthDp}.png")
-        val bitmap = requireNotNull(InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot())
-        file.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
-        check(file.length() > 0)
+        NativePageDensityCapture.capture(compose, name, "folder-viewport")
     }
 }

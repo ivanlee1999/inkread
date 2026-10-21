@@ -93,4 +93,130 @@ class FolderNewspaperPaginationTest {
         assertEquals(23, section.count)
         assertEquals(0, section.copy(publications = emptyList()).count)
     }
+
+    @Test fun compactTailFillsSpaceWithAnotherRealSectionBeforeEnrichingDigests() {
+        val rows = folderNewspaperRows(sections(3), emptySet(), 1)
+        fun measure(row: FolderNewspaperRow, preview: FolderPreview, extra: Int): MeasuredFolderRow {
+            val index = rows.indexOf(row)
+            val height = if (preview == FolderPreview.Full) 210 + index * 10 + extra * 10
+                else 130 + index * 10
+            return MeasuredFolderRow(row, height, preview, extra)
+        }
+        val measured = rows.map { measure(it, FolderPreview.Full, 0) }
+        val old = packFolderNewspaperPages(measured, 600)
+        val filled = fillFolderNewspaperPages(measured, 600, ::measure)
+        assertEquals(2, old.size)
+        assertEquals(1, filled.size)
+        assertEquals(600, filled.single().heightPx)
+        assertTrue(filled.first().heightPx > old.first().heightPx)
+        assertEquals(FolderPreview.Compact, filled.single().rows.last().preview)
+        assertEquals(2, filled.single().rows.first().extraPublicationNames)
+        assertEquals(rows.flatMap { it.keys }, filled.flatMap { it.keys })
+    }
+
+    @Test fun oneRowLookBackCanAdmitNextCompleteSectionWithoutFlatteningThePage() {
+        val rows = folderNewspaperRows(sections(3), emptySet(), 1)
+        fun measure(row: FolderNewspaperRow, preview: FolderPreview, extra: Int): MeasuredFolderRow {
+            val index = rows.indexOf(row)
+            val height = if (preview == FolderPreview.Full) listOf(220, 220, 240)[index] + extra * 10
+                else listOf(160, 160, 200)[index]
+            return MeasuredFolderRow(row, height, preview, extra)
+        }
+        val filled = fillFolderNewspaperPages(rows.map { measure(it, FolderPreview.Full, 0) }, 600, ::measure)
+        assertEquals(1, filled.size)
+        assertEquals(listOf(FolderPreview.Full, FolderPreview.Compact, FolderPreview.Compact),
+            filled.single().rows.map { it.preview })
+        assertEquals(600, filled.single().heightPx)
+        assertEquals(rows.flatMap { it.keys }, filled.flatMap { it.keys })
+    }
+
+    @Test fun aCompactAttemptThatCannotAdmitNextRowDoesNotDiscardDetail() {
+        val rows = folderNewspaperRows(sections(3), emptySet(), 1)
+        fun measure(row: FolderNewspaperRow, preview: FolderPreview, extra: Int) =
+            MeasuredFolderRow(row, (if (preview == FolderPreview.Full) 200 else 190) + extra * 24, preview, extra)
+        val filled = fillFolderNewspaperPages(rows.map { measure(it, FolderPreview.Full, 0) }, 480, ::measure)
+        assertEquals(2, filled.size)
+        assertTrue(filled.flatMap { it.rows }.all { it.preview == FolderPreview.Full })
+        assertEquals(rows.flatMap { it.keys }, filled.flatMap { it.keys })
+    }
+
+    @Test fun realDigestNamesFillSpareRoomButSparseFinalPagesStayNatural() {
+        val row = folderNewspaperRows(sections(1, 7), emptySet(), 1).single()
+        val requests = mutableListOf<Int>()
+        fun measure(row: FolderNewspaperRow, preview: FolderPreview, extra: Int): MeasuredFolderRow {
+            requests += extra
+            return MeasuredFolderRow(row, 200 + extra * 24, preview, extra)
+        }
+        val filled = fillFolderNewspaperPages(listOf(MeasuredFolderRow(row, 200)), 800, ::measure)
+        assertEquals(4, filled.single().rows.single().extraPublicationNames)
+        assertEquals(296, filled.single().heightPx)
+        assertTrue("Only actual remaining names can be requested", requests.all { it in 0..4 })
+        assertEquals(row.keys, filled.single().keys)
+
+        val empty = folderNewspaperRows(sections(1, 0), emptySet(), 1).single()
+        val sparse = fillFolderNewspaperPages(listOf(MeasuredFolderRow(empty, 126)), 800) { _, _, _ ->
+            error("A folder without publications cannot fabricate a digest")
+        }
+        assertEquals(126, sparse.single().heightPx)
+        assertEquals(0, sparse.single().rows.single().extraPublicationNames)
+    }
+
+    @Test fun nativeMeasurementCandidatesAreBoundedEvenWithThousandsOfSubscriptions() {
+        val row = folderNewspaperRows(sections(1, 2_000), emptySet(), 1).single()
+        var calls = 0
+        val filled = fillFolderNewspaperPages(listOf(MeasuredFolderRow(row, 200)), 100_000) { actual, preview, extra ->
+            calls++
+            MeasuredFolderRow(actual, 200 + extra * 24, preview, extra)
+        }
+        assertEquals(32, filled.single().rows.single().extraPublicationNames)
+        assertTrue("Binary search has a constant small measurement bound", calls <= 6)
+    }
+
+    @Test fun restoreLaterFullTitleAndDigestBeforeAddingEarlierExtraNames() {
+        val rows = folderNewspaperRows(sections(2), emptySet(), 1)
+        val measured = listOf(MeasuredFolderRow(rows[0], 100),
+            MeasuredFolderRow(rows[1], 100, FolderPreview.Compact))
+        val filled = fillFolderNewspaperPages(measured, 260) { row, preview, extra ->
+            val base = if (row == rows[1] && preview == FolderPreview.Full) 150 else 100
+            MeasuredFolderRow(row, base + extra * 20, preview, extra)
+        }
+        assertEquals(listOf(FolderPreview.Full, FolderPreview.Full), filled.single().rows.map { it.preview })
+        assertEquals(listOf(0, 0), filled.single().rows.map { it.extraPublicationNames })
+        assertEquals(250, filled.single().heightPx)
+    }
+
+    @Test fun enrichedMixedEditionsKeepExactSourceOrderAndAnchorsAtEveryViewport() {
+        val data = sections(18)
+        for (columns in 1..4) {
+            val rows = folderNewspaperRows(data, setOf("g2", "g6", "g12"), columns)
+            val expected = rows.flatMap { it.keys }
+            fun measure(row: FolderNewspaperRow, preview: FolderPreview, extra: Int): MeasuredFolderRow {
+                val index = rows.indexOf(row)
+                val base = 110 + (index % 4) * 35
+                val height = (if (preview == FolderPreview.Full) base else base - 35) + extra * 18
+                return MeasuredFolderRow(row, height, preview, extra)
+            }
+            for (height in listOf(240, 320, 444, 720)) {
+                val measured = rows.map { measure(it, FolderPreview.Full, 0) }
+                val pages = fillFolderNewspaperPages(measured, height, ::measure)
+                assertEquals(expected, pages.flatMap { it.keys })
+                assertEquals(expected.size, pages.flatMap { it.keys }.distinct().size)
+                assertTrue(pages.all { it.heightPx <= height && it.rows.isNotEmpty() })
+                assertEquals("Same native measurements always give the same edition", pages,
+                    fillFolderNewspaperPages(measured, height, ::measure))
+                val page = folderPageForAnchor(pages, "feed:g12f3", "g12", 0)
+                assertTrue("feed:g12f3" in pages[page].keys)
+            }
+        }
+    }
+
+    @Test fun tinyViewportFallbacksAreNotUsedToDensifyOtherwiseReadableRows() {
+        val rows = folderNewspaperRows(sections(3), emptySet(), 1)
+        val fallback = rows.map { MeasuredFolderRow(it, 48, FolderPreview.HeadlineOnly) }
+        val pages = fillFolderNewspaperPages(fallback, 60) { _, _, _ ->
+            error("A viewport fallback cannot be expanded or compressed again")
+        }
+        assertEquals(3, pages.size)
+        assertEquals(fallback, pages.flatMap { it.rows })
+    }
 }

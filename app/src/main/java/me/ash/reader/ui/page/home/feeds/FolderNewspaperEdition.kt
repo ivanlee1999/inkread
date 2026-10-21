@@ -95,8 +95,8 @@ class FolderNewspaperState {
     }
 }
 
-private data class FolderMeasureKey(val row: FolderNewspaperRow, val width: Int, val preview: FolderPreview)
-private data class FolderMeasureSlot(val key: String, val preview: FolderPreview)
+private data class FolderMeasureKey(val row: FolderNewspaperRow, val width: Int, val preview: FolderPreview, val extraNames: Int)
+private data class FolderMeasureSlot(val key: String, val preview: FolderPreview, val extraNames: Int)
 
 /**
  * Real directory UI, also used by native tests. Insets/chrome are outside the measured viewport.
@@ -137,18 +137,18 @@ fun FolderNewspaperEdition(
         val openPublication by rememberUpdatedState(onOpenPublication)
         val publicationOptions by rememberUpdatedState(onPublicationOptions)
         val refresh by rememberUpdatedState(onRefresh)
-        val render: @Composable (FolderNewspaperRow, FolderPreview, Boolean) -> Unit = { row, preview, measuring ->
-            FolderNewspaperRowContent(row, metrics.publicationColumns, metrics.columnSpacingDp.dp,
+        val render: @Composable (FolderNewspaperRow, FolderPreview, Int, Boolean) -> Unit = { row, preview, extraNames, measuring ->
+            FolderNewspaperRowContent(row, metrics.columnSpacingDp.dp,
                 preview, expanded, countLabel, measuring,
                 onOpenFolder = openFolder,
                 onToggleFolder = { id -> state.anchorFolder(id); toggleFolder(id) },
                 onFolderOptions = folderOptions,
                 onOpenPublication = openPublication,
-                onPublicationOptions = publicationOptions)
+                onPublicationOptions = publicationOptions, extraPublicationNames = extraNames)
         }
         if (!paged) {
             LazyColumn(Modifier.fillMaxSize().padding(horizontal = metrics.horizontalPaddingDp.dp), state = listState) {
-                items(rows, key = { it.key }) { render(it, FolderPreview.Full, false) }
+                items(rows, key = { it.key }) { render(it, FolderPreview.Full, 0, false) }
             }
         } else {
             val cache = remember(density.density, density.fontScale, typography, direction, metrics, countLabel, rows, paneWidth) {
@@ -180,20 +180,22 @@ fun FolderNewspaperEdition(
                     val height = constraints.maxHeight.coerceAtLeast(1)
                     val width = constraints.maxWidth
                     val natural = Constraints(minWidth = width, maxWidth = width, maxHeight = Constraints.Infinity)
-                    fun measure(row: FolderNewspaperRow): MeasuredFolderRow {
-                        var selected = FolderPreview.Full
-                        var measured = 0
-                        for (preview in FolderPreview.entries) {
-                            val key = FolderMeasureKey(row, width, preview)
-                            measured = cache.getOrPut(key) {
-                                subcompose(FolderMeasureSlot(row.key, preview)) {
-                                    render(row, preview, true)
-                                }.single().measure(natural).height
-                            }
-                            selected = preview
-                            if (measured <= height) break
+                    fun measureVariant(row: FolderNewspaperRow, preview: FolderPreview, extraNames: Int): MeasuredFolderRow {
+                        val key = FolderMeasureKey(row, width, preview, extraNames)
+                        val measured = cache.getOrPut(key) {
+                            subcompose(FolderMeasureSlot(row.key, preview, extraNames)) {
+                                render(row, preview, extraNames, true)
+                            }.single().measure(natural).height
                         }
-                        return MeasuredFolderRow(row, measured, selected)
+                        return MeasuredFolderRow(row, measured, preview, extraNames)
+                    }
+                    fun measure(row: FolderNewspaperRow): MeasuredFolderRow {
+                        var result = measureVariant(row, FolderPreview.Full, 0)
+                        for (preview in FolderPreview.entries.drop(1)) {
+                            if (result.heightPx <= height) break
+                            result = measureVariant(row, preview, 0)
+                        }
+                        return result
                     }
                     val measured = rows.flatMap { row ->
                         val original = measure(row)
@@ -223,12 +225,12 @@ fun FolderNewspaperEdition(
                             if (notice.height <= height) notice.placeRelative(0, 0)
                         }
                     }
-                    val pages = packFolderNewspaperPages(measured, height)
+                    val pages = fillFolderNewspaperPages(measured, height, ::measureVariant)
                     state.updatePages(pages, listOf(width, height, density.fontScale, rows))
                     val visible = pages.getOrNull(state.currentPage)?.rows.orEmpty()
                     val placeables = visible.map { row ->
                         subcompose("visible:${row.row.key}") {
-                            render(row.row, row.preview, false)
+                            render(row.row, row.preview, row.extraPublicationNames, false)
                         }.single().measure(natural)
                     }
                     layout(width, height) {
