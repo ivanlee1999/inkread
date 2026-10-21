@@ -29,6 +29,7 @@ internal fun Modifier.readerArticleSwipe(
     onNext: (() -> Unit)?,
     thresholdDp: Dp = 56.dp,
     isGestureEnabled: () -> Boolean = { true },
+    consumeRejectedVertical: Boolean = false,
 ): Modifier = composed {
     val previous by rememberUpdatedState(onPrevious)
     val next by rememberUpdatedState(onNext)
@@ -41,7 +42,7 @@ internal fun Modifier.readerArticleSwipe(
     val rightEdge = WindowInsets.systemGestures.getRight(density, direction)
     var viewport by remember { mutableStateOf(IntSize.Zero) }
     this.onSizeChanged { viewport = it }
-        .pointerInput(gestureKey, enabled, viewport, threshold, leftEdge, rightEdge) {
+        .pointerInput(gestureKey, enabled, viewport, threshold, leftEdge, rightEdge, consumeRejectedVertical) {
             if (!enabled) return@pointerInput
             awaitEachGesture {
                 // Child tap zones consume DOWN normally. They must still receive taps.
@@ -77,7 +78,20 @@ internal fun Modifier.readerArticleSwipe(
                     x += delta.x
                     y += delta.y
                     if (!horizontal) {
-                        if (abs(y) > viewConfiguration.touchSlop && abs(y) >= abs(x)) break
+                        if (abs(y) > viewConfiguration.touchSlop && abs(y) >= abs(x)) {
+                            if (consumeRejectedVertical) {
+                                // The paginated reader has tap zones, not a vertical scroll
+                                // owner. Cancel those taps once this is a drag. List callers
+                                // leave this off so their vertical pager/scroll can claim it.
+                                var rejectedEvent = event
+                                while (true) {
+                                    rejectedEvent.changes.forEach { it.consume() }
+                                    if (rejectedEvent.changes.none { it.pressed }) break
+                                    rejectedEvent = awaitPointerEvent()
+                                }
+                            }
+                            break
+                        }
                         if (abs(x) > viewConfiguration.touchSlop && abs(x) > abs(y) * 1.2f) {
                             horizontal = true
                         }

@@ -447,6 +447,7 @@ fun EInkPaginatedContent(
                     .readerArticleSwipe(
                         gestureKey = documentGeneration to currentPage,
                         enabled = isInitialPaginationReady || totalPages > 0,
+                        consumeRejectedVertical = true,
                         onPrevious = currentOnPrevArticle?.let { action ->
                             { haptic.performHapticFeedback(HapticFeedbackType.LongPress); action() }
                         },

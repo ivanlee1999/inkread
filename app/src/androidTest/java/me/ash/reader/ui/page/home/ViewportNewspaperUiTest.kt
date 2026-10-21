@@ -7,6 +7,8 @@ import android.view.MotionEvent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -534,6 +536,8 @@ class ViewportNewspaperUiTest {
     @Test fun readerHorizontalSwipeHonorsAxisThresholdCancellationAndDocumentLifecycle() {
         val generation = mutableStateOf("article-a/page-1")
         val height = mutableStateOf(300.dp)
+        val verticalScrollEnabled = mutableStateOf(false)
+        val scrollState = ScrollState(0)
         val next = java.util.concurrent.atomic.AtomicInteger()
         val previous = java.util.concurrent.atomic.AtomicInteger()
         val taps = java.util.concurrent.atomic.AtomicInteger()
@@ -547,11 +551,18 @@ class ViewportNewspaperUiTest {
                     val leftEdge = WindowInsets.systemGestures.getLeft(edgeDensity, direction)
                     val rightEdge = WindowInsets.systemGestures.getRight(edgeDensity, direction)
                     SideEffect { systemLeftEdge.set(leftEdge); systemRightEdge.set(rightEdge) }
-                    Box(Modifier.fillMaxWidth().height(height.value).testTag("reader-swipe-surface")
-                        .readerArticleSwipe(generation.value, true,
-                            onPrevious = { previous.incrementAndGet() }, onNext = { next.incrementAndGet() })) {
-                        Text("Actual reader gesture with an independently clickable child",
-                            Modifier.fillMaxSize().clickable { taps.incrementAndGet() })
+                    Box(Modifier.fillMaxWidth().height(height.value)
+                        .verticalScroll(scrollState, enabled = verticalScrollEnabled.value)
+                        .testTag("reader-scroll-parent")) {
+                        Box(Modifier.fillMaxWidth()
+                            .height(if (verticalScrollEnabled.value) 900.dp else height.value)
+                            .testTag("reader-swipe-surface")
+                            .readerArticleSwipe(generation.value, true,
+                                onPrevious = { previous.incrementAndGet() }, onNext = { next.incrementAndGet() },
+                                consumeRejectedVertical = !verticalScrollEnabled.value)) {
+                            Text("Actual reader gesture with an independently clickable child",
+                                Modifier.fillMaxSize().clickable { taps.incrementAndGet() })
+                        }
                     }
                 }
             }
@@ -604,6 +615,16 @@ class ViewportNewspaperUiTest {
         }
         surface.performTouchInput { swipe(Offset(width * 0.8f, center.y), Offset(width * 0.2f, center.y), 250) }
         assertEquals("Cancellation does not permanently disable navigation", 2, next.get())
+        val beforeParentScrollTaps = taps.get()
+        compose.runOnIdle { verticalScrollEnabled.value = true }
+        compose.onNodeWithTag("reader-scroll-parent").performTouchInput {
+            swipe(Offset(width * 0.6f, this.height * 0.8f), Offset(width * 0.6f, this.height * 0.2f), 250)
+        }
+        compose.waitForIdle()
+        assertTrue("The shared article gesture must yield vertical movement to a real scrolling parent", scrollState.value > 0)
+        assertEquals("A parent-owned scroll never clicks through into its article", beforeParentScrollTaps, taps.get())
+        assertEquals("A parent-owned scroll does not navigate horizontally", 2, next.get())
+        assertEquals(1, previous.get())
     }
 
     private class Fixture(initial: List<ArticleFlowItem>) {
