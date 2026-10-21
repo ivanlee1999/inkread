@@ -7,6 +7,8 @@ import me.ash.reader.domain.model.article.ArticleWithFeed
 import me.ash.reader.domain.model.feed.Feed
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -31,6 +33,63 @@ class NewspaperViewportStateTest {
     private fun nextWithoutMarking(state: NewspaperViewportState) {
         present(state)
         assertTrue(state.turn(true, false) { throw AssertionError("Disabled read preference marked an article") })
+    }
+
+    @Test fun printedPartitionAndEnrichmentSurviveReaderReadStatusInvalidations() {
+        val state = NewspaperViewportState()
+        val pager = Any()
+        state.acceptSnapshot(pager, listOf(article("a", 2), article("b", 1)))
+        val rows = state.rows(2)
+        val partition = pages(listOf(0), listOf(1))
+        val enriched = partition.first().copy(rows = partition.first().rows.map {
+            it.copy(heightPx = 80, extraDescriptionLines = mapOf(0 to 2))
+        })
+        state.pageCache.retainPartition(rows, "same-geometry", emptySet(), partition)
+        state.pageCache.enriched[partition.first()] = enriched
+        state.recordReadStatus("a", false)
+        state.acceptSnapshot(pager, listOf(article("b", 1)))
+
+        assertSame(partition, state.pageCache.partition(state.rows(2), "same-geometry", emptySet()))
+        assertSame(enriched, state.pageCache.enriched[partition.first()])
+    }
+
+    @Test fun retainedPartitionUsesOnlyCurrentGeometryAndPrunesOldEnrichment() {
+        val cache = NewspaperViewportPageCache()
+        val rows = listOf(NewspaperRow(listOf(0), false, true))
+        val partition = pages(listOf(0), listOf(1))
+        cache.retainPartition(rows, "portrait", emptySet(), partition)
+        partition.forEach { cache.enriched[it] = it }
+        // Same-geometry appends retain fitted printed pages, but never obsolete partitions.
+        cache.retainPartition(rows, "portrait", setOf(0), listOf(partition.first()))
+        assertEquals(setOf(partition.first()), cache.enriched.keys)
+        assertNull(cache.partition(rows, "portrait", emptySet()))
+        // A width/font/settings geometry change invalidates all old fitted heights.
+        cache.retainPartition(rows, "landscape", emptySet(), partition)
+        assertTrue(cache.enriched.isEmpty())
+        assertNull(cache.partition(rows, "portrait", setOf(0)))
+        assertSame(partition, cache.partition(rows, "landscape", emptySet()))
+    }
+
+    @Test fun explicitRefreshAndNewPagerReleaseRetainedPartition() {
+        val state = NewspaperViewportState()
+        val pager = Any()
+        state.acceptSnapshot(pager, listOf(article("a")))
+        fun seedCache(): List<NewspaperRow> {
+            val rows = state.rows(2)
+            val partition = pages(listOf(0))
+            state.pageCache.retainPartition(rows, "geometry", emptySet(), partition)
+            state.pageCache.enriched[partition.first()] = partition.first()
+            return rows
+        }
+        val originalRows = seedCache()
+        state.reset()
+        assertNull(state.pageCache.partition(originalRows, "geometry", emptySet()))
+        assertTrue(state.pageCache.enriched.isEmpty())
+        state.acceptSnapshot(pager, listOf(article("a")))
+        val refreshedRows = seedCache()
+        state.acceptSnapshot(Any(), listOf(article("replacement")))
+        assertNull(state.pageCache.partition(refreshedRows, "geometry", emptySet()))
+        assertTrue(state.pageCache.enriched.isEmpty())
     }
 
     @Test fun appendedTallStoryCannotFillThePrintedIncompleteRowOrPage() {

@@ -13,6 +13,9 @@ import me.ash.reader.domain.model.article.ArticleWithFeed
  * printed page or shift later page identities. An explicit refresh starts a new edition.
  */
 internal class NewspaperViewportState {
+    // Layout data only: one current edition/geometry, never Compose nodes or image resources.
+    // Reader disposal must not discard the extra fitted lines of previously printed pages.
+    val pageCache = NewspaperViewportPageCache()
     private var pager: Any? = null
     private var layoutKey: Any? = null
     private var rowColumns = 0
@@ -70,6 +73,7 @@ internal class NewspaperViewportState {
     fun ownsPager(identity: Any): Boolean = pager === identity
 
     fun reset() {
+        pageCache.clear()
         rowItemCount = 0; rowColumns = 0; retainedRows = emptyList(); lockedPageEnds = emptySet()
         observedRead.clear(); observedStarred.clear(); readStatus.clear(); starredStatus.clear()
         items = emptyList()
@@ -181,5 +185,35 @@ internal class NewspaperViewportState {
             onMarkRead(outgoing)
         }
         return true
+    }
+}
+
+/** Bound to one edition and geometry; measured row/Compose caches remain composition-local. */
+internal class NewspaperViewportPageCache {
+    private var rows: List<NewspaperRow>? = null
+    private var geometry: Any? = null
+    private var breaks: Set<Int> = emptySet()
+    private var pages: List<NewspaperViewportPage> = emptyList()
+    val enriched = mutableMapOf<NewspaperViewportPage, NewspaperViewportPage>()
+
+    fun partition(rows: List<NewspaperRow>, geometry: Any, breaks: Set<Int>): List<NewspaperViewportPage>? =
+        if (this.rows === rows && this.geometry == geometry && this.breaks == breaks) pages else null
+
+    fun retainPartition(rows: List<NewspaperRow>, geometry: Any, breaks: Set<Int>,
+        pages: List<NewspaperViewportPage>) {
+        if (this.geometry != geometry) enriched.clear()
+        enriched.keys.retainAll(pages.toSet())
+        this.rows = rows
+        this.geometry = geometry
+        this.breaks = breaks
+        this.pages = pages
+    }
+
+    fun clear() {
+        rows = null
+        geometry = null
+        breaks = emptySet()
+        pages = emptyList()
+        enriched.clear()
     }
 }

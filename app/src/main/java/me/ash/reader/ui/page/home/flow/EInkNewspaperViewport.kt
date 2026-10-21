@@ -89,7 +89,7 @@ internal fun EInkNewspaperViewport(
         mutableMapOf<List<Any>, Int>()
     }
     val cacheBounds = remember(measurements) { intArrayOf(-1, -1) }
-    val pageCache = remember(measurements) { ViewportPageCache() }
+    val pageCache = state.pageCache
     val gestureKey = listOf(state.revision, state.layoutRevision, state.currentPage, columns, density.fontScale, settings)
     // Each subcomposition owns the immutable source that its row indexes. An existing slot can
     // recompose before the parent's next measure removes it after a filter/reset; it must never
@@ -170,9 +170,7 @@ internal fun EInkNewspaperViewport(
             return emptyList()
         }
         val breaks = state.pageBreaksFor(geometry)
-        val basePages = if (pageCache.rows === rows && pageCache.geometry == geometry && pageCache.breaks == breaks) {
-            pageCache.pages
-        } else {
+        val basePages = pageCache.partition(rows, geometry, breaks) ?: run {
             var cannotFit = false
             val measured = rows.flatMap { row ->
                 val fitted = variants(row)
@@ -198,9 +196,7 @@ internal fun EInkNewspaperViewport(
                 return@SubcomposeLayout layout(width, height) { if (notice.height <= height) notice.placeRelative(0, 0) }
             }
             packNewspaperViewportVariants(measured.size, height, breaks) { measured[it] }.also {
-                if (pageCache.geometry != geometry) pageCache.enriched.clear()
-                pageCache.enriched.keys.retainAll(it.toSet())
-                pageCache.rows = rows; pageCache.geometry = geometry; pageCache.breaks = breaks; pageCache.pages = it
+                pageCache.retainPartition(rows, geometry, breaks, it)
             }
         }
         var pages = basePages.map { pageCache.enriched[it] ?: it }
@@ -324,13 +320,4 @@ private fun NewspaperViewportRow(
         }
         if (row.isLead) HorizontalDivider(color = color, thickness = 0.5.dp)
     }
-}
-
-/** Cache complete partitions too: a page turn only composes its visible rows. */
-private class ViewportPageCache {
-    var rows: List<NewspaperRow>? = null
-    var geometry: Any? = null
-    var breaks: Set<Int> = emptySet()
-    var pages: List<NewspaperViewportPage> = emptyList()
-    val enriched = mutableMapOf<NewspaperViewportPage, NewspaperViewportPage>()
 }

@@ -18,7 +18,14 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import androidx.test.platform.app.InstrumentationRegistry
 import me.ash.reader.R
@@ -83,10 +90,20 @@ class EditorialChromeUiTest {
                 val sample = hasText(context.getString(R.string.preview_feed_name)) and hasAnyAncestor(hasTestTag("feeds-style-preview"))
                 parent.performScrollToNode(disclosure)
                 val initiallyExpanded = compose.onAllNodes(sample).fetchSemanticsNodes().isNotEmpty()
-                compose.onNode(disclosure).performClick()
-                if (initiallyExpanded) compose.onNode(sample).assertDoesNotExist() else compose.onNode(sample).assertIsDisplayed()
-                compose.onNode(disclosure).performClick()
-                if (initiallyExpanded) compose.onNode(sample).assertIsDisplayed() else compose.onNode(sample).assertDoesNotExist()
+                compose.onNode(disclosure).assertIsDisplayed().performClick()
+                if (initiallyExpanded) compose.onNode(sample).assertDoesNotExist() else {
+                    parent.performScrollToNode(sample)
+                    compose.onNode(sample).assertIsDisplayed()
+                }
+                // Expanding changes the real preview item's height. Scroll to each actual
+                // control/content before its visibility gate rather than assuming the old
+                // collapsed lazy-item offset also exposes the newly inserted publication.
+                parent.performScrollToNode(disclosure)
+                compose.onNode(disclosure).assertIsDisplayed().performClick()
+                if (initiallyExpanded) {
+                    parent.performScrollToNode(sample)
+                    compose.onNode(sample).assertIsDisplayed()
+                } else compose.onNode(sample).assertDoesNotExist()
                 for (filter in listOf(R.string.starred, R.string.unread)) {
                     val target = hasContentDescription(context.getString(filter)) and hasAnyAncestor(hasTestTag("feeds-style-preview"))
                     parent.performScrollToNode(target)
@@ -318,13 +335,14 @@ class EditorialChromeUiTest {
             compose.onNodeWithText(source, useUnmergedTree = true).assertIsDisplayed()
             val count = compose.onNodeWithText("7 Unread", useUnmergedTree = true).assertIsDisplayed()
             val countLayout = textLayout(count)
-            val countDiagnostics = "text=${countLayout.layoutInput.text.text}, font=$font, style=${countLayout.layoutInput.style}, constraints=${countLayout.layoutInput.constraints}, size=${countLayout.size}, " +
+            val countDiagnostics = "text=${countLayout.layoutInput.text.text}, font=$font, size=${countLayout.size}, constraints=${countLayout.layoutInput.constraints}, " +
                 "paragraph=${countLayout.multiParagraph.width}x${countLayout.multiParagraph.height}, " +
                 "overflowWidth=${countLayout.didOverflowWidth}, overflowHeight=${countLayout.didOverflowHeight}, " +
                 "lines=${(0 until countLayout.lineCount).map { line -> listOf(countLayout.getLineStart(line), countLayout.getLineEnd(line), countLayout.isLineEllipsized(line), countLayout.getLineTop(line), countLayout.getLineBottom(line), countLayout.getLineLeft(line), countLayout.getLineRight(line)) }}, " +
-                "countBounds=${count.getUnclippedBoundsInRoot()}, blockBounds=${compose.onNodeWithTag("publication-clean").getUnclippedBoundsInRoot()}"
-            if (countLayout.hasVisualOverflow) capture("diagnostic-publication-count-${(font * 100).toInt()}")
-            assertFalse("A long source may not ellipsize the independent unread count: $countDiagnostics", countLayout.hasVisualOverflow)
+                "countBounds=${count.getUnclippedBoundsInRoot()}, blockBounds=${compose.onNodeWithTag("publication-clean").getUnclippedBoundsInRoot()}, style=${countLayout.layoutInput.style}"
+            val countFailure = completeTextLayoutFailure(countLayout)
+            if (countFailure != null) capture("diagnostic-publication-count-${(font * 100).toInt()}")
+            assertNull("A long source may not clip or ellipsize the independent unread count: $countFailure; $countDiagnostics", countFailure)
             val block = compose.onNodeWithTag("publication-clean").getUnclippedBoundsInRoot()
             val countBounds = count.getUnclippedBoundsInRoot()
             val screen = compose.onRoot().getUnclippedBoundsInRoot()
@@ -341,6 +359,39 @@ class EditorialChromeUiTest {
         }
         assertEquals(2, opens)
         assertEquals(2, options)
+    }
+
+    @Test fun completeTextOracleRejectsActualClippingButNotUnusedParagraphWidth() {
+        lateinit var measurer: TextMeasurer
+        compose.setContent {
+            Theme(1.6f) {
+                val current = rememberTextMeasurer()
+                SideEffect { measurer = current }
+            }
+        }
+        compose.runOnIdle {
+            val allocated = measurer.measure("7 Unread", style = TextStyle(fontSize = 14.sp),
+                constraints = Constraints.fixedWidth(320))
+            val actualWidth = kotlin.math.ceil(allocated.getLineRight(0).toDouble()).toInt()
+            assertTrue(actualWidth < allocated.size.width)
+            val shrinkWrapped = allocated.copy(size = IntSize(actualWidth, allocated.size.height))
+            assertTrue("Reproduce the native semantics false positive", shrinkWrapped.hasVisualOverflow)
+            assertNull(completeTextLayoutFailure(shrinkWrapped))
+            assertNotNull("One actual clipped pixel must fail", completeTextLayoutFailure(
+                shrinkWrapped.copy(size = IntSize(actualWidth - 1, shrinkWrapped.size.height))))
+            assertNotNull("One clipped height pixel must fail", completeTextLayoutFailure(
+                shrinkWrapped.copy(size = IntSize(actualWidth, shrinkWrapped.size.height - 1))))
+            for (overflow in listOf(TextOverflow.Ellipsis, TextOverflow.Clip)) {
+                val clipped = measurer.measure("A long publication title with text that must not disappear",
+                    style = TextStyle(fontSize = 18.sp), constraints = Constraints(maxWidth = 60),
+                    maxLines = 1, overflow = overflow)
+                assertNotNull("Ellipsis or omitted lines must fail: $overflow", completeTextLayoutFailure(clipped))
+            }
+            val wrapped = measurer.measure("English and 中文阅读与排版设置 stay complete on several lines",
+                style = TextStyle(fontSize = 18.sp), constraints = Constraints(maxWidth = 120))
+            assertTrue(wrapped.lineCount > 1)
+            assertNull("Real multiline English/Chinese wrapping remains valid", completeTextLayoutFailure(wrapped))
+        }
     }
 
     private fun pageBack(): SemanticsNodeInteraction {
@@ -390,13 +441,14 @@ class EditorialChromeUiTest {
         assertTrue(rows.fetchSemanticsNodes().isNotEmpty())
         rows.fetchSemanticsNodes().indices.forEach { index ->
             val layout = textLayout(rows[index])
-            val diagnostics = "text=${layout.layoutInput.text.text}, fontScale=${layout.layoutInput.density.fontScale}, style=${layout.layoutInput.style}, " +
+            val diagnostics = "text=${layout.layoutInput.text.text}, fontScale=${layout.layoutInput.density.fontScale}, " +
                 "constraints=${layout.layoutInput.constraints}, size=${layout.size}, paragraph=${layout.multiParagraph.width}x${layout.multiParagraph.height}, " +
                 "overflowWidth=${layout.didOverflowWidth}, overflowHeight=${layout.didOverflowHeight}, " +
                 "lines=${(0 until layout.lineCount).map { line -> listOf(layout.getLineStart(line), layout.getLineEnd(line), layout.isLineEllipsized(line), layout.getLineTop(line), layout.getLineBottom(line), layout.getLineLeft(line), layout.getLineRight(line)) }}, " +
-                "bounds=${rows[index].getUnclippedBoundsInRoot()}"
-            if (layout.hasVisualOverflow) capture("diagnostic-settings-$parent-${(layout.layoutInput.density.fontScale * 100).toInt()}")
-            assertFalse("Setting text must wrap completely: $diagnostics", layout.hasVisualOverflow)
+                "bounds=${rows[index].getUnclippedBoundsInRoot()}, style=${layout.layoutInput.style}"
+            val failure = completeTextLayoutFailure(layout)
+            if (failure != null) capture("diagnostic-settings-$parent-${(layout.layoutInput.density.fontScale * 100).toInt()}")
+            assertNull("Setting text must wrap completely: $failure; $diagnostics", failure)
             for (line in 0 until layout.lineCount) assertFalse(layout.isLineEllipsized(line))
         }
     }

@@ -8,8 +8,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsDisplayed
@@ -146,6 +148,8 @@ class FirstFrameArticleLayoutUiTest {
         val preset = mutableStateOf<ReadingLayoutPresetPreference>(ReadingLayoutPresetPreference.Auto)
         val visible = mutableStateOf(true)
         val compositions = mutableListOf<ReadingLayoutMetrics>()
+        val measurements = mutableListOf<ReadingLayoutMetrics>()
+        val draws = mutableListOf<ReadingLayoutMetrics>()
         compose.setContent {
             val density = LocalDensity.current.density
             CompositionLocalProvider(
@@ -156,9 +160,15 @@ class FirstFrameArticleLayoutUiTest {
                 LocalEInkMode provides EInkModePreference.OFF,
             ) {
                 if (visible.value) {
-                    ArticleListPaneLayout(Modifier.requiredWidth(width.value)) { layout ->
-                        SideEffect { compositions += layout }
-                        Text("${layout.columns} columns")
+                    ArticleListPaneLayout(Modifier.requiredWidth(width.value)) { metrics ->
+                        SideEffect { compositions += metrics }
+                        Box(Modifier.fillMaxSize().layout { measurable, constraints ->
+                            measurements += metrics
+                            val placeable = measurable.measure(constraints)
+                            layout(placeable.width, placeable.height) { placeable.placeRelative(0, 0) }
+                        }.drawWithContent { drawContent(); draws += metrics }) {
+                            Text("${metrics.columns} columns")
+                        }
                     }
                 }
             }
@@ -171,6 +181,10 @@ class FirstFrameArticleLayoutUiTest {
                 assertTrue("The layout must compose without a blank-width waiting frame", compositions.isNotEmpty())
                 assertTrue("Only the actual pane/settings may reach article composition: $compositions",
                     compositions.all { it == expected })
+                assertTrue("The actual pane must be measured without stale geometry: $measurements",
+                    measurements.isNotEmpty() && measurements.all { it == expected })
+                assertTrue("Every visible resize frame must use the actual geometry: $draws",
+                    draws.isNotEmpty() && draws.all { it == expected })
             }
         }
         assertEveryComposition()
@@ -183,22 +197,33 @@ class FirstFrameArticleLayoutUiTest {
         scenarios.forEach { (nextWidth, nextScale, nextPreference) ->
             compose.runOnIdle {
                 compositions.clear()
-                width.value = nextWidth
-                scale.value = nextScale
-                preference.value = nextPreference
+                measurements.clear()
+                draws.clear()
+                Snapshot.withMutableSnapshot {
+                    width.value = nextWidth
+                    scale.value = nextScale
+                    preference.value = nextPreference
+                }
             }
             assertEveryComposition()
             compose.runOnIdle { visible.value = false }
             compose.waitForIdle()
-            compose.runOnIdle { compositions.clear(); visible.value = true }
+            compose.runOnIdle {
+                compositions.clear(); measurements.clear(); draws.clear()
+                visible.value = true
+            }
             assertEveryComposition()
         }
         compose.runOnIdle {
             compositions.clear()
-            width.value = 800.dp
-            scale.value = 1f
-            preference.value = ReadingColumnsPreference.Auto
-            preset.value = ReadingLayoutPresetPreference.Phone
+            measurements.clear()
+            draws.clear()
+            Snapshot.withMutableSnapshot {
+                width.value = 800.dp
+                scale.value = 1f
+                preference.value = ReadingColumnsPreference.Auto
+                preset.value = ReadingLayoutPresetPreference.Phone
+            }
         }
         assertEveryComposition()
     }
