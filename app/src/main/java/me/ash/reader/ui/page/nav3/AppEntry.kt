@@ -1,5 +1,6 @@
 package me.ash.reader.ui.page.nav3
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.togetherWith
@@ -8,12 +9,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
-import androidx.compose.material3.adaptive.layout.ListDetailPaneScaffoldRole
 import androidx.compose.material3.adaptive.layout.calculatePaneScaffoldDirective
-import androidx.compose.material3.adaptive.navigation.rememberListDetailPaneScaffoldNavigator
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.viewmodel.navigation3.rememberViewModelStoreNavEntryDecorator
@@ -23,13 +20,12 @@ import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
 import androidx.navigation3.ui.LocalNavAnimatedContentScope
 import androidx.navigation3.ui.NavDisplay
-import kotlinx.coroutines.delay
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import me.ash.reader.infrastructure.preference.LocalEInkMode
 import me.ash.reader.ui.motion.materialSharedAxisXIn
 import me.ash.reader.ui.motion.materialSharedAxisXOut
-import me.ash.reader.ui.page.adaptive.ArticleData
+import me.ash.reader.ui.page.adaptive.rememberArticleListNavigator
 import me.ash.reader.ui.page.adaptive.ArticleListReaderPage
 import me.ash.reader.ui.page.adaptive.ArticleListReaderViewModel
 import me.ash.reader.ui.page.home.feeds.FeedsPage
@@ -68,17 +64,16 @@ private const val INITIAL_OFFSET_FACTOR = 0.10f
 fun AppEntry(backStack: NavBackStack<NavKey>) {
     val subscribeViewModel = hiltViewModel<SubscribeViewModel>()
 
-    val onBack: () -> Unit = {
-        if (backStack.size == 1) backStack[0] = Route.Feeds else backStack.removeLastOrNull()
+    val currentRoute = backStack.lastOrNull()
+    val onBack: () -> Unit = { navigateAppBack(backStack, currentRoute, Route.Feeds) }
+
+    // NavDisplay only handles Back when there is a previous entry. A standalone external article
+    // link still has an in-app home; its reader handler takes priority while the article is open.
+    BackHandler(backStack.size == 1 && currentRoute != Route.Feeds && currentRoute != Route.Startup) {
+        onBack()
     }
 
     val scaffoldDirective = calculatePaneScaffoldDirective(currentWindowAdaptiveInfo())
-
-    val navigator =
-        rememberListDetailPaneScaffoldNavigator<ArticleData>(
-            scaffoldDirective = scaffoldDirective,
-            isDestinationHistoryAware = false,
-        )
 
     val einkMode = LocalEInkMode.current.isEInkMode()
 
@@ -116,8 +111,11 @@ fun AppEntry(backStack: NavBackStack<NavKey>) {
                 ) togetherWith
                     materialSharedAxisXOut(targetOffsetX = { (it * INITIAL_OFFSET_FACTOR).toInt() })
             },
-            onBack = { backStack.removeLastOrNull() },
+            onBack = onBack,
             entryProvider = { key ->
+                // Outgoing entries can remain composed during a transition. Their toolbar must
+                // only pop their own entry, never whatever newer route is now on top.
+                val onBack: () -> Unit = { navigateAppBack(backStack, key, Route.Feeds) }
                 when (key) {
                     Route.Feeds -> {
                         NavEntry(key) {
@@ -136,22 +134,11 @@ fun AppEntry(backStack: NavBackStack<NavKey>) {
                     }
                     is Route.Reading -> {
                         NavEntry(key) {
-                            val key = rememberSaveable(saver = Route.Reading.Saver) { key }
-
-                            LaunchedEffect(key) {
-                                if (key.articleId != null) {
-                                    delay(50L)
-                                    navigator.navigateTo(
-                                        ListDetailPaneScaffoldRole.Detail,
-                                        ArticleData(key.articleId),
-                                    )
-                                }
-                            }
+                            val navigator = rememberArticleListNavigator(scaffoldDirective, key.articleId)
 
                             val viewModel = hiltViewModel<ArticleListReaderViewModel>()
 
                             ArticleListReaderPage(
-                                scaffoldDirective = scaffoldDirective,
                                 navigator = navigator,
                                 sharedTransitionScope = this@SharedTransitionLayout,
                                 animatedVisibilityScope = LocalNavAnimatedContentScope.current,

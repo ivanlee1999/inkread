@@ -5,7 +5,6 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -33,26 +32,24 @@ fun FeedsBanner(
             .fillMaxWidth()
             .clickable(interactionSource = remember { MutableInteractionSource() },
                 indication = null, role = Role.Button, onClick = onClick)
-            .padding(vertical = if (compact) 6.dp else 12.dp),
-        verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 12.dp),
+            .heightIn(min = 48.dp)
+            .padding(vertical = if (compact) 6.dp else 10.dp),
     ) {
-        if (!compact) HorizontalDivider(color = MaterialTheme.colorScheme.onSurface, thickness = 2.dp)
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             Column(Modifier.weight(1f)) {
                 Text(filter.toName(), fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold,
                     style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.headlineMedium,
                     color = MaterialTheme.colorScheme.onSurface)
                 if (!desc.isNullOrBlank()) {
-                    Spacer(Modifier.height(if (compact) 2.dp else 8.dp))
+                    Spacer(Modifier.height(2.dp))
                     Text(desc, style = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.bodyMedium,
                         maxLines = if (compact) 1 else Int.MAX_VALUE,
                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        color = MaterialTheme.colorScheme.onSurface)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             Icon(imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
                 contentDescription = null, tint = MaterialTheme.colorScheme.onSurface)
         }
-        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface)
     }
 }

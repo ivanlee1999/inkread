@@ -189,6 +189,7 @@ fun ReadingPage(
                                     }
                                 } else null,
                                 onNavigateToStylePage = onNavigateToStylePage,
+                                onBack = { onNavAction(NavigationAction.Close) },
                                 currentArticleIndex = readerState.articleOrdinal,
                                 totalArticleCount = readerState.totalArticleCount,
                             )

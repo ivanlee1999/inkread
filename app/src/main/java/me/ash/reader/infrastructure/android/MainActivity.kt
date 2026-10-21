@@ -213,21 +213,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        Log.d("InkRead", "dispatchKeyEvent: code=${event.keyCode} action=${event.action} repeat=${event.repeatCount}")
-        if (settingsProvider.settings.einkMode.isEInkMode() && VolumeKeyEventBus.hasActiveConsumer()) {
-            when (event.keyCode) {
-                KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_UP -> {
-                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
-                        val direction = if (event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)
-                            VolumeKeyEvent.NEXT else VolumeKeyEvent.PREV
-                        Log.d("InkRead", "Volume key: emitting $direction")
-                        VolumeKeyEventBus.emit(direction)
-                    }
-                    return true
-                }
-                KeyEvent.KEYCODE_VOLUME_MUTE -> return true
-            }
-        }
+        if (dispatchEInkVolumeKey(
+                settingsProvider.settings.einkMode.isEInkMode(),
+                event.keyCode,
+                event.action,
+                event.repeatCount,
+            )) return true
         return super.dispatchKeyEvent(event)
     }
 

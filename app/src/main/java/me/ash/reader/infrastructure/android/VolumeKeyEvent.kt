@@ -13,7 +13,7 @@ enum class VolumeKeyEvent {
 /**
  * Priority levels for volume key event consumers.
  * Higher priority consumers receive events exclusively when active.
- * ReadingPage (article view) uses [HIGH]; FlowPage (list) uses [LOW].
+ * ReadingPage (article view) uses [HIGH]; active article/folder lists use [LOW].
  */
 enum class VolumeKeyPriority {
     LOW,
@@ -60,7 +60,7 @@ object VolumeKeyEventBus {
         }
     }
 
-    /** Leave volume controls alone on feeds, settings, or any screen without a pager. */
+    /** Leave system volume controls alone on screens without an active pager. */
     fun hasActiveConsumer(): Boolean = synchronized(activeConsumers) { activeConsumers.isNotEmpty() }
 
     /** Collect without owning focus when a containing reader already owns it. */

@@ -43,6 +43,9 @@ import me.ash.reader.domain.service.AbstractRssRepository
 import me.ash.reader.domain.service.RssService
 import me.ash.reader.domain.service.SyncWorker
 import me.ash.reader.infrastructure.rss.ReaderCacheHelper
+import me.ash.reader.ui.page.home.flow.MeasuredNewspaperRow
+import me.ash.reader.ui.page.home.flow.NewspaperRow
+import me.ash.reader.ui.page.home.flow.NewspaperViewportPage
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -109,6 +112,44 @@ class ArticleListReaderViewModelTest {
 
         assertNull(fixture.viewModel.readerStateStateFlow.value.articleId)
         assertNull(fixture.viewModel.readingUiState.value.articleWithFeed)
+    }
+
+    @Test fun `reader close clears loading ownership but retains exact unread edition page for reopening`() = runTest(dispatcher) {
+        val a = article("A")
+        val b = article("B")
+        val c = article("C")
+        val fixture = fixture(a, b, c)
+        val pager = fixture.paging.pagerFlow.value.pager
+        val source = listOf(a, b, c).map { ArticleFlowItem.Article(it) }
+        val edition = fixture.viewModel.newspaperViewportState
+        edition.acceptSnapshot(pager, source)
+        val pages = source.indices.map {
+            NewspaperViewportPage(listOf(MeasuredNewspaperRow(NewspaperRow(listOf(it), false, false), 100)))
+        }
+        edition.updatePages(pages, "full-window")
+        edition.presented(edition.displayedIndices)
+        edition.turn(true, false) { error("Opening/closing must not mark the list") }
+        edition.presented(edition.displayedIndices)
+        fixture.viewModel.captureReaderSequence(pager, source)
+        fixture.viewModel.initData(b.article.id, 1)
+        runCurrent()
+        edition.recordReadStatus(b.article.id, false)
+        edition.acceptSnapshot(pager, listOf(source[0], source[2]))
+
+        fixture.viewModel.clearReadingData()
+
+        assertNull(fixture.viewModel.readerStateStateFlow.value.articleId)
+        assertNull(fixture.viewModel.readingUiState.value.articleWithFeed)
+        assertEquals(1, edition.currentPage)
+        assertEquals(pages, edition.pages)
+        assertEquals(listOf(b.article.id), edition.displayedArticles.map { it.article.id })
+        assertEquals(false, edition.displayedArticles.single().article.isUnread)
+        fixture.viewModel.captureReaderSequence(pager, edition.items)
+        fixture.viewModel.initData(b.article.id, 1)
+        runCurrent()
+        assertEquals(b.article.id, fixture.viewModel.readerStateStateFlow.value.articleId)
+        assertEquals(a.article.id, fixture.viewModel.readerStateStateFlow.value.previousArticle?.articleId)
+        assertEquals(c.article.id, fixture.viewModel.readerStateStateFlow.value.nextArticle?.articleId)
     }
 
     @Test fun `description selection cancels full content and its delayed loading state`() = runTest(dispatcher) {

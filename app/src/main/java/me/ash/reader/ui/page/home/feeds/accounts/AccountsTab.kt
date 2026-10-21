@@ -7,10 +7,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.People
 import androidx.compose.material.icons.rounded.Add
@@ -25,6 +28,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -53,6 +58,7 @@ fun AccountsTab(
         title = { Text(text = stringResource(R.string.accounts)) },
         text = {
             FlowRow(
+                modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.Start),
                 verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
             ) {
@@ -61,11 +67,14 @@ fun AccountsTab(
                     Column(
                         modifier =
                             Modifier
+                                .width(88.dp)
                                 .clip(MaterialTheme.shapes.medium)
+                                .semantics { this.selected = selected }
                                 .clickable {
                                     if (selected) onClickSettings() else onAccountSwitch(account)
                                 }
-                                .padding(8.dp)
+                                .padding(8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
                         IconContainer(selected = selected) {
                             AccountIcon(account = account, selected = selected)
@@ -76,9 +85,11 @@ fun AccountsTab(
                 Column(
                     modifier =
                         Modifier
+                            .width(88.dp)
                             .clip(MaterialTheme.shapes.medium)
                             .clickable(onClick = onClickManage)
-                            .padding(8.dp)
+                            .padding(8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     IconContainer(selected = false) {
                         Icon(Icons.Rounded.Add, null, modifier = Modifier.size(24.dp))
@@ -127,7 +138,7 @@ private fun AccountIcon(account: Account, selected: Boolean) {
         Icon(
             modifier = Modifier.size(24.dp),
             imageVector = icon,
-            contentDescription = account.name,
+            contentDescription = null,
             tint = contentColor,
         )
     } else {
@@ -135,7 +146,7 @@ private fun AccountIcon(account: Account, selected: Boolean) {
             Icon(
                 modifier = Modifier.size(24.dp),
                 painter = it,
-                contentDescription = account.name,
+                contentDescription = null,
                 tint = contentColor,
             )
         }
@@ -148,12 +159,13 @@ private fun AccountLabel(text: String, modifier: Modifier = Modifier) {
     Text(
         modifier = modifier
             .padding(top = 6.dp)
-            .width(52.dp),
+            .width(72.dp),
         textAlign = TextAlign.Center,
         text = text,
-        style = MaterialTheme.typography.bodySmall.merge(fontSize = 11.sp, letterSpacing = 0.sp),
+        style = MaterialTheme.typography.bodySmall.merge(letterSpacing = 0.sp),
         color = MaterialTheme.colorScheme.onSurface,
-        maxLines = 1,
+        minLines = 2,
+        maxLines = 2,
         overflow = TextOverflow.Ellipsis,
     )
 }

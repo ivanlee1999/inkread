@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
@@ -76,7 +75,6 @@ import me.ash.reader.infrastructure.preference.not
 import me.ash.reader.ui.component.base.BlockRadioButton
 import me.ash.reader.ui.component.base.BlockRadioGroupButtonItem
 import me.ash.reader.ui.component.base.DisplayText
-import me.ash.reader.ui.component.base.DynamicSVGImage
 import me.ash.reader.ui.component.base.FeedbackIconButton
 import me.ash.reader.ui.component.base.RYScaffold
 import me.ash.reader.ui.component.base.RYSwitch
@@ -88,8 +86,6 @@ import me.ash.reader.ui.ext.ExternalFonts
 import me.ash.reader.ui.ext.MimeType
 import me.ash.reader.ui.ext.showToast
 import me.ash.reader.ui.page.settings.SettingItem
-import me.ash.reader.ui.svg.PALETTE
-import me.ash.reader.ui.svg.SVGString
 import me.ash.reader.ui.theme.palette.TonalPalettes
 import me.ash.reader.ui.theme.palette.TonalPalettes.Companion.toTonalPalettes
 import me.ash.reader.ui.theme.palette.checkColorHex
@@ -185,28 +181,6 @@ fun ColorAndStylePage(
             LazyColumn {
                 item {
                     DisplayText(text = stringResource(R.string.color_and_style), desc = "")
-                }
-                item {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 24.dp)
-                            .aspectRatio(1.38f)
-                            .clip(RoundedCornerShape(24.dp))
-                            .background(
-                                MaterialTheme.colorScheme.surfaceContainerLow
-                            )
-                            .clickable { },
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        DynamicSVGImage(
-                            modifier = Modifier.padding(60.dp),
-                            svgImageString = SVGString.PALETTE,
-                            contentDescription = stringResource(R.string.color_and_style),
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(24.dp))
                 }
                 item {
                     BlockRadioButton(

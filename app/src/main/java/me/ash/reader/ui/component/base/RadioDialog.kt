@@ -40,7 +40,7 @@ fun RadioDialog(
         title = {
             Text(
                 text = title,
-                maxLines = 1,
+                maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.titleLarge,
             )

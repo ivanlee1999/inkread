@@ -2,6 +2,9 @@ package me.ash.reader.ui.page.home
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.view.ViewTreeObserver
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.semantics.*
@@ -25,7 +28,12 @@ import kotlin.math.min
  * This is an occupancy diagnostic, not a claim that a page of short sources should be 100% ink.
  */
 internal object NativePageDensityCapture {
-    fun capture(compose: ComposeContentTestRule, name: String, viewportTag: String, recordDensity: Boolean = true) {
+    fun capture(
+        compose: ComposeContentTestRule, name: String, viewportTag: String,
+        recordDensity: Boolean = true,
+        contentBoundsOnScreen: (() -> Rect)? = null,
+        beforeCaptureFrame: (() -> Unit)? = null,
+    ) {
         compose.waitForIdle()
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -33,7 +41,24 @@ internal object NativePageDensityCapture {
         val directory = if (output.isNullOrBlank()) File(context.getExternalFilesDir(null), "newspaper-screenshots") else File(output)
         check(directory.isDirectory || directory.mkdirs())
         val stem = "newspaper-$name-${context.resources.configuration.screenWidthDp}"
-        val bitmap = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
+        // Compose semantics can be ready before SurfaceFlinger has received the first real
+        // frame. Wait for committed view drawing, then reject a uniformly blank content region.
+        // System bars are outside these Compose-window bounds and cannot satisfy this guard.
+        var captured: Bitmap? = null
+        for (attempt in 1..3) {
+            beforeCaptureFrame?.invoke()
+            awaitCommittedFrames(compose)
+            val candidate = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
+            val explicitBounds = contentBoundsOnScreen?.invoke()
+            val rendered = if (explicitBounds == null) containsRenderedContent(compose, candidate)
+                else regionHasRenderedContrast(candidate, explicitBounds)
+            if (rendered) {
+                captured = candidate
+                break
+            }
+            candidate.recycle()
+        }
+        val bitmap = checkNotNull(captured) { "$name stayed blank inside its real content bounds after three committed frames" }
         val screenshot = File(directory, "$stem.png")
         screenshot.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
         check(screenshot.length() > 0)
@@ -162,5 +187,80 @@ internal object NativePageDensityCapture {
             .put("textLines", textLines).put("photographs", photographs)
             .put("definition", "Union of actual laid-out text-line extents and decoded photograph non-paper pixels. Includes only tagged placed source blocks. Excludes measurement-only nodes, date furniture, card rectangles, unused photo reservations, letterboxing, rules, padding, header and controls. Sparse pages may legitimately remain blank.")
         File(directory, "$stem.density.json").writeText(report.toString(2))
+    }
+    private fun awaitCommittedFrames(compose: ComposeContentTestRule) {
+        compose.waitForIdle()
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.waitForIdleSync()
+        val views = compose.onAllNodes(isRoot()).fetchSemanticsNodes()
+            .map { (it.root as ViewRootForTest).view }.distinct()
+        check(views.isNotEmpty())
+        val committed = CountDownLatch(views.size)
+        compose.runOnUiThread {
+            views.forEach { view ->
+                check(view.isAttachedToWindow && view.isShown) { "Capture host is not visibly attached" }
+                if (view.isHardwareAccelerated) {
+                    view.viewTreeObserver.registerFrameCommitCallback { committed.countDown() }
+                } else {
+                    val listener = object : ViewTreeObserver.OnDrawListener {
+                        override fun onDraw() {
+                            view.post {
+                                if (view.viewTreeObserver.isAlive) view.viewTreeObserver.removeOnDrawListener(this)
+                                committed.countDown()
+                            }
+                        }
+                    }
+                    view.viewTreeObserver.addOnDrawListener(listener)
+                }
+                view.invalidate()
+            }
+        }
+        check(committed.await(5, TimeUnit.SECONDS)) { "Native window did not commit its requested capture frame" }
+        instrumentation.waitForIdleSync()
+    }
+
+    private fun containsRenderedContent(compose: ComposeContentTestRule, bitmap: Bitmap): Boolean {
+        val textNodes = compose.onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsProperties.Text), useUnmergedTree = true)
+            .fetchSemanticsNodes().filter { node ->
+                node.boundsInRoot.width > 1f && node.boundsInRoot.height > 1f &&
+                    node.config[SemanticsProperties.Text].any { it.text.isNotBlank() }
+            }
+        val nodes = textNodes.ifEmpty { compose.onAllNodes(isRoot()).fetchSemanticsNodes() }
+        return nodes.any { node ->
+            val view = (node.root as ViewRootForTest).view
+            val origin = IntArray(2)
+            compose.runOnUiThread { view.getLocationOnScreen(origin) }
+            val bounds = node.boundsInRoot
+            // A WebView has no Compose Text children. In that case exclude the outer edge too,
+            // so a navigation/system boundary line cannot masquerade as a rendered document.
+            val inset = if (textNodes.isEmpty()) 16 else 0
+            regionHasRenderedContrast(bitmap, Rect(
+                bounds.left + origin[0] + inset, bounds.top + origin[1] + inset,
+                bounds.right + origin[0] - inset, bounds.bottom + origin[1] - inset,
+            ))
+        }
+    }
+
+    private fun regionHasRenderedContrast(bitmap: Bitmap, bounds: Rect): Boolean {
+        val left = ceil(bounds.left).toInt().coerceIn(0, bitmap.width)
+        val top = ceil(bounds.top).toInt().coerceIn(0, bitmap.height)
+        val right = floor(bounds.right).toInt().coerceIn(left, bitmap.width)
+        val bottom = floor(bounds.bottom).toInt().coerceIn(top, bitmap.height)
+        if (right <= left || bottom <= top) return false
+        val histogram = IntArray(256)
+        for (y in top until bottom) for (x in left until right) {
+            val pixel = bitmap.getPixel(x, y)
+            val value = (Color.red(pixel) * 299 + Color.green(pixel) * 587 + Color.blue(pixel) * 114) / 1000
+            histogram[value]++
+        }
+        val lowest = histogram.indexOfFirst { it > 0 }
+        val highest = histogram.indexOfLast { it > 0 }
+        val contrast = highest - lowest
+        if (contrast < 48) return false
+        // Relative contrast works for both white paper and dark settings. Neither system bars
+        // nor a uniform panel can pass because callers supply actual interior content bounds.
+        val darker = (lowest..lowest + contrast / 3).sumOf { histogram[it] }
+        val lighter = (highest - contrast / 3..highest).sumOf { histogram[it] }
+        return darker >= 12 && lighter >= 12
     }
 }

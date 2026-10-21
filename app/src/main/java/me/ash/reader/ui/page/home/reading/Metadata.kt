@@ -9,17 +9,19 @@ import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.derivedStateOf
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import me.ash.reader.infrastructure.preference.LocalReadingFonts
 import me.ash.reader.infrastructure.preference.LocalReadingTitleAlign
 import me.ash.reader.infrastructure.preference.LocalReadingTitleBold
 import me.ash.reader.infrastructure.preference.LocalReadingTitleUpperCase
+import me.ash.reader.ui.component.articleByline
 import me.ash.reader.ui.ext.formatAsString
 import me.ash.reader.ui.ext.requiresBidi
 import me.ash.reader.ui.theme.applyTextDirection
@@ -42,9 +44,11 @@ fun Metadata(
         remember(publishedDate) { publishedDate.formatAsString(context, atHourMinute = true) }
     val fontFamily = LocalReadingFonts.current.asFontFamily(context)
 
-    val titleUpperCaseString by remember { derivedStateOf { title.uppercase() } }
-
-    val labelColor = MaterialTheme.colorScheme.outline.copy(alpha = .7f)
+    val displayTitle = if (titleUpperCase.value) title.uppercase() else title
+    val metadata = listOf(articleByline(feedName, author), dateString)
+        .filter { it.isNotBlank() }
+        .joinToString(" · ")
+    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
 
     Column(
         modifier =
@@ -53,16 +57,8 @@ fun Metadata(
                 .padding(12.dp)
     ) {
         Text(
-            modifier = Modifier.fillMaxWidth(),
-            text = dateString,
-            color = labelColor,
-            style = MaterialTheme.typography.labelMedium.merge(fontFamily = fontFamily),
-            textAlign = titleAlign,
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            modifier = Modifier.fillMaxWidth(),
-            text = if (titleUpperCase.value) titleUpperCaseString else title,
+            modifier = Modifier.fillMaxWidth().semantics { heading() }.testTag("reader-headline"),
+            text = displayTitle,
             color = MaterialTheme.colorScheme.onSurface,
             style =
                 MaterialTheme.typography.headlineLarge
@@ -73,23 +69,12 @@ fun Metadata(
                     .applyTextDirection(requiresBidi = title.requiresBidi()),
             textAlign = titleAlign,
         )
-        Spacer(modifier = Modifier.height(4.dp))
-        author?.let {
-            if (it.isNotEmpty()) {
-                Text(
-                    modifier = Modifier.fillMaxWidth(),
-                    text = it,
-                    color = labelColor,
-                    style = MaterialTheme.typography.labelMedium.merge(fontFamily = fontFamily),
-                    textAlign = titleAlign,
-                )
-            }
-        }
+        Spacer(modifier = Modifier.height(8.dp))
         Text(
-            modifier = Modifier.fillMaxWidth(),
-            text = feedName,
+            modifier = Modifier.fillMaxWidth().testTag("reader-byline"),
+            text = metadata,
             color = labelColor,
-            style = MaterialTheme.typography.labelMedium.merge(fontFamily = fontFamily),
+            style = MaterialTheme.typography.bodySmall.merge(fontFamily = fontFamily),
             textAlign = titleAlign,
         )
     }

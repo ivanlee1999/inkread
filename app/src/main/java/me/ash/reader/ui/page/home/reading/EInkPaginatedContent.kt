@@ -50,6 +50,7 @@ import kotlinx.coroutines.withContext
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.launch
+import me.ash.reader.ui.component.articleByline
 import me.ash.reader.infrastructure.android.VolumeKeyEvent
 import me.ash.reader.infrastructure.android.VolumeKeyEventBus
 import me.ash.reader.infrastructure.android.VolumeKeyPriority
@@ -96,6 +97,7 @@ fun EInkPaginatedContent(
     totalArticleCount: Int? = null,
     reserveVolumeKeys: Boolean = true,
     volumeKeyOwner: Any? = null,
+    onBack: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -578,6 +580,7 @@ fun EInkPaginatedContent(
                 progress = progress,
                 currentArticleIndex = currentArticleIndex,
                 totalArticleCount = totalArticleCount,
+                onBack = onBack,
             )
         }
     }
@@ -678,11 +681,9 @@ private fun writeArticleHtml(
     generation: String,
 ) {
     val dateStr = SimpleDateFormat("MMM d, yyyy · HH:mm", Locale.getDefault()).format(publishedDate)
-    val metaLine = buildString {
-        append(feedName)
-        if (!author.isNullOrBlank()) append(" · $author")
-        append(" · $dateStr")
-    }
+    val metaLine = listOf(articleByline(feedName, author), dateStr)
+        .filter { it.isNotBlank() }
+        .joinToString(" · ")
     fun String.esc() = replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     val escapedTitle = title.esc()
     val escapedMeta = metaLine.esc()
@@ -800,9 +801,7 @@ iframe, video, embed, object {
     break-inside: avoid;
 }
 .eink-metadata {
-    margin-bottom: 1.2em;
-    padding-bottom: 0.8em;
-    border-bottom: 1px solid #999;
+    margin-bottom: 1.4em;
     break-inside: avoid-column;
 }
 .eink-metadata h1 {

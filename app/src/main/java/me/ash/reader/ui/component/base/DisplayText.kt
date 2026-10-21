@@ -7,9 +7,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import me.ash.reader.ui.interaction.alphaIndicationClickable
+import me.ash.reader.infrastructure.preference.BasicFontsPreference
+import me.ash.reader.infrastructure.preference.LocalBasicFonts
 
 @Composable
 fun DisplayText(
@@ -23,23 +28,23 @@ fun DisplayText(
             modifier
                 .fillMaxWidth()
                 .alphaIndicationClickable(enabled = onTextClick != null) { onTextClick?.invoke() }
-                .padding(start = 24.dp, top = 48.dp, end = 24.dp, bottom = 24.dp)
+                .padding(start = 24.dp, top = 24.dp, end = 24.dp, bottom = 20.dp)
     ) {
         Text(
-            modifier = Modifier,
+            modifier = Modifier.semantics { heading() },
             text = text,
-            style = MaterialTheme.typography.displaySmall,
+            style = MaterialTheme.typography.headlineLarge.copy(
+                fontFamily = if (LocalBasicFonts.current == BasicFontsPreference.External)
+                    MaterialTheme.typography.headlineLarge.fontFamily else FontFamily.Serif,
+                fontWeight = FontWeight.SemiBold,
+            ),
             color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
         )
-        RYExtensibleVisibility(visible = desc.isNotEmpty()) {
+        RYExtensibleVisibility(visible = desc.isNotEmpty(), animated = false) {
             Text(
                 text = desc,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.7f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }

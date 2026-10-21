@@ -153,6 +153,49 @@ class ViewportNewspaperUiTest {
         }
     }
 
+    @Test fun actualAuthorAndSourceStayBelowTheHeadlineWithoutRedundantCounts() {
+        val original = articles(photoUrls(), count = 1).filterIsInstance<ArticleFlowItem.Article>().single()
+        fun edition(author: String?): List<ArticleFlowItem> {
+            val story = original.articleWithFeed.article.copy(title = "A clear view of the world", author = author,
+                shortDescription = "Reported observations, not a second headline.").also { it.dateString = "09:35 PM" }
+            return listOf(ArticleFlowItem.Article(original.articleWithFeed.copy(article = story,
+                feed = original.articleWithFeed.feed.copy(name = "The Journal"))))
+        }
+        val fixture = Fixture(edition("Ada Chen"))
+        compose.setContent { Screen(fixture) }
+        awaitEdition(fixture)
+        for (scale in listOf(1.6f, 2f)) {
+            for (images in listOf(true, false)) {
+                compose.runOnIdle { fixture.fontScale.value = scale; fixture.images.value = images }
+                compose.waitForIdle()
+                assertWholePage(fixture)
+                compose.onNodeWithTag("article-byline", useUnmergedTree = true).assertTextEquals("The Journal · Ada Chen")
+                compose.onNodeWithTag("article-time", useUnmergedTree = true).assertTextEquals("09:35 PM")
+                val title = compose.onNodeWithTag("article-headline", useUnmergedTree = true).getUnclippedBoundsInRoot()
+                val metadata = compose.onNodeWithTag("article-metadata", useUnmergedTree = true).getUnclippedBoundsInRoot()
+                val summary = compose.onNodeWithTag("article-description", useUnmergedTree = true).getUnclippedBoundsInRoot()
+                assertTrue("The headline leads the attribution", metadata.top >= title.bottom)
+                assertTrue("The summary follows compact attribution", summary.top >= metadata.bottom)
+                if (!images) compose.onAllNodesWithTag("article-photo", useUnmergedTree = true).assertCountEquals(0)
+            }
+        }
+        for ((author, expected) in listOf(" the journal " to "The Journal", " " to "The Journal", null to "The Journal")) {
+            compose.runOnIdle { fixture.source.value = edition(author); fixture.pager.value = Any() }
+            awaitEdition(fixture)
+            compose.onNodeWithTag("article-byline", useUnmergedTree = true).assertTextEquals(expected)
+            assertWholePage(fixture)
+        }
+        compose.runOnIdle { fixture.source.value = edition("Ada Chen"); fixture.pager.value = Any(); fixture.hideSource.value = true }
+        awaitEdition(fixture)
+        compose.onNodeWithTag("article-byline", useUnmergedTree = true).assertTextEquals("Ada Chen")
+        compose.onNodeWithTag("article-time", useUnmergedTree = true).assertTextEquals("09:35 PM")
+        compose.runOnIdle { fixture.source.value = edition(" the journal "); fixture.pager.value = Any() }
+        awaitEdition(fixture)
+        compose.onAllNodesWithTag("article-byline", useUnmergedTree = true).assertCountEquals(0)
+        compose.onNodeWithTag("article-time", useUnmergedTree = true).assertTextEquals("09:35 PM")
+        assertWholePage(fixture)
+    }
+
     @Test fun appendingSourcesCannotRefillOrRecomposeAnAlreadyPrintedLastPage() {
         val photos = photoUrls()
         val fixture = Fixture(articles(photos, count = 8))
@@ -854,7 +897,7 @@ class ViewportNewspaperUiTest {
             assertTrue("A preview cannot disappear into a zero-height measurement", bounds.bottom - bounds.top > 0.dp)
             val headline = hasTestTag("article-headline") and hasAnyAncestor(hasTestTag("article-block-$id"))
             compose.onNode(headline, useUnmergedTree = true).assertIsDisplayed()
-            for (tag in listOf("article-headline", "article-description", "article-photo", "article-time")) {
+            for (tag in listOf("article-headline", "article-description", "article-photo", "article-time", "article-byline", "article-metadata")) {
                 val children = compose.onAllNodes(hasTestTag(tag) and hasAnyAncestor(hasTestTag("article-block-$id")), useUnmergedTree = true)
                 children.fetchSemanticsNodes().indices.forEach { index ->
                     val child = children[index].getUnclippedBoundsInRoot()
