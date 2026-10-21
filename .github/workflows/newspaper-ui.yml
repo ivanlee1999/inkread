@@ -57,6 +57,13 @@ jobs:
           set -euo pipefail
           adb shell wm size ${{ matrix.size }}
           adb shell wm density 160
+          # The google_apis image's Pixel Launcher can ANR and steal modal-window focus.
+          # Disable only that launcher in this disposable AVD; keep app Back tests unchanged.
+          if adb shell pm path com.google.android.apps.nexuslauncher | grep -q '^package:'; then
+            adb shell pm disable-user --user 0 com.google.android.apps.nexuslauncher
+            adb shell am force-stop com.google.android.apps.nexuslauncher
+            adb shell pm list packages -d | tr -d '\r' | grep -qx 'package:com.google.android.apps.nexuslauncher'
+          fi
           result=0
           ./gradlew --no-daemon --max-workers=2 connectedGithubDebugAndroidTest \
             -Pandroid.testInstrumentationRunnerArguments.class=me.ash.reader.ui.page.home.NewspaperUiTest \

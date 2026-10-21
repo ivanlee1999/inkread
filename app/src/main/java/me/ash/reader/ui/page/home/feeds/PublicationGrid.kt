@@ -23,8 +23,7 @@ fun PublicationGrid(
     modifier: Modifier = Modifier,
     itemContent: @Composable (index: Int, modifier: Modifier) -> Unit,
 ) {
-    // Capture density outside the subcomposition so runtime font changes invalidate its
-    // content even when the pane's pixel constraints are unchanged.
+    // Font scale is an explicit input to the measured column layout.
     val fontScale = LocalDensity.current.fontScale
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val layout = resolveReadingLayout(

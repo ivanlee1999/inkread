@@ -24,7 +24,6 @@ import me.ash.reader.ui.layout.resolveReadingLayout
 import me.ash.reader.ui.ext.dataStore
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import androidx.test.espresso.Espresso.pressBack
 import me.ash.reader.R
 import me.ash.reader.infrastructure.preference.LocalArticleListSwipeEndAction
 import me.ash.reader.infrastructure.preference.SwipeEndActionPreference
@@ -86,6 +85,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.platform.LocalDensity
@@ -222,7 +222,7 @@ class NewspaperUiTest {
         assertEquals(listOf("a2"), starActions)
         compose.onNodeWithText(titles[2]).performTouchInput { longClick() }
         compose.onNodeWithText(starLabel).assertIsDisplayed()
-        pressBack()
+        pressBackFromModal(compose.onNodeWithText(starLabel), compose.onNodeWithTag("article-list"))
         compose.onNodeWithText(starLabel).assertDoesNotExist()
         // The configured shortcut dispatches once without translating the newspaper block.
         val beforeSwipe = compose.onNodeWithText(titles[2]).fetchSemanticsNode().boundsInRoot
@@ -680,13 +680,10 @@ class NewspaperUiTest {
             }
             compose.onNodeWithText(context.getString(R.string.layout_preset)).performClick()
             compose.onNode(hasText(ReadingLayoutPresetPreference.Tablet.toDesc(context)) and isSelectable()).assertIsDisplayed()
-            // Espresso's default root picker can retain the unfocused activity root
-            // while Compose Dialog owns focus. Inject a real Back key through Android
-            // instead, so the focused dialog receives it without selecting a View root.
-            val instrumentation = InstrumentationRegistry.getInstrumentation()
-            instrumentation.waitForIdleSync()
-            instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
-            compose.waitForIdle()
+            pressBackFromModal(
+                compose.onNode(hasText(ReadingLayoutPresetPreference.Tablet.toDesc(context)) and isSelectable()),
+                compose.onNodeWithText(context.getString(R.string.reading_columns)),
+            )
             compose.onNode(hasText(ReadingLayoutPresetPreference.Tablet.toDesc(context)) and isSelectable()).assertDoesNotExist()
             assertEquals(ReadingLayoutPresetPreference.Auto, observed.get())
             assertEquals(ReadingLayoutPresetPreference.Auto, runBlocking {
@@ -1056,10 +1053,10 @@ class NewspaperUiTest {
                 else assertTrue("Phone subscriptions really render side by side", second.left >= first.right)
             }
             compose.onNodeWithText(context.getString(R.string.reading_columns)).performClick()
-            val instrumentation = InstrumentationRegistry.getInstrumentation()
-            instrumentation.waitForIdleSync()
-            instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
-            compose.waitForIdle()
+            pressBackFromModal(
+                compose.onNode(hasText(ReadingColumnsPreference.Two.toDesc(context)) and isSelectable()),
+                compose.onNodeWithTag("phone-column-0"),
+            )
             compose.onNode(hasText(ReadingColumnsPreference.Two.toDesc(context)) and isSelectable()).assertDoesNotExist()
             assertEquals(ReadingColumnsPreference.Auto, observed.get())
             assertEquals(ReadingColumnsPreference.Auto, runBlocking {
@@ -1220,6 +1217,27 @@ class NewspaperUiTest {
             assertEquals("The jump excludes the opaque pinned header", readableHeight * 0.9f, jump.toFloat(), 1f)
             assertTrue("Some readable lines overlap rather than skipping behind the header", jump < readableHeight)
         }
+    }
+
+    private fun pressBackFromModal(modal: SemanticsNodeInteraction, host: SemanticsNodeInteraction) {
+        val modalRoot = modal.assertIsDisplayed().fetchSemanticsNode().root as ViewRootForTest
+        val hostRoot = host.fetchSemanticsNode().root as ViewRootForTest
+        assertTrue("Back must target a separate modal window", modalRoot !== hostRoot)
+        // Being composed/displayed does not mean Android has assigned this new window focus.
+        // Sending Back before that transition can finish the host activity instead of cancelling
+        // the dialog, falsely satisfying an assertDoesNotExist while leaving a dead composition.
+        compose.waitUntil(5_000) {
+            compose.runOnUiThread { modalRoot.view.isAttachedToWindow && modalRoot.view.hasWindowFocus() }
+        }
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+        compose.waitUntil(5_000) {
+            compose.runOnUiThread { !modalRoot.view.isAttachedToWindow }
+        }
+        compose.runOnIdle {
+            assertTrue("Cancelling a dialog/popup must leave the original activity resumed",
+                hostRoot.isLifecycleInResumedState && hostRoot.view.isAttachedToWindow)
+        }
+        host.assertIsDisplayed()
     }
 
     private fun LazyListState.position(): Pair<Int, Int> = firstVisibleItemIndex to firstVisibleItemScrollOffset
