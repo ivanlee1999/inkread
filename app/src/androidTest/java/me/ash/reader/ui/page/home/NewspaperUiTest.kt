@@ -976,9 +976,9 @@ class NewspaperUiTest {
                 assertAboveBottomBar(last)
                 val bar = compose.onNodeWithTag("fixture-bottom-bar").getUnclippedBoundsInRoot()
                 val navigation = compose.onNodeWithTag("fixture-system-navigation").getUnclippedBoundsInRoot()
-                assertEquals("Requested navigation inset is fully reserved", inset.toFloat(), navigation.height.value, 0.5f)
+                assertEquals("Requested navigation inset is fully reserved", inset.toFloat(), (navigation.bottom - navigation.top).value, 0.5f)
                 assertEquals("Footer measurement includes every controls row and the navigation inset",
-                    57f + inset + if (expanded) 48f else 0f, bar.height.value, 0.5f)
+                    57f + inset + if (expanded) 48f else 0f, (bar.bottom - bar.top).value, 0.5f)
                 assertTrue("Article is above Android navigation too", last.getUnclippedBoundsInRoot().bottom <= navigation.top)
             }
         }
@@ -1071,8 +1071,8 @@ class NewspaperUiTest {
                             val items = stream.collectAsLazyPagingItems()
                             val state = rememberLazyListState()
                             SideEffect { list.set(state) }
-                            fun turn(forward: Boolean) {
-                                turnNewspaperPage(currentPage = page.value, pageCount = 3, capacity = 2,
+                            fun turn(forward: Boolean): Boolean {
+                                return turnNewspaperPage(currentPage = page.value, pageCount = 3, capacity = 2,
                                     forward = forward, listState = state, snapshot = items.itemSnapshotList,
                                     snapshotPager = stream, activePager = stream, markReadEnabled = true,
                                     article = { (it as? ArticleFlowItem.Article)?.articleWithFeed },
