@@ -39,8 +39,8 @@ data class ReadingLayoutMetrics(
 /**
  * Resolve against the measured content pane, not the whole display. A tablet in split-screen
  * must behave like a phone when its pane is narrow. Compact newspaper columns are available on
- * phones too, with a full-width lead article. Device presets adjust spacing, not permission to
- * use columns. Explicit choices apply to both articles and publications; Two falls back to One
+ * phones too, with a full-width lead article. The Phone preset keeps two lanes; Auto/Tablet add three or four only
+ * when the measured text budget supports them. Explicit choices apply to both articles and publications; Two falls back to One
  * only when the measured pane or accessibility text size cannot fit readable columns.
  */
 fun resolveReadingLayout(
@@ -66,17 +66,24 @@ fun resolveReadingLayout(
     val candidateColumnWidth = (contentWidth - columnSpacing) / 2f
     // 320dp phones have 142dp columns, enough for compact type even at 1.2x font scale.
     // Keep modest accessibility adjustments in two columns; only narrow panes or genuinely
-    // large text fall back. Leaf cards never shrink the user's font scale to make text fit.
+    // large text fall back. Article blocks never shrink the user's font scale to make text fit.
     val fitsTwoColumns = measuredWidth != null && width >= 320f &&
         candidateColumnWidth >= 112f * textScale
-    val columns = if (columnPreference != ReadingColumns.One && fitsTwoColumns) 2 else 1
+    val columns = when {
+        columnPreference == ReadingColumns.One || !fitsTwoColumns -> 1
+        columnPreference == ReadingColumns.Two || preset == ReadingLayoutPreset.Phone -> 2
+        // Tablets earn additional editorial lanes from actual pane width and system font scale.
+        // Two compact phone columns remain possible, but three/four need roomier body text.
+        else -> floor((contentWidth + columnSpacing) / (180f * textScale + columnSpacing))
+            .toInt().coerceIn(2, 4)
+    }
     val publicationColumns = when {
         columns == 1 -> 1
         columnPreference == ReadingColumns.Two || preset == ReadingLayoutPreset.Phone -> 2
         else -> floor((contentWidth + columnSpacing) / (240f * textScale + columnSpacing))
             .toInt().coerceIn(2, 3)
     }
-    val columnWidth = if (columns == 2) candidateColumnWidth else contentWidth
+    val columnWidth = (contentWidth - columnSpacing * (columns - 1)) / columns
 
     return ReadingLayoutMetrics(
         columns = columns,
@@ -89,12 +96,12 @@ fun resolveReadingLayout(
 }
 
 /**
- * For a leaf card, pass its actual image-slot width here, rather than resolving pane columns
- * again. Lead images span the pane; supporting images span just their own column.
+ * For an article block, pass its actual image-slot width here, rather than resolving pane columns
+ * again. Image slots may occupy part of a lead or feature; they do not necessarily span the pane.
  */
 fun resolveArticleImageHeightDp(availableWidthDp: Float, isLead: Boolean = false): Float {
     val width = availableWidthDp.takeIf { it.isFinite() && it > 0f } ?: 320f
-    val preferredHeight = if (isLead) (width / 2f).coerceIn(176f, 340f)
-    else (width / 1.6f).coerceIn(144f, 240f)
+    val preferredHeight = if (isLead) (width / 1.5f).coerceIn(104f, 208f)
+    else (width / 1.6f).coerceIn(104f, 184f)
     return preferredHeight.coerceAtMost(width / 1.4f)
 }

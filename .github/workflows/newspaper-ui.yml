@@ -32,6 +32,9 @@ jobs:
           - name: wide
             size: 800x1100
             width: 800
+          - name: broad-tablet
+            size: 1000x1200
+            width: 1000
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -78,7 +81,7 @@ jobs:
           destination = pathlib.Path("newspaper-screenshots")
           destination.mkdir(exist_ok=True)
           width = ${{ matrix.width }}
-          names = ("subscriptions", "subscriptions-gestures", "folders", "folders-collapsed", "articles-footer-insets", "articles", "articles-end", "articles-image-large-font", "articles-large-font-end", "photos-auto", "photos-phone", "photos-tablet", "photos-off", "photos-cached-offline")
+          names = ("subscriptions", "subscriptions-gestures", "folders", "folders-collapsed", "articles-footer-insets", "articles", "articles-end", "articles-image-large-font", "articles-large-font-end", "photos-auto", "photos-phone", "photos-tablet", "photos-off", "photos-cached-offline", "editorial-templates", "photos-alternate", "photos-missing")
           for name in names:
               filename = f"newspaper-{name}-{width}.png"
               matches = list(root.rglob(filename))

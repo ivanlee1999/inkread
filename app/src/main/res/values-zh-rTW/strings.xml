@@ -365,7 +365,7 @@
     <string name="reading_columns_auto">自動</string>
     <string name="reading_columns_one">單欄</string>
     <string name="reading_columns_two">雙欄</string>
-    <string name="reading_columns_auto_description">手機使用報紙式多欄，寬螢幕可並排顯示更多訂閱。</string>
+    <string name="reading_columns_auto_description">手機使用雙欄；平板在文字易讀時使用三欄或四欄報紙版式。</string>
     <string name="reading_columns_one_description">每篇文章和訂閱均使用通欄。</string>
     <string name="reading_columns_two_description">手機和平板優先使用雙欄，同時保持文字清晰易讀。</string>
 </resources>

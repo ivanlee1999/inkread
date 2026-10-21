@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="inkread_brand" translatable="false">InkRead</string>
     <string name="read_you" translatable="false">Read You</string>
     <string name="all">All</string>
     <plurals name="all_desc">
@@ -412,7 +413,7 @@
     <string name="reading_columns_auto">Auto</string>
     <string name="reading_columns_one">One column</string>
     <string name="reading_columns_two">Two columns</string>
-    <string name="reading_columns_auto_description">Newspaper columns on phones; more publications side by side on wide screens.</string>
+    <string name="reading_columns_auto_description">Two-column phone editions and richer three- or four-column tablet blocks when text fits.</string>
     <string name="reading_columns_one_description">One full-width column for every article and publication.</string>
     <string name="reading_columns_two_description">Two columns on phones and tablets when text fits comfortably.</string>
 </resources>

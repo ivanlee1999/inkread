@@ -40,7 +40,7 @@ fun PublicationBlock(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 144.dp)
+            .heightIn(min = 108.dp)
             .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -49,7 +49,7 @@ fun PublicationBlock(
                 onLongClick = onLongClick,
             )
             .padding(vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             FeedIcon(feedName = name, iconUrl = iconUrl, animate = false)

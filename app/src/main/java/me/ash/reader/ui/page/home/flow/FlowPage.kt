@@ -113,6 +113,7 @@ import me.ash.reader.ui.component.base.FeedbackIconButton
 import me.ash.reader.ui.component.base.RYExtensibleVisibility
 import me.ash.reader.ui.component.base.newspaperSwipeScroll
 import me.ash.reader.infrastructure.preference.LocalReadingColumns
+import me.ash.reader.ui.component.base.NewspaperMasthead
 import me.ash.reader.ui.component.base.RYScaffold
 import me.ash.reader.ui.component.scrollbar.VerticalScrollIndicatorFactory
 import me.ash.reader.ui.component.scrollbar.drawVerticalScrollIndicator
@@ -188,6 +189,10 @@ fun FlowPage(
     val renderedColumns = if (einkMode) einkPageColumns else newspaperColumns
     val currentPageCapacity by rememberUpdatedState(einkPageCapacity)
     val currentColumns by rememberUpdatedState(renderedColumns)
+    val targetPageCapacity by rememberUpdatedState(einkItemsPerPage)
+    val targetColumns by rememberUpdatedState(newspaperColumns)
+    val composedPaneWidth by rememberUpdatedState(articlePaneWidthPx)
+    val composedPaneHeight by rememberUpdatedState(einkAvailableHeightPx)
     // Hoisted so bottomBar can read them (updated via SideEffect inside AnimatedContent)
     var einkTotalPagesState by remember { mutableIntStateOf(1) }
     var einkArticleCountState by remember { mutableIntStateOf(0) }
@@ -200,6 +205,14 @@ fun FlowPage(
     val filterUiState = pagerData.filterState
 
     val listState = rememberSaveable(pagerData, saver = LazyListState.Saver) { LazyListState(0, 0) }
+    // A replacement feed/filter owns a fresh target; old geometry must never move its list.
+    val articleRestoration = remember(pagerData.pager, listState) { NewspaperArticleRestoration() }
+    val activePager by rememberUpdatedState(pagerData.pager)
+    val activeEinkMode by rememberUpdatedState(einkMode)
+    fun restorationLayoutKey(page: Int = einkCurrentPage): List<Any?> = listOf(
+        activePager, if (activeEinkMode) page else null,
+        if (activeEinkMode) einkPageCapacity else null, currentColumns,
+    )
     // Keep the source and its identity together: a new filter must not use the old snapshot.
     var currentPagingItems by remember {
         mutableStateOf<Pair<Any, LazyPagingItems<ArticleFlowItem>>?>(null)
@@ -328,6 +341,7 @@ fun FlowPage(
 
     // Buttons and hardware keys use exactly the same non-animated page/scroll change.
     val turnEinkPage: (Boolean) -> Boolean = { forward ->
+        articleRestoration.cancel()
         val source = currentPagingItems
         turnNewspaperPage(
             currentPage = einkCurrentPage,
@@ -361,9 +375,17 @@ fun FlowPage(
         readerState.articleId, listState, pagerData.pager, einkMode,
         if (einkMode) null else newspaperColumns,
     ) {
+        articleRestoration.cancel()
         val articleId = readerState.articleId ?: return@LaunchedEffect
         snapshotFlow {
-            currentPagingItems?.takeIf { it.first === pagerData.pager }?.second?.itemSnapshotList
+            // Rotation/return may initially compose the saved old lane count. Wait until its
+            // source-anchor remap has adopted the measured layout before targeting a brief.
+            val layoutReady = !einkMode || (articlePaneWidthPx > 0 && einkAvailableHeightPx > 0 &&
+                articlePaneWidthPx == composedPaneWidth && einkAvailableHeightPx == composedPaneHeight &&
+                einkPageCapacity == targetPageCapacity && einkPageColumns == targetColumns &&
+                currentPageCapacity == targetPageCapacity && currentColumns == targetColumns)
+            if (layoutReady) currentPagingItems?.takeIf { it.first === pagerData.pager }
+                ?.second?.itemSnapshotList else null
         }
             .first { snapshot ->
                 val index = snapshot?.indexOfFirst {
@@ -372,15 +394,22 @@ fun FlowPage(
                 if (index != -1) {
                     snapAppBarToCollapsed()
                     if (einkMode) {
-                        newspaperPageForSource(
+                        val change = newspaperPageForSource(
                             index, snapshot!!.size, currentPageCapacity, currentColumns,
                         ) { snapshot[it] is ArticleFlowItem.Date }
-                            .applyTo(listState) { einkCurrentPage = it }
+                        einkCurrentPage = change.page
+                        articleRestoration.request(NewspaperArticleRestoreTarget(
+                            articleId, index, change.rowIndex, currentColumns,
+                            restorationLayoutKey(change.page),
+                        ), listState)
                     } else {
                         val rows = newspaperRows(snapshot!!.size, currentColumns) {
                             snapshot[it] is ArticleFlowItem.Date
                         }
-                        listState.requestScrollToItem(rows.rowForSourceIndex(index))
+                        articleRestoration.request(NewspaperArticleRestoreTarget(
+                            articleId, index, rows.rowForSourceIndex(index), currentColumns,
+                            restorationLayoutKey(),
+                        ), listState)
                     }
                     true
                 } else false
@@ -415,10 +444,11 @@ fun FlowPage(
                         ),
                 ) {
                     if (einkMode) {
+                        Column {
                         TopAppBar(
                             title = {
                                 Text(
-                                    text = titleText,
+                                    text = stringResource(R.string.inkread_brand),
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
@@ -513,6 +543,11 @@ fun FlowPage(
                                 scrolledContainerColor = scrolledTopBarContainerColor
                             ),
                         )
+                        NewspaperMasthead(
+                            title = titleText,
+                            details = stringResource(R.string.articles_count, einkArticleCountState),
+                        )
+                        }
                     } else {
                     LargeTopAppBar(
                         modifier =
@@ -739,10 +774,11 @@ fun FlowPage(
                         currentColumns = { einkPageColumns },
                         isDate = { itemSnapshot[it] is ArticleFlowItem.Date },
                         onLayoutChange = { capacity, columns ->
+                            articleRestoration.cancel()
                             einkPageCapacity = capacity
                             einkPageColumns = columns
                         },
-                        onPageChange = { einkCurrentPage = it },
+                        onPageChange = { articleRestoration.cancel(); einkCurrentPage = it },
                     )
                     // Hoist pagination state up so bottomBar can access it
                     SideEffect {
@@ -967,6 +1003,17 @@ fun FlowPage(
                                 rowPlan = visibleNewspaperRows,
                                 horizontalPadding = readingLayout.horizontalPaddingDp.dp,
                                 columnSpacing = readingLayout.columnSpacingDp.dp,
+                                restoreArticleId = articleRestoration.target?.articleId,
+                                onArticlePositioned = { id, source, row, columns, offset ->
+                                    val pinnedHeader = if (articleListDateStickyHeader.value) {
+                                        listState.layoutInfo.visibleItemsInfo.filter {
+                                            it.contentType == CONTENT_TYPE_DATE_HEADER
+                                        }.maxOfOrNull { it.size } ?: 0
+                                    } else 0
+                                    articleRestoration.measured(id, source, row, columns,
+                                        (offset - pinnedHeader).coerceAtLeast(0),
+                                        restorationLayoutKey(), listState)
+                                },
                             )
 
                         }

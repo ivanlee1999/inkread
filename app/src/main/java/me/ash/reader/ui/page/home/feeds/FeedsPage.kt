@@ -69,7 +69,7 @@ import me.ash.reader.infrastructure.preference.LocalFeedsTopBarTonalElevation
 import me.ash.reader.infrastructure.preference.LocalNewVersionNumber
 import me.ash.reader.infrastructure.preference.LocalSkipVersionNumber
 import me.ash.reader.ui.component.FilterBar
-import me.ash.reader.ui.component.base.DisplayText
+import me.ash.reader.ui.component.base.NewspaperMasthead
 import me.ash.reader.ui.component.base.FeedbackIconButton
 import me.ash.reader.ui.component.base.RYScaffold
 import me.ash.reader.ui.component.base.newspaperSwipeScroll
@@ -249,10 +249,16 @@ fun FeedsPage(
                     userScrollEnabled = !einkMode,
                 ) {
                     item {
-                        DisplayText(text = feedsUiState.account?.name ?: "", desc = "") {
-                            hapticFeedback.performHapticFeedback(HapticFeedbackType.ContextClick)
-                            accountTabVisible = true
-                        }
+                        NewspaperMasthead(
+                            title = feedsUiState.account?.name ?: "",
+                            modifier = Modifier.clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) {
+                                hapticFeedback.performHapticFeedback(HapticFeedbackType.ContextClick)
+                                accountTabVisible = true
+                            },
+                        )
                     }
                     item {
                         FeedsBanner(
@@ -265,7 +271,7 @@ fun FeedsPage(
                     }
 
                     item {
-                        Spacer(modifier = Modifier.height(24.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()

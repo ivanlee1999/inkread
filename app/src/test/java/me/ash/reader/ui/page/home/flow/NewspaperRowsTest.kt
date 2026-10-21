@@ -32,4 +32,60 @@ class NewspaperRowsTest {
         assertTrue(newspaperRows(4, 2, start = 99) { false }.isEmpty())
         assertEquals((0..3).toList(), newspaperRows(4, 99, start = -2, end = 99) { false }.flatMap { it.indices })
     }
+    @Test fun threeColumnsAlternateFeatureBriefStacksAndEqualLanes() {
+        val rows = newspaperRows(10, 3) { false }
+        assertEquals(listOf(listOf(0), listOf(1, 2, 3), listOf(4, 5, 6), listOf(7, 8, 9)), rows.map { it.indices })
+        assertEquals(listOf(listOf(1), listOf(2, 3)), rows[1].slots.map { it.indices })
+        assertEquals(listOf(2, 1), rows[1].slots.map { it.span })
+        assertEquals(listOf(NewspaperStoryStyle.Feature, NewspaperStoryStyle.Brief), rows[1].slots.map { it.style })
+        assertEquals(listOf(1, 1, 1), rows[2].slots.map { it.span })
+    }
+
+    @Test fun fourColumnsHaveTwoBriefStacksWithoutReordering() {
+        val rows = newspaperRows(15, 4) { false }
+        assertEquals(listOf(listOf(0), (1..5).toList(), (6..9).toList(), (10..14).toList()), rows.map { it.indices })
+        assertEquals(listOf(listOf(1), listOf(2, 3), listOf(4, 5)), rows[1].slots.map { it.indices })
+        assertEquals(listOf(2, 1, 1), rows[1].slots.map { it.span })
+        assertEquals(listOf(4), rows[0].slots.map { it.span })
+    }
+
+    @Test fun shortSectionNeverConsumesNextDateAndTemplateResets() {
+        val rows = newspaperRows(13, 4) { it == 4 }
+        assertEquals(listOf(listOf(0), listOf(1, 2, 3), listOf(4), listOf(5), (6..10).toList(), listOf(11, 12)), rows.map { it.indices })
+        assertEquals(listOf(0, 5), rows.filter { it.isLead }.flatMap { it.indices })
+        assertEquals(listOf(2, 1, 1), rows[4].slots.map { it.span })
+        assertEquals(listOf(1, 1), rows[5].slots.map { it.span })
+    }
+
+    @Test fun pageSlicesResetEditorialTemplateUsingAbsoluteSourceIndices() {
+        val rows = newspaperRows(30, 4, start = 8, end = 18) { false }
+        assertEquals(listOf(listOf(8), (9..13).toList(), (14..17).toList()), rows.map { it.indices })
+        assertEquals(listOf(listOf(9), listOf(10, 11), listOf(12, 13)), rows[1].slots.map { it.indices })
+        assertEquals(1, rows.rowForSourceIndex(13))
+        assertEquals(2, rows.rowForSourceIndex(14))
+    }
+
+    @Test fun allLaneCountsRangesAndDateBoundariesPreserveExactlyOneSourceIdentity() {
+        (-1..6).forEach { requestedColumns ->
+            val columns = requestedColumns.coerceIn(1, 4)
+            (0..35).forEach { count ->
+                (0..count).forEach { start ->
+                    listOf(start, (start + 1).coerceAtMost(count), count).forEach { end ->
+                        val rows = newspaperRows(count, requestedColumns, start, end) { it % 7 == 0 }
+                        assertEquals((start until end).toList(), rows.flatMap { it.indices })
+                        rows.forEachIndexed { rowIndex, row ->
+                            assertEquals(row.indices, row.slots.flatMap { it.indices })
+                            assertTrue(row.slots.all { it.span in 1..columns && it.indices.size in 1..2 })
+                            assertTrue(row.slots.sumOf { it.span } <= columns)
+                            row.indices.forEach { assertEquals(rowIndex, rows.rowForSourceIndex(it)) }
+                            if (row.isDate) assertEquals(1, row.indices.size)
+                            else assertTrue(row.indices.none { it % 7 == 0 })
+                            if (row.isLead) assertEquals(1, row.indices.size)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
 }

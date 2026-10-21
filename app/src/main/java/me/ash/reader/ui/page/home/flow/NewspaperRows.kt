@@ -1,7 +1,25 @@
 package me.ash.reader.ui.page.home.flow
 
-/** One editorial row keeps original paging indices intact for navigation and read actions. */
-internal data class NewspaperRow(val indices: List<Int>, val isDate: Boolean, val isLead: Boolean)
+/** Editorial emphasis never depends on whether an image has finished loading. */
+enum class NewspaperStoryStyle { Standard, Feature, Brief }
+
+/** A lane can span two printed columns, or contain a bounded stack of short briefs. */
+internal data class NewspaperSlot(
+    val indices: List<Int>,
+    val span: Int = 1,
+    val style: NewspaperStoryStyle = NewspaperStoryStyle.Standard,
+)
+
+/**
+ * One lazy row keeps its contiguous, ascending source indices intact for navigation and read
+ * actions. Slots describe presentation only; flattening them is always exactly [indices].
+ */
+internal data class NewspaperRow(
+    val indices: List<Int>,
+    val isDate: Boolean,
+    val isLead: Boolean,
+    val slots: List<NewspaperSlot> = indices.map { NewspaperSlot(listOf(it)) },
+)
 
 internal fun newspaperRows(
     itemCount: Int,
@@ -10,26 +28,47 @@ internal fun newspaperRows(
     end: Int = itemCount,
     isDate: (Int) -> Boolean,
 ): List<NewspaperRow> = buildList {
-    var index = start.coerceIn(0, itemCount)
-    val limit = end.coerceIn(index, itemCount)
+    val count = itemCount.coerceAtLeast(0)
+    val lanes = columns.coerceIn(1, 4)
+    var index = start.coerceIn(0, count)
+    val limit = end.coerceIn(index, count)
     var lead = true
+    var supportingRow = 0
     while (index < limit) {
         if (isDate(index)) {
             add(NewspaperRow(listOf(index++), isDate = true, isLead = false))
             lead = true
+            supportingRow = 0
+        } else if (lead) {
+            val indices = listOf(index++)
+            add(NewspaperRow(indices, isDate = false, isLead = true,
+                slots = listOf(NewspaperSlot(indices, span = lanes, style = NewspaperStoryStyle.Feature))))
+            lead = false
         } else {
-            val indices = mutableListOf(index++)
-            if (!lead) {
-                while (indices.size < columns.coerceIn(1, 2) && index < limit && !isDate(index)) {
-                    indices.add(index++)
+            // Alternate a feature + brief stack with an ordinary column row. The template
+            // uses only source positions and date boundaries, never mutable article content.
+            val editorialCapacity = 1 + (lanes - 2) * 2
+            val tryEditorial = lanes >= 3 && supportingRow % 2 == 0
+            val capacity = if (tryEditorial) editorialCapacity else lanes
+            val indices = mutableListOf<Int>()
+            while (indices.size < capacity && index < limit && !isDate(index)) {
+                indices.add(index++)
+            }
+            val slots = if (tryEditorial && indices.size >= 3) {
+                listOf(NewspaperSlot(listOf(indices.first()), span = 2, style = NewspaperStoryStyle.Feature)) +
+                    indices.drop(1).chunked(2).map { NewspaperSlot(it, style = NewspaperStoryStyle.Brief) }
+            } else {
+                indices.mapIndexed { position, sourceIndex ->
+                    NewspaperSlot(listOf(sourceIndex), style =
+                        if (lanes > 1 && (position + supportingRow) % 2 == 1) NewspaperStoryStyle.Brief
+                        else NewspaperStoryStyle.Standard)
                 }
             }
-            add(NewspaperRow(indices, isDate = false, isLead = lead))
-            lead = false
+            add(NewspaperRow(indices, isDate = false, isLead = false, slots = slots))
+            supportingRow++
         }
     }
 }
 
 internal fun List<NewspaperRow>.rowForSourceIndex(index: Int): Int =
     indexOfFirst { index in it.indices }.coerceAtLeast(0)
-

@@ -365,7 +365,7 @@
     <string name="reading_columns_auto">自动</string>
     <string name="reading_columns_one">单栏</string>
     <string name="reading_columns_two">双栏</string>
-    <string name="reading_columns_auto_description">手机使用报纸式多栏，宽屏可并排显示更多订阅。</string>
+    <string name="reading_columns_auto_description">手机使用双栏；平板在文字可读时使用三栏或四栏报纸版式。</string>
     <string name="reading_columns_one_description">每篇文章和订阅均使用通栏。</string>
     <string name="reading_columns_two_description">手机和平板优先使用双栏，同时保持文字清晰易读。</string>
 </resources>

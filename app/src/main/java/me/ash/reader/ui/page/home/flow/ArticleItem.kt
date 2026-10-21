@@ -38,6 +38,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,6 +64,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.round
 import coil.size.Precision
 import coil.size.Scale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import me.ash.reader.R
 import me.ash.reader.domain.model.article.ArticleWithFeed
 import me.ash.reader.infrastructure.preference.FlowArticleListDescPreference
@@ -76,7 +80,7 @@ import me.ash.reader.infrastructure.preference.LocalFlowArticleListReadIndicator
 import me.ash.reader.infrastructure.preference.LocalFlowArticleListTime
 import me.ash.reader.infrastructure.preference.SwipeEndActionPreference
 import me.ash.reader.infrastructure.preference.SwipeStartActionPreference
-import me.ash.reader.infrastructure.rss.articleThumbnail
+import me.ash.reader.infrastructure.rss.articleImageRequest
 import me.ash.reader.ui.component.FeedIcon
 import me.ash.reader.ui.component.base.RYAsyncImage
 import me.ash.reader.ui.component.menu.AnimatedDropdownMenu
@@ -94,18 +98,26 @@ fun ArticleItem(
     isUnread: Boolean = articleWithFeed.article.isUnread,
     feedUnreadCount: Int = 0,
     isLead: Boolean = false,
+    storyStyle: NewspaperStoryStyle = NewspaperStoryStyle.Standard,
     onClick: (ArticleWithFeed) -> Unit = {},
     onLongClick: (() -> Unit)? = null,
 ) {
     val feed = articleWithFeed.feed
     val article = articleWithFeed.article
-    // Reuse an article's saved content, without downloading anything to build the list.
-    // Disabling images also skips HTML inspection, not just the visible image slot.
-    val image = if (LocalFlowArticleListImage.current.value) {
-        remember(article.img, article.rawDescription, article.link) {
-            articleThumbnail(article.img, article.rawDescription, article.link)
+    val imagesEnabled = LocalFlowArticleListImage.current.value
+    // Saved feed HTML/JSON can be substantial. Parse it away from the UI thread, and scope the
+    // work to this exact visible article and image preference. A changed key cancels the old
+    // producer, so disabling images cannot publish stale candidates or start a late lookup.
+    val image = key(imagesEnabled, article.img, article.rawDescription, article.link) {
+        val request by produceState<Any?>(initialValue = null) {
+            if (imagesEnabled) {
+                value = withContext(Dispatchers.Default) {
+                    articleImageRequest(article.img, article.rawDescription, article.link)
+                }
+            }
         }
-    } else null
+        if (imagesEnabled) request else null
+    }
 
     ArticleItem(
         modifier = modifier,
@@ -113,6 +125,7 @@ fun ArticleItem(
         feedIconUrl = feed.icon,
         feedUnreadCount = feedUnreadCount,
         isLead = isLead,
+        storyStyle = storyStyle,
         title = article.title,
         shortDescription = article.shortDescription,
         timeString = article.dateString,
@@ -132,6 +145,7 @@ fun ArticleItem(
     feedIconUrl: String? = null,
     feedUnreadCount: Int = 0,
     isLead: Boolean = false,
+    storyStyle: NewspaperStoryStyle = NewspaperStoryStyle.Standard,
     title: String = "",
     shortDescription: String = "",
     timeString: String? = null,
@@ -161,53 +175,54 @@ fun ArticleItem(
         role = Role.Button,
         onClick = onClick, onLongClick = onLongClick,
     )) {
-        val compactColumn = !isLead && maxWidth < 220.dp
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 12.dp, bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(if (isLead) 10.dp else 8.dp),
-        ) {
-            if (isLead && showImage) {
-                ArticlePhoto(data = imgData, isLead = true)
-            }
-            Text(
-                modifier = Modifier.semantics { heading() },
-                text = title,
-                color = MaterialTheme.colorScheme.onSurface,
-                style = MaterialTheme.typography.titleLarge.copy(
-                    fontSize = if (isLead) 28.sp else if (compactColumn) 17.sp else 22.sp,
-                    lineHeight = if (isLead) 34.sp else if (compactColumn) 22.sp else 28.sp,
-                ).applyTextDirection(title.requiresBidi()),
-                fontFamily = FontFamily.Serif,
-                fontWeight = if (isUnread) FontWeight.Bold else FontWeight.Medium,
-            )
-            if (!isLead && showImage) {
-                ArticlePhoto(data = imgData, isLead = false)
-            }
-            if (articleListDesc != FlowArticleListDescPreference.NONE && shortDescription.isNotBlank()) {
+        val textScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+        val compactColumn = !isLead && maxWidth < 220.dp * textScale
+        val isFeature = isLead || storyStyle == NewspaperStoryStyle.Feature
+        val isBrief = storyStyle == NewspaperStoryStyle.Brief
+        val showDescription = articleListDesc != FlowArticleListDescPreference.NONE && shortDescription.isNotBlank()
+        val sidePhoto = isFeature && showDescription && maxWidth >= 280.dp * textScale
+        val wideLead = isLead && maxWidth >= 600.dp * textScale
+        val description: @Composable () -> Unit = {
+            if (showDescription) {
                 Text(
+                    modifier = Modifier.testTag("article-description"),
                     text = shortDescription,
                     color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.bodyMedium.copy(
-                        fontSize = if (isLead) 16.sp else if (compactColumn) 13.sp else 15.sp,
-                        lineHeight = if (isLead) 23.sp else if (compactColumn) 19.sp else 21.sp,
+                        fontSize = if (wideLead) 17.sp else if (isLead) 15.sp else 14.sp,
+                        lineHeight = if (wideLead) 24.sp else if (isLead) 21.sp else 20.sp,
                     ).applyTextDirection(shortDescription.requiresBidi()),
                     fontFamily = FontFamily.Serif,
                     maxLines = if (articleListDesc == FlowArticleListDescPreference.LONG) {
-                        if (isLead) 5 else 4
+                        if (isLead) 6 else if (isBrief) 3 else 5
                     } else {
-                        if (isLead) 3 else 2
+                        if (isLead) 4 else if (isBrief) 2 else 3
                     },
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            // Keep provenance and status legible, but secondary to the photograph and headline.
-            // Reading state never reduces contrast: the existing printed marker replaces fading.
+        }
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(if (isLead) 8.dp else 6.dp),
+        ) {
+            // The reference is a newspaper, not a photo feed: the headline always comes first.
+            Text(
+                modifier = Modifier.testTag("article-headline").semantics { heading() },
+                text = title,
+                color = MaterialTheme.colorScheme.onSurface,
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontSize = when { wideLead -> 34.sp; isLead -> 27.sp; isFeature -> 24.sp; compactColumn -> 18.sp; else -> 21.sp },
+                    lineHeight = when { wideLead -> 39.sp; isLead -> 31.sp; isFeature -> 29.sp; compactColumn -> 23.sp; else -> 26.sp },
+                ).applyTextDirection(title.requiresBidi()),
+                fontFamily = FontFamily.Serif,
+                fontWeight = if (isUnread || isLead) FontWeight.Bold else FontWeight.Medium,
+            )
+            // A compact source line replaces card chrome. It uses real feed metadata only.
             if (showSource) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     if (articleListFeedIcon.value) {
@@ -218,7 +233,7 @@ fun ArticleItem(
                             modifier = Modifier.weight(1f),
                             text = if (feedUnreadCount > 0) "$feedName ($feedUnreadCount)" else feedName,
                             color = MaterialTheme.colorScheme.onSurface,
-                            style = MaterialTheme.typography.labelMedium,
+                            style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp, lineHeight = 16.sp),
                             fontWeight = FontWeight.Bold,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
@@ -235,11 +250,24 @@ fun ArticleItem(
                     }
                 }
             }
+            if (sidePhoto && showImage) {
+                Row(
+                    Modifier.fillMaxWidth().testTag(if (isLead) "article-lead-body" else "article-feature-body"),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Box(Modifier.weight(0.58f)) { description() }
+                    Box(Modifier.weight(0.42f)) { ArticlePhoto(data = imgData, isLead = isLead) }
+                }
+            } else {
+                description()
+                if (showImage) ArticlePhoto(data = imgData, isLead = isLead, isBrief = isBrief)
+            }
             if (articleListDate.value && !timeString.isNullOrBlank()) {
                 Text(
                     text = timeString,
                     color = MaterialTheme.colorScheme.onSurface,
-                    style = MaterialTheme.typography.labelSmall,
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 12.sp, lineHeight = 16.sp),
                 )
             }
         }
@@ -247,9 +275,11 @@ fun ArticleItem(
 }
 
 @Composable
-private fun ArticlePhoto(data: Any?, isLead: Boolean) {
+private fun ArticlePhoto(data: Any?, isLead: Boolean, isBrief: Boolean = false) {
     BoxWithConstraints(Modifier.fillMaxWidth()) {
-        val height = resolveArticleImageHeightDp(maxWidth.value, isLead).dp
+        val height = resolveArticleImageHeightDp(maxWidth.value, isLead).dp.let {
+            if (isBrief) it.coerceAtMost(96.dp) else it
+        }
         val density = LocalDensity.current
         // Match the decoded image to the actual column, including high-density BOOX screens.
         val imageSize = with(density) {
@@ -290,6 +320,7 @@ fun SwipeableArticleItem(
     isUnread: Boolean = articleWithFeed.article.isUnread,
     feedUnreadCount: Int = 0,
     isLead: Boolean = false,
+    storyStyle: NewspaperStoryStyle = NewspaperStoryStyle.Standard,
     articleListTonalElevation: Int = 0,
     onClick: (ArticleWithFeed) -> Unit = {},
     isSwipeEnabled: () -> Boolean = { true },
@@ -341,6 +372,7 @@ fun SwipeableArticleItem(
                 isUnread = isUnread,
                 feedUnreadCount = feedUnreadCount,
                 isLead = isLead,
+                storyStyle = storyStyle,
                 onClick = onClick,
                 onLongClick = onLongClick,
             )

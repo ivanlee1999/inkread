@@ -85,7 +85,7 @@ jobs:
           cat > release-notes.md <<EOF_NOTES
           Built by GitHub Actions from commit ${{ github.sha }}.
 
-          InkRead $VERSION adds phone-friendly newspaper columns with an explicit Auto / One / Two column choice, editorial folder sections and compact subscription blocks. E-ink lists support instantaneous vertical swipe paging without fling or animation. Article and subscription content reserve the actual bottom toolbar space so the last items remain accessible. Photo support and pagination/read-state safeguards are retained.
+          InkRead $VERSION introduces headline-first newspaper editions: compact ruled mastheads, restrained side photographs, paired phone columns and richer three/four-column tablet blocks in Auto. Explicit One/Two columns and Phone/Tablet spacing remain available. Article photos gain bounded on-device webpage metadata discovery and alternate-image retries while respecting images-off and cached/offline reading. Folder sections and subscriptions use compact editorial rules. E-ink swipes jump without fling or animation, and measured toolbar insets keep final articles accessible. Existing pagination/read-state safeguards are retained.
 
           Uses the existing application ID and repository signing identity. No database migration is required. Native Android emulator tests cover narrow and tablet reading flows; physical BOOX refresh behavior still needs device verification.
           EOF_NOTES

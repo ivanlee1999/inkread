@@ -21,6 +21,7 @@ import me.ash.reader.infrastructure.preference.ReadingColumnsPreference
 import me.ash.reader.infrastructure.preference.ReadingLayoutPresetPreference
 import me.ash.reader.ui.layout.ReadingLayoutPreset
 import me.ash.reader.ui.layout.resolveReadingLayout
+import me.ash.reader.infrastructure.rss.ArticleImageEnrichment
 import me.ash.reader.ui.ext.dataStore
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -50,6 +51,7 @@ import androidx.compose.ui.res.stringResource
 import me.ash.reader.ui.component.FilterBar
 import me.ash.reader.ui.component.base.FeedbackIconButton
 import me.ash.reader.ui.component.base.RYScaffold
+import me.ash.reader.ui.component.base.NewspaperMasthead
 import me.ash.reader.ui.component.base.newspaperSwipeScroll
 import me.ash.reader.ui.page.home.flow.EInkPaginationBar
 import me.ash.reader.infrastructure.preference.FlowFilterBarStylePreference
@@ -59,6 +61,8 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.SideEffect
 import me.ash.reader.ui.page.home.flow.NewspaperPageChange
+import me.ash.reader.ui.page.home.flow.NewspaperArticleRestoration
+import me.ash.reader.ui.page.home.flow.NewspaperArticleRestoreTarget
 import me.ash.reader.ui.page.home.flow.newspaperPageTurn
 import me.ash.reader.ui.page.home.flow.newspaperPageForSource
 import me.ash.reader.ui.page.home.flow.newspaperRows
@@ -110,7 +114,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
-/** Native Compose fixtures, using the same production components as the subscriptions screen. */
+/** Native Compose fixtures using production components. Article links are about:blank so
+ * text-only fixtures never trigger external metadata fetches; photo URLs are seeded in Coil. */
 class NewspaperUiTest {
     @get:Rule val compose = createComposeRule()
 
@@ -124,8 +129,6 @@ class NewspaperUiTest {
                     FixtureChrome(subscriptions = true) {
                     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)
                         .verticalScroll(rememberScrollState()).padding(vertical = 16.dp)) {
-                        Text("Subscriptions", style = MaterialTheme.typography.headlineLarge)
-                        Spacer(Modifier.height(16.dp))
                         FeedsBanner(filter = Filter.Unread, desc = Filter.Unread.toDesc(143))
                         Spacer(Modifier.height(20.dp))
                         PublicationGrid(itemCount = names.size) { index, modifier ->
@@ -167,7 +170,7 @@ class NewspaperUiTest {
             ArticleFlowItem.Article(ArticleWithFeed(Article(id = "a$index", date = Date(0), title = title,
                 rawDescription = "", img = if (index < 2) photo else null,
                 shortDescription = if (index < 2) "Historical photograph: NASA/Bill Anders. A new perspective from Apollo 8." else "Thoughtful reporting, clear ideas and a little room to think. An edition made for unhurried reading.",
-                link = "https://example.com/$index", feedId = feed.id, accountId = 1,
+                link = "about:blank", feedId = feed.id, accountId = 1,
                 isUnread = index != 2, isStarred = index == 1).apply { dateString = "09:00" }, feed))
         }
         val stream = flowOf(PagingData.from(items))
@@ -183,7 +186,6 @@ class NewspaperUiTest {
                         val layout = resolveReadingLayout(maxWidth.value, LocalDensity.current.fontScale,
                             LocalReadingLayoutPreset.current.preset, LocalReadingColumns.current.columns)
                         LazyColumn(Modifier.testTag("article-list"), state = state) {
-                            item { Text("The daily edition", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.headlineLarge) }
                             ArticleList(pagingItems = articles, diffMap = emptyMap(), isShowFeedIcon = false,
                                 isShowStickyHeader = false, articleListTonalElevation = 0, columns = layout.columns,
                                 horizontalPadding = layout.horizontalPaddingDp.dp, columnSpacing = layout.columnSpacingDp.dp,
@@ -199,13 +201,13 @@ class NewspaperUiTest {
         }
         compose.onNodeWithText(titles[0]).assertIsDisplayed().performClick().performClick()
         assertEquals(listOf(1, 1), opened)
-        compose.onAllNodesWithTag("article-photo", useUnmergedTree = true).onFirst().assertIsDisplayed()
-        waitForPhotoPixels()
+        waitForPhotoPixels(articlePhotoFor(titles[0]))
+        compose.onNode(articlePhotoFor(titles[0]), useUnmergedTree = true).assertIsDisplayed()
         capture("articles")
         compose.onNodeWithTag("article-list").performScrollToNode(hasText(titles[2]))
         compose.onNodeWithText(titles[2]).assertIsDisplayed().performClick()
         assertEquals(3, opened.last())
-        // Source index 3 is the right supporting column on wide layouts.
+        // Source index 3 remains an independently actionable supporting story in every template.
         // Keep menu placement, callbacks, dismissal and repeat openings under regression coverage.
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val readLabel = context.getString(R.string.mark_as_unread) // fixture a2 is already read
@@ -299,7 +301,7 @@ class NewspaperUiTest {
             ArticleFlowItem.Article(ArticleWithFeed(Article(id = "slice-$index", date = Date(0),
                 title = "Article $index: a deliberately substantial headline for a measured newspaper block",
                 rawDescription = "", shortDescription = "A substantial text block makes each slice overflow this bounded viewport so a retained scroll offset cannot pass unnoticed.",
-                link = "https://example.com/$index", feedId = feed.id, accountId = 1), feed))
+                link = "about:blank", feedId = feed.id, accountId = 1), feed))
         }
         val stream = flowOf(PagingData.from<ArticleFlowItem>(fixture))
         val page = mutableStateOf(2)
@@ -390,7 +392,7 @@ class NewspaperUiTest {
             ArticleFlowItem.Article(ArticleWithFeed(Article(id = "$prefix-$index", date = Date(0),
                 title = "$prefix article $index: a substantial headline for measured transition testing",
                 rawDescription = "", shortDescription = "Enough content to force scrolling within each bounded slice, exposing incorrect retained offsets and stale list ownership.",
-                link = "https://example.com/$prefix/$index", feedId = feed.id, accountId = 1), feed))
+                link = "about:blank", feedId = feed.id, accountId = 1), feed))
         }
         val data = mapOf("a" to fixture("a"), "b" to fixture("b"))
         val pagers = data.mapValues { flowOf(PagingData.from<ArticleFlowItem>(it.value)) }
@@ -538,7 +540,7 @@ class NewspaperUiTest {
             Article(id = "photo-$index", title = title, date = Date(0),
                 rawDescription = if (index == 1) "<p><img src=\"$photo\" alt=\"Earthrise\"></p>" else "",
                 shortDescription = "A historical Apollo 8 photograph accompanies this offline reading fixture.",
-                img = if (index == 0) photo else null, link = "https://example.com/$index", feedId = feed.id, accountId = 1), feed)) }
+                img = if (index == 0) photo else null, link = "about:blank", feedId = feed.id, accountId = 1), feed)) }
         val stream = flowOf(PagingData.from<ArticleFlowItem>(source))
         val preset = mutableStateOf<ReadingLayoutPresetPreference>(ReadingLayoutPresetPreference.Auto)
         val images = mutableStateOf<FlowArticleListImagePreference>(FlowArticleListImagePreference.ON)
@@ -571,20 +573,26 @@ class NewspaperUiTest {
         for (choice in ReadingLayoutPresetPreference.values) {
             compose.runOnIdle { preset.value = choice; list.get().requestScrollToItem(0) }
             compose.onNodeWithText(titles[0], useUnmergedTree = true).assertIsDisplayed()
-            waitForPhotoPixels()
-            val photograph = compose.onAllNodesWithTag("article-photo", useUnmergedTree = true).onFirst().fetchSemanticsNode().boundsInRoot
+            waitForPhotoPixels(articlePhotoFor(titles[0]))
+            val photograph = compose.onNode(articlePhotoFor(titles[0]), useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
             val headline = compose.onNodeWithText(titles[0], useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
-            assertTrue("Lead photography precedes the headline", photograph.bottom <= headline.top + 1f)
+            assertTrue("The lead headline precedes its photograph", headline.bottom <= photograph.top + 1f)
+            compose.onNodeWithTag("article-lead-body", useUnmergedTree = true).assertIsDisplayed()
+            val description = compose.onNode(hasTestTag("article-description") and
+                hasAnyAncestor(hasTestTag("article-lead-body")), useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            assertTrue("Lead copy and photo occupy separate side-by-side columns", description.right <= photograph.left)
+            assertEquals("Lead copy begins beside the photograph", description.top, photograph.top, 1f)
             capture("photos-${choice.preset.name.lowercase()}")
             compose.onNodeWithTag("photo-edition").performScrollToIndex(1)
             val firstSupport = compose.onNodeWithText(titles[1]).fetchSemanticsNode().boundsInRoot
             val secondSupport = compose.onNodeWithText(titles[2]).fetchSemanticsNode().boundsInRoot
-            if (measuredColumns.get() == 2) assertTrue(secondSupport.left > firstSupport.left)
+            if (measuredColumns.get() >= 2) assertTrue(secondSupport.left > firstSupport.left)
             else assertTrue(secondSupport.top >= firstSupport.top)
         }
         compose.onNodeWithTag("photo-edition").performScrollToNode(hasText(titles[1]))
         val supportingHeadline = compose.onNodeWithText(titles[1], useUnmergedTree = true)
-        val supportingPhoto = supportingHeadline.onParent().onChildren().filter(hasTestTag("article-photo")).onFirst()
+        waitForPhotoPixels(articlePhotoFor(titles[1]))
+        val supportingPhoto = compose.onNode(articlePhotoFor(titles[1]), useUnmergedTree = true)
         assertTrue("Supporting headline precedes its photo", supportingHeadline.fetchSemanticsNode().boundsInRoot.top < supportingPhoto.fetchSemanticsNode().boundsInRoot.top)
         compose.runOnIdle { images.value = FlowArticleListImagePreference.OFF; list.get().requestScrollToItem(0) }
         compose.onAllNodesWithTag("article-photo", useUnmergedTree = true).assertCountEquals(0)
@@ -596,7 +604,7 @@ class NewspaperUiTest {
             compose.onNodeWithText(titles.last()).assertIsDisplayed()
             val width = InstrumentationRegistry.getInstrumentation().targetContext.resources.configuration.screenWidthDp
             assertEquals("Large font retains columns only where the actual text budget fits",
-                if (width <= 400) 1 else 2, measuredColumns.get())
+                if (width <= 400) 1 else if (width >= 1000 && choice != ReadingLayoutPresetPreference.Phone) 3 else 2, measuredColumns.get())
         }
         compose.runOnIdle { fontScale.value = 1f; paneWidth.value = 280f; list.get().requestScrollToItem(0) }
         compose.waitUntil(5_000) { measuredColumns.get() == 1 }
@@ -844,9 +852,9 @@ class NewspaperUiTest {
             groupId = "g", accountId = 1)
         val fixture = (0 until 24).map { index ->
             ArticleFlowItem.Article(ArticleWithFeed(Article(id = "gesture-$index", date = Date(0),
-                title = "Dispatch $index: reading the newspaper without accidental actions",
+                title = "Dispatch $index: reading the newspaper without accidental actions, including longer reports that deserve space across a wide tablet edition",
                 rawDescription = "", shortDescription = "Substantial reporting keeps the current page taller than its actual available viewport, at every tested device width.",
-                link = "https://example.com/$index", feedId = feed.id, accountId = 1), feed))
+                link = "about:blank", feedId = feed.id, accountId = 1), feed))
         }
         val stream = flowOf(PagingData.from<ArticleFlowItem>(fixture))
         compose.setContent {
@@ -953,7 +961,7 @@ class NewspaperUiTest {
                     RYScaffold(
                         reserveBottomBarSpace = true,
                         contentWindowInsets = WindowInsets(bottom = navigationInset.value.dp),
-                        topBar = { Text("The daily edition", Modifier.fillMaxWidth().padding(16.dp)) },
+                        topBar = { NewspaperMasthead(title = "Unread", details = "20 articles") },
                         bottomBar = {
                             // Deterministic gesture/three-button insets around the real footer.
                             // Consume the host device's inset so it is not counted a second time.
@@ -1089,7 +1097,7 @@ class NewspaperUiTest {
         val fixture = (0 until 6).map { index ->
             ArticleFlowItem.Article(ArticleWithFeed(Article(id = "held-$index", date = Date(0),
                 title = "Brief $index", rawDescription = "", shortDescription = "A short dispatch.",
-                link = "https://example.com/$index", feedId = feed.id, accountId = 1), feed))
+                link = "about:blank", feedId = feed.id, accountId = 1), feed))
         }
         val stream = flowOf(PagingData.from<ArticleFlowItem>(fixture))
         try {
@@ -1164,7 +1172,7 @@ class NewspaperUiTest {
             ArticleFlowItem.Article(ArticleWithFeed(Article(id = "sticky-$index", date = Date(0),
                 title = if (index == 0) continuingTitle else "Following dispatch $index",
                 rawDescription = "", shortDescription = "The date header must not hide unread lines during a page-sized jump.",
-                link = "https://example.com/$index", feedId = feed.id, accountId = 1), feed))
+                link = "about:blank", feedId = feed.id, accountId = 1), feed))
         }
         val stream = flowOf(PagingData.from<ArticleFlowItem>(fixture))
         compose.setContent {
@@ -1217,6 +1225,339 @@ class NewspaperUiTest {
             assertEquals("The jump excludes the opaque pinned header", readableHeight * 0.9f, jump.toFloat(), 1f)
             assertTrue("Some readable lines overlap rather than skipping behind the header", jump < readableHeight)
         }
+    }
+
+    @Test fun editorialTemplatesKeepEverySourceActionAndReflowAnchor() {
+        val feed = Feed(id = "editorial", name = "The Dispatch", url = "https://example.com",
+            groupId = "g", accountId = 1)
+        val source = (0 until 48).map { index ->
+            if (index == 0 || index == 17 || index == 35) {
+                ArticleFlowItem.Date("Edition section $index", false)
+            } else ArticleFlowItem.Article(ArticleWithFeed(Article(id = "editorial-$index",
+                title = "Dispatch $index: a considered view", date = Date(0), rawDescription = "",
+                shortDescription = "Independent reporting keeps each story and its original reading position intact.",
+                link = "about:blank", feedId = feed.id, accountId = 1), feed))
+        }
+        val stream = flowOf(PagingData.from(source))
+        val preference = mutableStateOf<ReadingColumnsPreference>(ReadingColumnsPreference.Auto)
+        val page = mutableStateOf(0)
+        val capacity = mutableStateOf(24)
+        val targetCapacity = mutableStateOf(24)
+        val columns = mutableStateOf(1)
+        val opened = mutableListOf<Int>()
+        val toggled = mutableListOf<String>()
+        val marked = mutableListOf<String>()
+        val list = java.util.concurrent.atomic.AtomicReference<LazyListState>()
+        var turn: (Boolean) -> Boolean = { false }
+        fun title(index: Int) = (source[index] as ArticleFlowItem.Article).articleWithFeed.article.title
+        fun rows() = newspaperRows(source.size, columns.value, page.value * capacity.value,
+            (page.value + 1) * capacity.value) { source[it] is ArticleFlowItem.Date }
+        compose.setContent {
+            CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON,
+                LocalReadingLayoutPreset provides ReadingLayoutPresetPreference.Auto,
+                LocalReadingColumns provides preference.value) {
+                AppTheme(useDarkTheme = false) {
+                    FixtureChrome(subscriptions = false, articleCount = 45) {
+                        val items = stream.collectAsLazyPagingItems()
+                        val state = rememberLazyListState()
+                        val fontScale = LocalDensity.current.fontScale
+                        SideEffect {
+                            list.set(state)
+                            turn = { forward ->
+                                turnNewspaperPage(currentPage = page.value,
+                                    pageCount = (items.itemCount + capacity.value - 1) / capacity.value,
+                                    capacity = capacity.value, forward = forward, listState = state,
+                                    snapshot = items.itemSnapshotList, snapshotPager = stream, activePager = stream,
+                                    markReadEnabled = true,
+                                    article = { (it as? ArticleFlowItem.Article)?.articleWithFeed },
+                                    onMarkRead = { stories -> marked.addAll(stories.map { it.article.id }) },
+                                    onPageChange = { page.value = it })
+                            }
+                        }
+                        // A real, measured pane inside production chrome, short enough to expose
+                        // incorrect row resets while keeping the same native text/column sizes.
+                        BoxWithConstraints(Modifier.fillMaxWidth().height(420.dp)) {
+                            val layout = resolveReadingLayout(maxWidth.value, fontScale,
+                                LocalReadingLayoutPreset.current.preset, LocalReadingColumns.current.columns)
+                            EInkMeasuredPageLayout(enabled = true, targetCapacity = targetCapacity.value,
+                                targetColumns = layout.columns, hasMeasuredPane = true, itemCount = items.itemCount,
+                                isRefreshComplete = items.loadState.refresh is androidx.paging.LoadState.NotLoading,
+                                listState = state, currentPage = { page.value }, currentCapacity = { capacity.value },
+                                currentColumns = { columns.value }, isDate = { items.peek(it) is ArticleFlowItem.Date },
+                                onLayoutChange = { count, lanes -> capacity.value = count; columns.value = lanes },
+                                onPageChange = { page.value = it })
+                            LazyColumn(Modifier.fillMaxSize().testTag("editorial-list"), state = state) {
+                                ArticleList(items, emptyMap(), false, false, 0,
+                                    columns = columns.value, einkPageStart = page.value * capacity.value,
+                                    einkPageEnd = (page.value + 1) * capacity.value,
+                                    horizontalPadding = layout.horizontalPaddingDp.dp,
+                                    columnSpacing = layout.columnSpacingDp.dp,
+                                    onClick = { _, index -> opened.add(index) },
+                                    onToggleRead = { toggled.add(it.article.id) })
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        val width = InstrumentationRegistry.getInstrumentation().targetContext.resources.configuration.screenWidthDp
+        val expectedLanes = when { width >= 1000 -> 4; width >= 800 -> 3; else -> 2 }
+        compose.waitUntil(5_000) { columns.value == expectedLanes }
+        compose.onNodeWithTag("newspaper-masthead").assertIsDisplayed()
+        compose.runOnIdle {
+            assertEquals((0 until 24).toList(), rows().flatMap { it.indices })
+            assertEquals(listOf(1, 18), rows().filter { it.isLead }.flatMap { it.indices })
+            list.get().requestScrollToItem(2)
+        }
+        val first = compose.onNodeWithTag("newspaper-slot-2", useUnmergedTree = true).getUnclippedBoundsInRoot()
+        val next = compose.onNodeWithTag("newspaper-slot-3", useUnmergedTree = true).getUnclippedBoundsInRoot()
+        assertEquals("Editorial lanes start at the same printed row", first.top.value, next.top.value, 1f)
+        assertTrue("Columns never overlap", next.left >= first.right)
+        if (expectedLanes >= 3) {
+            val gutter = resolveReadingLayout(width.toFloat()).columnSpacingDp
+            assertEquals("Feature spans two actual lanes including the internal gutter",
+                (next.right - next.left).value * 2f + gutter, (first.right - first.left).value, 1f)
+            val upperBrief = compose.onNodeWithText(title(3)).getUnclippedBoundsInRoot()
+            val lowerBrief = compose.onNodeWithText(title(4)).getUnclippedBoundsInRoot()
+            assertTrue("Briefs stack vertically without overlap", lowerBrief.top >= upperBrief.bottom)
+            assertEquals("Briefs preserve the same source lane", upperBrief.left.value, lowerBrief.left.value, 1f)
+            if (expectedLanes == 4) {
+                val lastLane = compose.onNodeWithTag("newspaper-slot-5", useUnmergedTree = true).getUnclippedBoundsInRoot()
+                assertTrue("The fourth lane is genuinely to the right of the third", lastLane.left >= next.right)
+                assertEquals("All narrow lanes have equal widths", (next.right - next.left).value,
+                    (lastLane.right - lastLane.left).value, 1f)
+                assertTrue(compose.onNodeWithText(title(6)).getUnclippedBoundsInRoot().top >=
+                    compose.onNodeWithText(title(5)).getUnclippedBoundsInRoot().bottom)
+            }
+        } else assertEquals("Two-column preference keeps equal lane widths",
+            (first.right - first.left).value, (next.right - next.left).value, 1f)
+        compose.onNodeWithText(title(2)).assertIsDisplayed().performClick()
+        compose.onNodeWithText(title(3)).assertIsDisplayed().performClick()
+        assertEquals(listOf(2, 3), opened)
+        if (expectedLanes >= 3) {
+            compose.onNodeWithText(title(4)).assertIsDisplayed().performClick()
+            assertEquals(listOf(2, 3, 4), opened)
+        }
+        compose.onNodeWithText(title(3)).performTouchInput { longClick() }
+        compose.onNodeWithText(InstrumentationRegistry.getInstrumentation().targetContext.getString(R.string.mark_as_read))
+            .assertIsDisplayed().performClick()
+        assertEquals(listOf("editorial-3"), toggled)
+        capture("editorial-templates")
+
+        // Reader return into a non-leading column maps to its containing row. Layout changes
+        // must preserve that live source anchor, not reinterpret a lazy-row index as an article.
+        compose.runOnIdle {
+            newspaperPageForSource(7, source.size, capacity.value, columns.value,
+                isDate = { source[it] is ArticleFlowItem.Date }).applyTo(list.get()) { page.value = it }
+        }
+        compose.onNodeWithText(title(7)).assertIsDisplayed()
+        for (choice in listOf(ReadingColumnsPreference.Two, ReadingColumnsPreference.One, ReadingColumnsPreference.Auto)) {
+            val anchor = compose.runOnIdle { rows()[list.get().firstVisibleItemIndex].indices.first() }
+            compose.runOnIdle { preference.value = choice; targetCapacity.value = 28 }
+            val targetLanes = when (choice) {
+                ReadingColumnsPreference.One -> 1
+                ReadingColumnsPreference.Two -> 2
+                else -> expectedLanes
+            }
+            compose.waitUntil(5_000) { columns.value == targetLanes && capacity.value == 28 }
+            compose.runOnIdle {
+                assertTrue("$choice preserves source $anchor in the first visible row",
+                    anchor in rows()[list.get().firstVisibleItemIndex].indices)
+                assertEquals("Reflow resets only the pixel offset", 0, list.get().firstVisibleItemScrollOffset)
+                assertTrue("Changing layout never marks unseen stories", marked.isEmpty())
+            }
+            compose.onNodeWithText(title(anchor)).assertIsDisplayed()
+        }
+        compose.runOnIdle {
+            assertTrue(turn(true))
+            assertEquals("Only concrete stories in the page being left are marked",
+                (0 until 28).filter { source[it] is ArticleFlowItem.Article }.map { "editorial-$it" }, marked)
+        }
+        compose.onNodeWithText(title(28)).assertIsDisplayed()
+        compose.runOnIdle {
+            assertEquals(0 to 0, list.get().position())
+            val before = marked.toList()
+            assertTrue(turn(false))
+            assertEquals("Backward navigation cannot mark the next slice", before, marked)
+        }
+    }
+
+    @Test fun savedMetadataPhotoAlternateSurvivesDecodeFailureAndMissingPhotosStayReadable() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val previousLoader = Coil.imageLoader(context)
+        val cache = DiskCache.Builder().directory(File(context.cacheDir, "photo-alternates-${System.nanoTime()}")).build()
+        val base = "https://offline-fixture.invalid/${System.nanoTime()}"
+        val broken = "$base-primary.jpg"
+        val alternate = "$base-alternate.jpg"
+        val alsoBroken = "$base-second.jpg"
+        for (url in listOf(broken, alternate, alsoBroken)) {
+            val editor = requireNotNull(cache.openEditor(url))
+            if (url == alternate) earthriseFile().copyTo(editor.data.toFile(), overwrite = true)
+            else editor.data.toFile().writeText("This cache entry is intentionally not an image.")
+            editor.metadata.toFile().writeBytes(byteArrayOf())
+            editor.commit()
+        }
+        // Network is disabled in the inherited Coil request policy, including the production
+        // article loader. Both the failed primary and successful alternate come from disk.
+        val loader = ImageLoader.Builder(context).diskCache(cache)
+            .memoryCachePolicy(CachePolicy.DISABLED).networkCachePolicy(CachePolicy.DISABLED)
+            .respectCacheHeaders(false).build()
+        val feed = Feed(id = "fallback", name = "NASA / Bill Anders", url = "https://example.com",
+            groupId = "g", accountId = 1)
+        fun article(primary: String?, savedImage: String?) = ArticleWithFeed(Article(id = "alternate-photo",
+            title = "A photograph recovered from saved story metadata", date = Date(0),
+            img = primary, rawDescription = savedImage?.let { "<meta property=\"og:image\" content=\"$it\">" }.orEmpty(),
+            shortDescription = "The full headline and its source remain readable even when every photo fails.",
+            link = "about:blank", feedId = feed.id, accountId = 1), feed)
+        val displayed = mutableStateOf(article(broken, alternate))
+        val opened = AtomicInteger()
+        try {
+            val failed = runBlocking { loader.execute(ImageRequest.Builder(context).data(broken).build()) }
+            assertTrue("Primary fixture really fails decoding", failed is coil.request.ErrorResult)
+            val recovered = runBlocking { loader.execute(ImageRequest.Builder(context).data(alternate).build()) }
+            assertTrue("Alternate fixture decodes the historical photograph", recovered is SuccessResult)
+            assertEquals(DataSource.DISK, (recovered as SuccessResult).dataSource)
+            Coil.setImageLoader(loader)
+            compose.setContent {
+                CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON) {
+                    AppTheme(useDarkTheme = false) {
+                        FixtureChrome(subscriptions = false, articleCount = 1) {
+                            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+                                ArticleItem(articleWithFeed = displayed.value, isLead = true,
+                                    onClick = { opened.incrementAndGet() })
+                            }
+                        }
+                    }
+                }
+            }
+            waitForPhotoPixels()
+            val title = displayed.value.article.title
+            val headline = compose.onNodeWithText(title, useUnmergedTree = true).getUnclippedBoundsInRoot()
+            val photo = compose.onNodeWithTag("article-photo", useUnmergedTree = true).getUnclippedBoundsInRoot()
+            assertTrue("Fallback photos never move ahead of the headline", headline.bottom <= photo.top)
+            capture("photos-alternate")
+            compose.runOnIdle { displayed.value = article(broken, alsoBroken) }
+            compose.waitUntil(10_000) {
+                // Async saved-HTML parsing starts with no image. Absence alone could pass
+                // before the new request even exists, so require its actual decode failure.
+                ArticleImageEnrichment.failedRecently(alsoBroken) &&
+                    compose.onAllNodesWithTag("article-photo", useUnmergedTree = true).fetchSemanticsNodes().isEmpty()
+            }
+            assertEquals("Failed photos cannot shift the headline's reading anchor", headline,
+                compose.onNodeWithText(title, useUnmergedTree = true).getUnclippedBoundsInRoot())
+            compose.onNodeWithText(title).assertIsDisplayed().performClick()
+            compose.onNodeWithText(feed.name, useUnmergedTree = true).assertIsDisplayed()
+            compose.onNodeWithText(displayed.value.article.shortDescription, useUnmergedTree = true).assertIsDisplayed()
+            assertEquals(1, opened.get())
+            capture("photos-missing")
+            compose.runOnIdle { displayed.value = article(null, null) }
+            compose.onAllNodesWithTag("article-photo", useUnmergedTree = true).assertCountEquals(0)
+            compose.onNodeWithText(title).assertIsDisplayed().performClick()
+            assertEquals("A truly text-only story retains its complete action", 2, opened.get())
+            assertEquals(headline, compose.onNodeWithText(title, useUnmergedTree = true).getUnclippedBoundsInRoot())
+        } finally {
+            Coil.setImageLoader(previousLoader)
+            loader.shutdown()
+        }
+    }
+
+    @Test fun readerReturnReachesLowerStackedBriefWithoutReadingUnseenStories() {
+        val selectedTitle = "The selected lower brief"
+        val feed = Feed(id = "reader-return", name = "The Dispatch", url = "https://example.com",
+            groupId = "g", accountId = 1)
+        val fixture = (0 until 16).map { index ->
+            ArticleFlowItem.Article(ArticleWithFeed(Article(id = "reader-return-$index", date = Date(0),
+                title = when (index) {
+                    2 -> "A continuing brief retains every line of its substantial headline. ".repeat(18)
+                    3 -> selectedTitle
+                    else -> "Dispatch $index"
+                }, rawDescription = "", shortDescription = "", link = "about:blank",
+                feedId = feed.id, accountId = 1), feed))
+        }
+        val stream = flowOf(PagingData.from<ArticleFlowItem>(fixture))
+        val restoration = NewspaperArticleRestoration()
+        val generation = mutableStateOf(0)
+        val columns = AtomicInteger()
+        val list = java.util.concurrent.atomic.AtomicReference<LazyListState>()
+        val opened = mutableListOf<Int>()
+        val marked = mutableSetOf<Int>()
+        compose.setContent {
+            CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON,
+                LocalReadingLayoutPreset provides ReadingLayoutPresetPreference.Auto,
+                LocalReadingColumns provides ReadingColumnsPreference.Auto) {
+                AppTheme(useDarkTheme = false) {
+                    FixtureChrome(subscriptions = false, articleCount = fixture.size) {
+                        val items = stream.collectAsLazyPagingItems()
+                        val state = rememberLazyListState()
+                        BoxWithConstraints(Modifier.fillMaxWidth().height(220.dp)) {
+                            val layout = resolveReadingLayout(maxWidth.value)
+                            SideEffect { list.set(state); columns.set(layout.columns) }
+                            LazyColumn(Modifier.fillMaxSize().testTag("reader-return-viewport"), state = state) {
+                                ArticleList(items, emptyMap(), false, false, 0, columns = layout.columns,
+                                    horizontalPadding = layout.horizontalPaddingDp.dp,
+                                    columnSpacing = layout.columnSpacingDp.dp,
+                                    restoreArticleId = restoration.target?.articleId,
+                                    onArticlePositioned = { id, source, row, lanes, offset ->
+                                        restoration.measured(id, source, row, lanes, offset,
+                                            layout.columns to generation.value, state)
+                                    },
+                                    onClick = { _, index -> opened.add(index) })
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        compose.onNodeWithText("Dispatch 0").assertIsDisplayed()
+        val rows = newspaperRows(fixture.size, columns.get()) { false }
+        val selectedRow = rows.indexOfFirst { 3 in it.indices }
+        compose.runOnIdle { list.get().requestScrollToItem(selectedRow) }
+        if (columns.get() >= 3) {
+            val upper = compose.onNodeWithText(fixture[2].articleWithFeed.article.title).getUnclippedBoundsInRoot()
+            val viewport = compose.onNodeWithTag("reader-return-viewport").getUnclippedBoundsInRoot()
+            assertTrue("The upper brief is genuinely taller than the reading pane",
+                upper.bottom - upper.top > viewport.bottom - viewport.top)
+            compose.onNodeWithText(selectedTitle).assertIsNotDisplayed()
+        }
+        compose.runOnIdle {
+            restoration.request(NewspaperArticleRestoreTarget(articleId = "reader-return-3", sourceIndex = 3,
+                rowIndex = selectedRow, columns = columns.get(), layoutKey = columns.get() to generation.value), list.get())
+        }
+        compose.waitUntil(5_000) { restoration.target == null }
+        val selected = compose.onNodeWithText(selectedTitle).assertIsDisplayed()
+        val selectedBounds = selected.getUnclippedBoundsInRoot()
+        val viewport = compose.onNodeWithTag("reader-return-viewport").getUnclippedBoundsInRoot()
+        assertTrue("The complete selected brief is reachable after reader return: selected=$selectedBounds, viewport=$viewport",
+            selectedBounds.top >= viewport.top - 1.dp && selectedBounds.bottom <= viewport.bottom + 1.dp)
+        selected.performClick()
+        assertEquals(listOf(3), opened)
+        compose.runOnIdle {
+            if (columns.get() >= 3) assertTrue("Restoration uses the measured intra-row offset",
+                list.get().firstVisibleItemScrollOffset > (viewport.bottom - viewport.top).value *
+                    InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density)
+            assertTrue("Reader return is an immediate position request, not an animation", !list.get().isScrollInProgress)
+            marked.addAll(newspaperScrolledReadRange(rows, list.get().firstVisibleItemIndex,
+                0, fixture.size, einkMode = true))
+            assertTrue("Reader return cannot mark skipped or unseen stories", marked.isEmpty())
+        }
+        capture("editorial-reader-return")
+
+        // A replacement layout owns the next measure. A stale selected-story callback must
+        // never apply its old intra-row offset to that layout, even for the same article id.
+        compose.runOnIdle {
+            restoration.request(NewspaperArticleRestoreTarget(articleId = "reader-return-3", sourceIndex = 3,
+                rowIndex = selectedRow, columns = columns.get(), layoutKey = columns.get() to generation.value), list.get())
+            generation.value++
+        }
+        compose.waitUntil(5_000) { restoration.target == null }
+        compose.runOnIdle {
+            assertEquals("A stale layout key cannot restore the old lower-brief offset", 0,
+                list.get().firstVisibleItemScrollOffset)
+            marked.addAll(newspaperScrolledReadRange(rows, list.get().firstVisibleItemIndex,
+                0, fixture.size, einkMode = true))
+            assertTrue(marked.isEmpty())
+        }
+        if (columns.get() >= 3) compose.onNodeWithText(selectedTitle).assertIsNotDisplayed()
     }
 
     private fun pressBackFromModal(modal: SemanticsNodeInteraction, host: SemanticsNodeInteraction) {
@@ -1283,11 +1624,14 @@ class NewspaperUiTest {
         }
     }
 
-    private fun waitForPhotoPixels() {
+    private fun articlePhotoFor(title: String): SemanticsMatcher = hasTestTag("article-photo") and
+        hasAnyAncestor(hasClickAction() and hasAnyDescendant(hasText(title)))
+
+    private fun waitForPhotoPixels(matcher: SemanticsMatcher = hasTestTag("article-photo")) {
         // Inspect only the production image node, not page text. The original photograph
         // contains both broad black sky and blue Earth pixels, unlike an empty placeholder.
         compose.waitUntil(10_000) {
-            val photos = compose.onAllNodesWithTag("article-photo", useUnmergedTree = true)
+            val photos = compose.onAllNodes(matcher, useUnmergedTree = true)
             if (photos.fetchSemanticsNodes().isEmpty()) return@waitUntil false
             val image = photos.onFirst().captureToImage().asAndroidBitmap()
             val pixels = IntArray(image.width * image.height)
@@ -1306,17 +1650,21 @@ class NewspaperUiTest {
         RYScaffold(
             reserveBottomBarSpace = true,
             topBar = {
-                TopAppBar(title = { if (!subscriptions) Text(filter.toName()) },
-                    navigationIcon = {
-                        FeedbackIconButton(
-                            imageVector = if (subscriptions) Icons.Outlined.Settings else Icons.AutoMirrored.Rounded.ArrowBack,
-                            contentDescription = stringResource(if (subscriptions) R.string.settings else R.string.back))
-                    },
-                    actions = {
-                        FeedbackIconButton(
-                            imageVector = if (subscriptions) Icons.Rounded.Add else Icons.Rounded.Search,
-                            contentDescription = stringResource(if (subscriptions) R.string.subscribe else R.string.search))
-                    })
+                Column {
+                    TopAppBar(title = { if (!subscriptions) Text(stringResource(R.string.inkread_brand)) },
+                        navigationIcon = {
+                            FeedbackIconButton(
+                                imageVector = if (subscriptions) Icons.Outlined.Settings else Icons.AutoMirrored.Rounded.ArrowBack,
+                                contentDescription = stringResource(if (subscriptions) R.string.settings else R.string.back))
+                        },
+                        actions = {
+                            FeedbackIconButton(
+                                imageVector = if (subscriptions) Icons.Rounded.Add else Icons.Rounded.Search,
+                                contentDescription = stringResource(if (subscriptions) R.string.subscribe else R.string.search))
+                        })
+                    NewspaperMasthead(title = if (subscriptions) "Subscriptions" else filter.toName(),
+                        details = if (subscriptions) null else "$articleCount articles")
+                }
             },
             bottomBar = {
                 if (subscriptions) {

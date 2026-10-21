@@ -8,7 +8,7 @@ class ReadingLayoutTest {
     private val widths = listOf(320f, 400f, 600f, 800f)
 
     @Test fun autoUsesNewspaperColumnsOnPhonesAndWidePanes() {
-        assertEquals(listOf(2, 2, 2, 2), widths.map { resolveReadingLayout(it).columns })
+        assertEquals(listOf(2, 2, 2, 3), widths.map { resolveReadingLayout(it).columns })
         assertEquals(listOf(2, 2, 2, 2), widths.map { resolveReadingLayout(it).publicationColumns })
     }
 
@@ -81,7 +81,7 @@ class ReadingLayoutTest {
         val columns = listOf(800f, 280f, 320f, 400f, 800f).map {
             resolveReadingLayout(it, preset = ReadingLayoutPreset.Tablet).columns
         }
-        assertEquals(listOf(2, 1, 2, 2, 2), columns)
+        assertEquals(listOf(3, 1, 2, 2, 3), columns)
         assertEquals(1, resolveReadingLayout(319f, columnPreference = ReadingColumns.Two).columns)
         assertEquals(2, resolveReadingLayout(320f, columnPreference = ReadingColumns.Two).columns)
     }
@@ -110,7 +110,9 @@ class ReadingLayoutTest {
                         val contentWidth = width - layout.horizontalPaddingDp * 2
                         if (layout.columns > 1) {
                             assertTrue(width >= 320)
-                            assertTrue((contentWidth - layout.columnSpacingDp) / 2 >= 112f * fontScale)
+                            val minimum = if (layout.columns >= 3) 180f else 112f
+                            assertTrue((contentWidth - layout.columnSpacingDp * (layout.columns - 1)) /
+                                layout.columns >= minimum * fontScale)
                         }
                         if (layout.publicationColumns > 1) {
                             val spacing = layout.columnSpacingDp * (layout.publicationColumns - 1)
@@ -139,13 +141,32 @@ class ReadingLayoutTest {
     }
 
     @Test fun imagesUseActualSlotWidthWithoutResolvingColumnsAgain() {
-        assertEquals(200f, resolveArticleImageHeightDp(320f), 0.01f)
-        assertEquals(200f, resolveArticleImageHeightDp(400f, isLead = true), 0.01f)
-        assertEquals(240f, resolveArticleImageHeightDp(1200f), 0.01f)
-        assertEquals(340f, resolveArticleImageHeightDp(1200f, isLead = true), 0.01f)
+        assertEquals(184f, resolveArticleImageHeightDp(320f), 0.01f)
+        assertEquals(208f, resolveArticleImageHeightDp(400f, isLead = true), 0.01f)
+        assertEquals(184f, resolveArticleImageHeightDp(1200f), 0.01f)
+        assertEquals(208f, resolveArticleImageHeightDp(1200f, isLead = true), 0.01f)
         listOf(false, true).forEach { isLead ->
             assertTrue(resolveArticleImageHeightDp(100f, isLead) <= 100f / 1.4f)
         }
+    }
+
+    @Test fun autoAddsReadableTabletLanesButNeverOverridesExplicitChoices() {
+        assertEquals(3, resolveReadingLayout(800f).columns)
+        assertEquals(4, resolveReadingLayout(1000f).columns)
+        assertEquals(4, resolveReadingLayout(2400f).columns)
+        assertEquals(3, resolveReadingLayout(1000f, fontScale = 1.5f).columns)
+        assertEquals(2, resolveReadingLayout(1000f, fontScale = 2f).columns)
+        listOf(800f, 1000f, 2400f).forEach { width ->
+            assertEquals(2, resolveReadingLayout(width, preset = ReadingLayoutPreset.Phone).columns)
+            assertEquals(2, resolveReadingLayout(width, columnPreference = ReadingColumns.Two).columns)
+            assertEquals(1, resolveReadingLayout(width, columnPreference = ReadingColumns.One).columns)
+        }
+    }
+
+    @Test fun actualTabletImageSlotUsesAllGutters() {
+        val tablet = resolveReadingLayout(1000f)
+        val actualSlot = (1000f - tablet.horizontalPaddingDp * 2 - tablet.columnSpacingDp * 3) / 4
+        assertEquals(resolveArticleImageHeightDp(actualSlot), tablet.imageHeightDp, 0.01f)
     }
 
     @Test fun presetValuesAreStableAndUnknownValuesFallBackToAuto() {
