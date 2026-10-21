@@ -49,7 +49,17 @@ internal fun Modifier.eInkVerticalPageGesture(
                 var released = false
                 while (true) {
                     val event = awaitPointerEvent()
-                    if (event.changes.count { it.pressed } > 1) break
+                    if (event.changes.count { it.pressed } > 1) {
+                        // Reject the whole stream, not just the page gesture. Otherwise a
+                        // child clickable can turn the first pointer's release into a tap.
+                        var rejectedEvent = event
+                        while (true) {
+                            rejectedEvent.changes.forEach { it.consume() }
+                            if (rejectedEvent.changes.none { it.pressed }) break
+                            rejectedEvent = awaitPointerEvent()
+                        }
+                        break
+                    }
                     val change = event.changes.firstOrNull { it.id == down.id } ?: break
                     if (change.isConsumed) break
                     if (!change.pressed) {

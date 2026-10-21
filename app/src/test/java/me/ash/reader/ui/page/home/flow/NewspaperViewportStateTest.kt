@@ -193,4 +193,46 @@ class NewspaperViewportStateTest {
         present(state)
         assertTrue(state.turn(true, false) {})
     }
+
+    @Test fun disposedFilterMeasurementCannotPublishOrPresentItsOldRows() {
+        val state = NewspaperViewportState()
+        val oldPager = Any()
+        state.acceptSnapshot(oldPager, listOf(ArticleFlowItem.Date("Today", false), article("old")))
+        val oldSource = state.items
+        val oldRevision = state.revision
+        val oldPages = pages(listOf(1))
+        state.updatePages(oldPages, "same-geometry", oldSource, oldRevision)
+        state.presented(listOf(1), oldSource, oldRevision)
+
+        state.acceptSnapshot(Any(), emptyList())
+
+        assertFalse(state.isCurrentSnapshot(oldSource, oldRevision))
+        assertFalse(state.updatePages(oldPages, "same-geometry", oldSource, oldRevision))
+        assertFalse(state.presented(listOf(1), oldSource, oldRevision))
+        assertTrue(state.items.isEmpty())
+        assertTrue(state.pages.isEmpty())
+        assertFalse(state.turn(true, true) { throw AssertionError("Disposed filter was marked") })
+        // A surviving old row still indexes its own immutable source, not the new empty list.
+        assertEquals("old", (oldSource[1] as ArticleFlowItem.Article).articleWithFeed.article.id)
+    }
+
+    @Test fun sameSizedReplacementAndAppendInvalidateStaleMeasurementOwnership() {
+        val state = NewspaperViewportState()
+        val oldPager = Any()
+        state.acceptSnapshot(oldPager, listOf(article("old", 2)))
+        val oldSource = state.items
+        val oldRevision = state.revision
+        val replacementPager = Any()
+        state.acceptSnapshot(replacementPager, listOf(article("replacement", 2)))
+        assertFalse(state.isCurrentSnapshot(oldSource, oldRevision))
+        val replacementSource = state.items
+        val replacementRevision = state.revision
+        assertTrue(state.updatePages(pages(listOf(0)), "portrait", replacementSource, replacementRevision))
+        assertTrue(state.presented(listOf(0), replacementSource, replacementRevision))
+        state.acceptSnapshot(replacementPager, listOf(article("replacement", 2), article("tail", 1)))
+        assertFalse(state.updatePages(pages(listOf(0)), "portrait", replacementSource, replacementRevision))
+        assertFalse(state.presented(listOf(0), replacementSource, replacementRevision))
+        assertEquals(listOf("replacement", "tail"), ids(state))
+    }
+
 }

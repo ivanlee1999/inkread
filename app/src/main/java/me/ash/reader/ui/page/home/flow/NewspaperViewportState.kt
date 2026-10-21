@@ -125,7 +125,16 @@ internal class NewspaperViewportState {
         }
     }
 
-    fun updatePages(measured: List<NewspaperViewportPage>, newLayoutKey: Any) {
+    fun isCurrentSnapshot(source: List<ArticleFlowItem>, sourceRevision: Int): Boolean =
+        items === source && revision == sourceRevision
+
+    fun updatePages(
+        measured: List<NewspaperViewportPage>,
+        newLayoutKey: Any,
+        source: List<ArticleFlowItem> = items,
+        sourceRevision: Int = revision,
+    ): Boolean {
+        if (!isCurrentSnapshot(source, sourceRevision)) return false
         val anchor = displayedArticles.firstOrNull()?.article?.id
         val changedLayout = layoutKey != newLayoutKey
         if (changedLayout) { layoutRevision++; suspendPresentation(); lockedPageEnds = emptySet() }
@@ -136,13 +145,20 @@ internal class NewspaperViewportState {
             } }.coerceAtLeast(0)
         } else currentPage = currentPage.coerceIn(0, (pages.size - 1).coerceAtLeast(0))
         layoutKey = newLayoutKey
+        return true
     }
 
     fun suspendPresentation() { presentedPage = -1; presentedIndices = emptyList() }
 
-    fun presented(indices: List<Int>) {
+    fun presented(
+        indices: List<Int>,
+        source: List<ArticleFlowItem> = items,
+        sourceRevision: Int = revision,
+    ): Boolean {
+        if (!isCurrentSnapshot(source, sourceRevision)) return false
         presentedPage = currentPage
         presentedIndices = indices.toList()
+        return true
     }
 
     /** The one entry point for buttons, swipe, accessibility, and hardware keys. */

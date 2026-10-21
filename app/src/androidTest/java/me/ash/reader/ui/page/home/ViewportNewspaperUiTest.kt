@@ -27,11 +27,13 @@ import androidx.compose.ui.window.DialogWindowProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import coil.Coil
 import coil.disk.DiskCache
-import coil.ImageLoader
-import coil.intercept.Interceptor
-import coil.request.ImageResult
+import coil.EventListener
+import coil.fetch.Fetcher
+import coil.request.CachePolicy
 import coil.request.ErrorResult
-import kotlinx.coroutines.CompletableDeferred
+import coil.request.ImageRequest
+import coil.request.Options
+import kotlinx.coroutines.Dispatchers
 import me.ash.reader.R
 import me.ash.reader.domain.data.Diff
 import me.ash.reader.domain.model.article.Article
@@ -54,6 +56,8 @@ import org.junit.Rule
 import org.junit.Test
 import java.io.File
 import java.util.Date
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * Screen-fit acceptance tests. These render the production scaffold, compact header, measured
@@ -118,29 +122,40 @@ class ViewportNewspaperUiTest {
     @Test fun failedAndDelayedPhotosKeepTheSameMeasuredPagesAndWholeBlocks() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val original = Coil.imageLoader(context)
-        val gate = CompletableDeferred<Unit>()
-        val failureGate = CompletableDeferred<Unit>()
+        val gate = CountDownLatch(1)
+        val failureGate = CountDownLatch(1)
         val failureRequests = java.util.concurrent.atomic.AtomicInteger()
         val requests = java.util.concurrent.atomic.AtomicInteger()
         val failures = java.util.concurrent.atomic.AtomicInteger()
-        val delayed = original.newBuilder().diskCache(DiskCache.Builder()
-            .directory(File(context.cacheDir, "viewport-delay-${System.nanoTime()}")).build()).components {
-            add(object : Interceptor {
-                override suspend fun intercept(chain: Interceptor.Chain): ImageResult {
-                    if (chain.request.data.toString().contains("viewport-photo-missing")) {
+        // Production replaces the component registry with its safe raster decoder. Coil retains
+        // the EventListener when cloning that loader, so observe/gate its real fetch pipeline here.
+        val delayed = original.newBuilder()
+            .diskCache(DiskCache.Builder()
+                .directory(File(context.cacheDir, "viewport-delay-${System.nanoTime()}")).build())
+            .memoryCachePolicy(CachePolicy.DISABLED)
+            .networkCachePolicy(CachePolicy.DISABLED)
+            .respectCacheHeaders(false)
+            .fetcherDispatcher(Dispatchers.IO)
+            .eventListener(object : EventListener {
+                override fun fetchStart(request: ImageRequest, fetcher: Fetcher, options: Options) {
+                    check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper())
+                    if (request.data.toString().contains("viewport-photo-missing")) {
                         failureRequests.incrementAndGet()
-                        failureGate.await()
-                        failures.incrementAndGet()
-                        return ErrorResult(drawable = null, request = chain.request, throwable = java.io.IOException("Deterministic offline image failure"))
+                        check(failureGate.await(30, TimeUnit.SECONDS)) { "Failure gate was not released" }
+                        throw java.io.IOException("Deterministic offline image failure")
                     }
-                    if (chain.request.data.toString().contains("viewport-photo")) {
+                    if (request.data.toString().contains("viewport-photo")) {
                         requests.incrementAndGet()
-                        gate.await()
+                        check(gate.await(30, TimeUnit.SECONDS)) { "Photo gate was not released" }
                     }
-                    return chain.proceed(chain.request)
                 }
-            })
-        }.build()
+
+                override fun onError(request: ImageRequest, result: ErrorResult) {
+                    if (request.data.toString().contains("viewport-photo-missing")) {
+                        failures.incrementAndGet()
+                    }
+                }
+            }).build()
         Coil.setImageLoader(delayed)
         try {
             val fixture = Fixture(articles(photoUrls(), count = 18))
@@ -150,7 +165,7 @@ class ViewportNewspaperUiTest {
             val beforePages = pageIds(fixture)
             val beforeBounds = wholeBlockBounds(fixture)
             assertWholePage(fixture)
-            gate.complete(Unit)
+            gate.countDown()
             waitForPhotograph()
             compose.waitForIdle()
             assertEquals("Image completion cannot repack the printed edition", beforePages, pageIds(fixture))
@@ -160,13 +175,13 @@ class ViewportNewspaperUiTest {
             // A new edition with an invalid image exercises the real production failure path.
             compose.runOnIdle {
                 fixture.pager.value = Any()
-                fixture.source.value = articles(listOf("https://offline-fixture.invalid/viewport-photo-missing.jpg"), count = 8)
+                fixture.source.value = articles(listOf("https://offline-fixture.invalid/viewport-photo-missing-${System.nanoTime()}.jpg"), count = 8)
             }
             awaitEdition(fixture)
             compose.waitUntil(10_000) { failureRequests.get() > 0 }
             val failedPages = pageIds(fixture)
             val failedBounds = wholeBlockBounds(fixture)
-            failureGate.complete(Unit)
+            failureGate.countDown()
             compose.waitUntil(10_000) { failures.get() > 0 }
             compose.waitForIdle()
             assertEquals("Decode failure cannot alter page membership", failedPages, pageIds(fixture))
@@ -174,8 +189,8 @@ class ViewportNewspaperUiTest {
             assertWholePage(fixture)
             capture("viewport-failed-photo")
         } finally {
-            gate.complete(Unit)
-            failureGate.complete(Unit)
+            gate.countDown()
+            failureGate.countDown()
             Coil.setImageLoader(original)
             delayed.shutdown()
         }
@@ -242,20 +257,32 @@ class ViewportNewspaperUiTest {
             assertEquals(first, assertWholePage(fixture))
             assertTrue("Tap and context action are not forward page turns", fixture.marked.isEmpty())
             val viewport = compose.onNodeWithTag("newspaper-viewport")
+            val beforeJitter = fixture.opened.toList()
+            val jitterPoint = viewport.fetchSemanticsNode().boundsInRoot.center
+            val jitterArticle = first.firstOrNull { id ->
+                compose.onNodeWithTag("article-block-$id", useUnmergedTree = true)
+                    .fetchSemanticsNode().boundsInRoot.contains(jitterPoint)
+            }
             viewport.performTouchInput {
                 down(center)
                 moveTo(center + Offset(0f, -12f), delayMillis = 100)
                 up()
             }
             assertEquals(first, assertWholePage(fixture))
+            // Sub-touch-slop finger jitter is a conventional tap, not a cancelled gesture.
+            assertTrue("Jitter can only tap the article actually under its original down position",
+                fixture.opened == beforeJitter || jitterArticle != null && fixture.opened == beforeJitter + jitterArticle)
+            val acceptedTaps = fixture.opened.toList()
             viewport.performTouchInput { down(center); moveTo(center + Offset(0f, -150f), delayMillis = 100); cancel() }
             assertEquals(first, assertWholePage(fixture))
+            assertEquals("A cancelled vertical gesture never clicks through", acceptedTaps, fixture.opened)
             assertTrue("Short and cancelled gestures never mark stories", fixture.marked.isEmpty())
             viewport.performTouchInput { down(center); moveTo(center + Offset(0f, -150f), delayMillis = 100) }
             compose.runOnIdle { fixture.paneHeight.value = 270.dp }
             val resized = assertWholePage(fixture)
             viewport.performTouchInput { up() }
             assertEquals("Resizing cancels a held gesture even if page index stays zero", resized, assertWholePage(fixture))
+            assertEquals("Resize cancellation never taps a reflowed article", acceptedTaps, fixture.opened)
             assertTrue(fixture.marked.isEmpty())
             compose.runOnIdle { fixture.paneHeight.value = Dp.Unspecified }
             assertEquals(first, assertWholePage(fixture))
@@ -265,17 +292,22 @@ class ViewportNewspaperUiTest {
             val second = assertWholePage(fixture)
             viewport.performTouchInput { up() }
             assertEquals("A held gesture cannot turn the page installed by a hardware key", second, assertWholePage(fixture))
+            assertEquals("Hardware interruption never taps the new page", acceptedTaps, fixture.opened)
             assertEquals(first, fixture.marked)
             // A dominant horizontal motion still invokes only the configured article shortcut.
             val nextBlock = compose.onNodeWithTag("article-block-${second.first()}", useUnmergedTree = true)
             nextBlock.performTouchInput { swipe(Offset(width * 0.2f, center.y), Offset(width * 0.8f, center.y), 250) }
             assertEquals(listOf(first.first(), second.first()), fixture.toggled)
+            assertEquals("A horizontal article shortcut cancels its tap", acceptedTaps, fixture.opened)
             for (distance in listOf(-100f, 100f)) {
                 nextBlock.performTouchInput {
                     down(center)
                     moveTo(center + Offset(distance, 0f), delayMillis = 100)
                     cancel()
                 }
+                assertEquals("Cancelled horizontal drag $distance never becomes a tap", acceptedTaps, fixture.opened)
+                assertEquals(listOf(first.first(), second.first()), fixture.toggled)
+                assertTrue(fixture.starred.isEmpty())
             }
             nextBlock.performTouchInput {
                 down(0, center)
@@ -287,7 +319,7 @@ class ViewportNewspaperUiTest {
             assertEquals("Cancelled and multi-pointer horizontal gestures never invoke an article action",
                 listOf(first.first(), second.first()), fixture.toggled)
             assertTrue("Rejected horizontal gestures never invoke the opposite shortcut", fixture.starred.isEmpty())
-            assertEquals("Rejected gestures never become accidental article taps", listOf(first.first()), fixture.opened)
+            assertEquals("Multi-pointer rejection never falls through to the article's clickable child", acceptedTaps, fixture.opened)
             assertEquals(second, assertWholePage(fixture))
             assertEquals(first, fixture.marked)
             nextBlock.performTouchInput { swipe(Offset(width * 0.2f, center.y), Offset(width * 0.8f, center.y), 250) }
@@ -478,6 +510,25 @@ class ViewportNewspaperUiTest {
         compose.onNodeWithTag("article-list-actions-dialog").assertDoesNotExist()
         single.forEach { compose.onNodeWithTag("article-block-$it", useUnmergedTree = true).assertDoesNotExist() }
         assertTrue(fixture.marked.isEmpty())
+        var previousId = single.single()
+        repeat(3) { round ->
+            val replacementId = "replacement-$round"
+            compose.runOnIdle {
+                fixture.pager.value = Any()
+                fixture.source.value = articles(emptyList(), count = 1).map { item ->
+                    if (item is ArticleFlowItem.Article) ArticleFlowItem.Article(item.articleWithFeed.copy(
+                        article = item.articleWithFeed.article.copy(id = replacementId).also { it.dateString = "09:35 PM" }))
+                    else item
+                }
+            }
+            awaitEdition(fixture)
+            assertEquals("Repopulating and same-count filter replacements publish only the new edition",
+                listOf(replacementId), assertWholePage(fixture))
+            compose.onNodeWithTag("article-block-$previousId", useUnmergedTree = true).assertDoesNotExist()
+            assertEquals(1, fixture.state.pages.size)
+            assertTrue("Replacing an edition does not mark its previous IDs", fixture.marked.isEmpty())
+            previousId = replacementId
+        }
     }
 
     @Test fun readerHorizontalSwipeHonorsAxisThresholdCancellationAndDocumentLifecycle() {
@@ -514,18 +565,24 @@ class ViewportNewspaperUiTest {
         assertEquals(1, previous.get())
         assertEquals("Horizontal navigation cancels the child's tap", 1, taps.get())
         surface.performTouchInput { swipeUp() }
+        assertEquals("A vertical reader drag cancels its child tap", 1, taps.get())
         surface.performTouchInput { down(center); moveTo(center + Offset(-12f, 0f), 100); up() }
+        assertTrue("Sub-slop reader jitter may tap only its one hit-tested child", taps.get() == 1 || taps.get() == 2)
+        val acceptedTaps = taps.get()
         surface.performTouchInput { down(center); moveTo(center + Offset(-120f, 0f), 100); cancel() }
+        assertEquals("Cancelled horizontal reader drag never clicks through", acceptedTaps, taps.get())
         assertEquals(1, next.get())
         assertEquals(1, previous.get())
         surface.performTouchInput { down(center); moveTo(center + Offset(-120f, 0f), 100) }
         compose.runOnIdle { generation.value = "article-b/page-1" }
         surface.performTouchInput { up() }
         assertEquals("Held horizontal gesture cannot act on a replacement document", 1, next.get())
+        assertEquals("Document replacement cannot release a child click", acceptedTaps, taps.get())
         surface.performTouchInput { down(center); moveTo(center + Offset(-120f, 0f), 100) }
         compose.runOnIdle { height.value = 240.dp }
         surface.performTouchInput { up() }
         assertEquals("Resize cancels held reader gestures", 1, next.get())
+        assertEquals("Reader resize cancellation never clicks through", acceptedTaps, taps.get())
         surface.performTouchInput {
             down(0, center)
             down(1, center + Offset(0f, 40f))
@@ -534,6 +591,7 @@ class ViewportNewspaperUiTest {
             up(0); up(1)
         }
         assertEquals("A two-finger gesture cannot navigate an article", 1, next.get())
+        assertEquals("A rejected two-finger gesture cannot click the reader's child", acceptedTaps, taps.get())
         // Some emulator navigation modes have zero gesture edges; only assert an edge reservation
         // when Android actually reports one, rather than inventing a fixed exclusion strip.
         if (systemLeftEdge.get() > 0) {

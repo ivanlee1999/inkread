@@ -55,7 +55,17 @@ internal fun Modifier.readerArticleSwipe(
                 var released = false
                 while (true) {
                     val event = awaitPointerEvent()
-                    if (event.changes.count { it.pressed } > 1) break
+                    if (event.changes.count { it.pressed } > 1) {
+                        // Cancel child tap recognition as well as our swipe. Merely leaving
+                        // the recognizer lets a wide card open on the first pointer's UP.
+                        var rejectedEvent = event
+                        while (true) {
+                            rejectedEvent.changes.forEach { it.consume() }
+                            if (rejectedEvent.changes.none { it.pressed }) break
+                            rejectedEvent = awaitPointerEvent()
+                        }
+                        break
+                    }
                     val change = event.changes.firstOrNull { it.id == down.id } ?: break
                     // A child/parent or the system claiming a gesture cancels navigation.
                     if (change.isConsumed) break

@@ -78,6 +78,7 @@ internal fun EInkNewspaperViewport(
     val typography = MaterialTheme.typography
     val direction = LocalLayoutDirection.current
     val items = state.items
+    val editionRevision = state.revision
     SideEffect { diffMap.forEach { (id, diff) -> state.recordReadStatus(id, diff.isUnread) } }
     val rows = remember(state, items, columns) { state.rows(columns) }
     val pageTurn by rememberUpdatedState(onTurn)
@@ -90,8 +91,11 @@ internal fun EInkNewspaperViewport(
     val cacheBounds = remember(measurements) { intArrayOf(-1, -1) }
     val pageCache = remember(measurements) { ViewportPageCache() }
     val gestureKey = listOf(state.revision, state.layoutRevision, state.currentPage, columns, density.fontScale, settings)
-    val body: @Composable (NewspaperRow, NewspaperPreview, Boolean, Dp) -> Unit = { row, preview, measure, height ->
-        NewspaperViewportRow(state, row, items, columns, horizontalPadding, columnSpacing, preview, height,
+    // Each subcomposition owns the immutable source that its row indexes. An existing slot can
+    // recompose before the parent's next measure removes it after a filter/reset; it must never
+    // resolve its old row against the shared lambda's newest (possibly empty) source.
+    val body: @Composable (NewspaperRow, List<ArticleFlowItem>, NewspaperPreview, Boolean, Dp) -> Unit = { row, source, preview, measure, height ->
+        NewspaperViewportRow(state, row, source, columns, horizontalPadding, columnSpacing, preview, height,
             measure, diffMap, feedUnreadCounts, articleListTonalElevation, onClick,
             onToggleStarred, onToggleRead, onMarkAboveAsRead, onMarkBelowAsRead, onShare)
     }
@@ -116,6 +120,9 @@ internal fun EInkNewspaperViewport(
             ),
     ) { constraints ->
         val width = constraints.maxWidth
+        if (!state.isCurrentSnapshot(items, editionRevision)) {
+            return@SubcomposeLayout layout(width, constraints.maxHeight.coerceAtLeast(0)) {}
+        }
         if (constraints.maxHeight < minimumPaneHeight || width <= 2) {
             state.suspendPresentation()
             val notice = subcompose("insufficient-space") {
@@ -139,8 +146,8 @@ internal fun EInkNewspaperViewport(
                 val cacheKey = listOf(row, preview, width, height, items[row.indices.first()])
                 val rowHeight = measurements.getOrPut(cacheKey) {
                     val slotHeight = ((height - 2).coerceAtLeast(1) / row.slots.maxOf { it.indices.size }).toDp()
-                    subcompose(listOf("measure", row, preview)) {
-                        body(row, preview, true, slotHeight)
+                    subcompose(listOf("measure", editionRevision, row, preview)) {
+                        body(row, items, preview, true, slotHeight)
                     }.single().measure(measureConstraints).height
                 }
                 if (rowHeight <= height) return MeasuredNewspaperRow(row, rowHeight, preview)
@@ -178,14 +185,16 @@ internal fun EInkNewspaperViewport(
             pageCache.rows = rows; pageCache.geometry = geometry; pageCache.breaks = breaks; pageCache.pages = it
         }
         }
-        state.updatePages(pages, geometry)
+        if (!state.updatePages(pages, geometry, items, editionRevision)) {
+            return@SubcomposeLayout layout(width, height) {}
+        }
         val current = pages.getOrNull(state.currentPage)
         val displayed = current?.indices.orEmpty()
         val placeables = current?.rows.orEmpty().map { measuredRow ->
             val row = measuredRow.row
             val slotHeight = ((height - 2).coerceAtLeast(1) / row.slots.maxOf { it.indices.size }).toDp()
-            subcompose(listOf("display", row.indices)) {
-                body(row, measuredRow.preview, false, slotHeight)
+            subcompose(listOf("display", editionRevision, row.indices)) {
+                body(row, items, measuredRow.preview, false, slotHeight)
             }.single().measure(measureConstraints)
         }
         layout(width, height) {
@@ -194,8 +203,7 @@ internal fun EInkNewspaperViewport(
                 placeable.placeRelative(0, y)
                 y += placeable.height
             }
-            state.presented(displayed)
-            onDisplayed(displayed)
+            if (state.presented(displayed, items, editionRevision)) onDisplayed(displayed)
         }
     }
 }
