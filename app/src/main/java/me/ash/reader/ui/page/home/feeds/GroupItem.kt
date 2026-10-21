@@ -51,10 +51,11 @@ fun NewspaperFolderHeader(
     onLongClick: () -> Unit = {},
     onClick: () -> Unit = {},
 ) {
+    val fontScale = LocalDensity.current.fontScale
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val layout = resolveReadingLayout(
             availableWidthDp = maxWidth.value,
-            fontScale = LocalDensity.current.fontScale,
+            fontScale = fontScale,
             preset = LocalReadingLayoutPreset.current.preset,
             columnPreference = LocalReadingColumns.current.columns,
         )

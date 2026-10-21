@@ -71,7 +71,7 @@ jobs:
           destination = pathlib.Path("newspaper-screenshots")
           destination.mkdir(exist_ok=True)
           width = ${{ matrix.width }}
-          names = ("subscriptions", "subscriptions-gestures", "folders", "articles-footer-insets", "articles", "articles-image-large-font", "articles-large-font-end", "photos-auto", "photos-phone", "photos-tablet", "photos-off", "photos-cached-offline")
+          names = ("subscriptions", "subscriptions-gestures", "folders", "folders-collapsed", "articles-footer-insets", "articles", "articles-end", "articles-image-large-font", "articles-large-font-end", "photos-auto", "photos-phone", "photos-tablet", "photos-off", "photos-cached-offline")
           for name in names:
               filename = f"newspaper-{name}-{width}.png"
               matches = list(root.rglob(filename))

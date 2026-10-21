@@ -159,6 +159,7 @@ class NewspaperUiTest {
         val opened = mutableListOf<Int>()
         val readActions = mutableListOf<String>()
         val starActions = mutableListOf<String>()
+        val list = java.util.concurrent.atomic.AtomicReference<LazyListState>()
         val photo = cachedEarthriseUrl()
         val titles = listOf("Earthrise: a fresh view of our home", "Across the lunar horizon", "The long view: why patient observation matters in science and everyday life", "世界新闻：城市中的自然", "An independent perspective")
         val feed = Feed(id = "fixture", name = "NASA Archive / Bill Anders", url = "https://example.com", groupId = "g", accountId = 1)
@@ -176,10 +177,12 @@ class NewspaperUiTest {
                 AppTheme(useDarkTheme = false) {
                     FixtureChrome(subscriptions = false) {
                     val articles = stream.collectAsLazyPagingItems()
+                    val state = rememberLazyListState()
+                    SideEffect { list.set(state) }
                     BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
                         val layout = resolveReadingLayout(maxWidth.value, LocalDensity.current.fontScale,
                             LocalReadingLayoutPreset.current.preset, LocalReadingColumns.current.columns)
-                        LazyColumn(Modifier.testTag("article-list")) {
+                        LazyColumn(Modifier.testTag("article-list"), state = state) {
                             item { Text("The daily edition", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.headlineLarge) }
                             ArticleList(pagingItems = articles, diffMap = emptyMap(), isShowFeedIcon = false,
                                 isShowStickyHeader = false, articleListTonalElevation = 0, columns = layout.columns,
@@ -229,7 +232,10 @@ class NewspaperUiTest {
         compose.onNodeWithTag("article-list").performScrollToNode(hasText(titles[4]))
         compose.onNodeWithText(titles[4]).assertIsDisplayed().performClick()
         assertEquals(5, opened.last())
+        compose.runOnIdle { list.get().requestScrollToItem(list.get().layoutInfo.totalItemsCount - 1) }
         assertAboveBottomBar(compose.onNodeWithText(titles[4]))
+        compose.runOnIdle { assertTrue("The screenshot is at the actual article-list end", !list.get().canScrollForward) }
+        capture("articles-end")
     }
 
     @Test fun offlineImageAndLargeFontRemainReadableAndLastArticleReachable() {
@@ -812,11 +818,22 @@ class NewspaperUiTest {
         compose.onNodeWithTag("folder-open:World & culture").performTouchInput { longClick() }
         assertEquals(2, opened.get())
         assertEquals(2, options.get())
+        compose.onNodeWithTag("folder-expand:World & culture").performTouchInput { click() }
+        compose.onNodeWithTag("folder-publication-0").assertDoesNotExist()
+        assertEquals(3, disclosures.get())
+        capture("folders-collapsed")
+        val collapsedPosition = compose.runOnIdle { list.get().position() }
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("folder-open:World & culture").performTouchInput { swipeUp() }
+        assertImmediateScrollWithoutFling(list.get(), collapsedPosition)
+        assertEquals("A folder-only list swipe must not open a folder", 2, opened.get())
+        assertEquals(2, options.get())
+        assertEquals("A folder-only list swipe must not expand a folder", 3, disclosures.get())
         compose.runOnIdle { list.get().requestScrollToItem(20) }
         compose.onNodeWithTag("folder-open:Section 19").assertIsDisplayed()
         assertAboveBottomBar(compose.onNodeWithTag("folder-open:Section 19"))
         compose.onNodeWithTag("folder-expand:Section 19").performTouchInput { click() }
-        assertEquals("An empty folder keeps its independent disclosure target", 3, disclosures.get())
+        assertEquals("An empty folder keeps its independent disclosure target", 4, disclosures.get())
         assertEquals(2, opened.get())
     }
 
@@ -970,9 +987,13 @@ class NewspaperUiTest {
                 compose.runOnIdle {
                     navigationInset.value = inset
                     extraControls.value = expanded
-                    list.get().requestScrollToItem(19)
                 }
+                // Resize the viewport before asking for its final scroll position. A request
+                // measured against the old taller viewport is not a bottom-anchoring contract.
+                compose.waitForIdle()
+                compose.runOnIdle { list.get().requestScrollToItem(19) }
                 val last = compose.onNodeWithTag("footer-article-19").assertIsDisplayed()
+                capture("articles-footer-insets-$inset-${if (expanded) "expanded" else "compact"}")
                 assertAboveBottomBar(last)
                 val bar = compose.onNodeWithTag("fixture-bottom-bar").getUnclippedBoundsInRoot()
                 val navigation = compose.onNodeWithTag("fixture-system-navigation").getUnclippedBoundsInRoot()
@@ -991,6 +1012,8 @@ class NewspaperUiTest {
         val observed = java.util.concurrent.atomic.AtomicReference(original)
         val fontScale = mutableStateOf(1f)
         val columns = AtomicInteger()
+        val observedFontScale = java.util.concurrent.atomic.AtomicReference(1f)
+        val observedWidth = java.util.concurrent.atomic.AtomicReference(0f)
         try {
             compose.setContent {
                 val selected by remember { context.dataStore.data.map { ReadingColumnsPreference.fromPreferences(it) } }
@@ -1002,12 +1025,17 @@ class NewspaperUiTest {
                     LocalReadingLayoutPreset provides ReadingLayoutPresetPreference.Phone,
                     LocalDensity provides Density(density, fontScale.value)) {
                     AppTheme(useDarkTheme = false) {
+                        val previewFontScale = LocalDensity.current.fontScale
                         Column(Modifier.width(320.dp)) {
                             ReadingLayoutPresetSetting()
                             BoxWithConstraints(Modifier.fillMaxWidth()) {
-                                val layout = resolveReadingLayout(maxWidth.value, LocalDensity.current.fontScale,
+                                val layout = resolveReadingLayout(maxWidth.value, previewFontScale,
                                     LocalReadingLayoutPreset.current.preset, LocalReadingColumns.current.columns)
-                                SideEffect { columns.set(layout.columns) }
+                                SideEffect {
+                                    columns.set(layout.columns)
+                                    observedFontScale.set(previewFontScale)
+                                    observedWidth.set(maxWidth.value)
+                                }
                                 PublicationGrid(itemCount = 2) { index, modifier ->
                                     PublicationBlock("Phone edition $index", modifier = modifier.testTag("phone-column-$index"))
                                 }
@@ -1038,7 +1066,11 @@ class NewspaperUiTest {
                 ReadingColumnsPreference.fromPreferences(context.dataStore.data.first())
             })
             compose.runOnIdle { fontScale.value = 1.6f }
-            compose.waitUntil(5_000) { columns.get() == 1 }
+            compose.waitForIdle()
+            assertEquals("Preview renders the requested accessibility font scale at ${observedWidth.get()}dp",
+                1.6f, observedFontScale.get(), 0.001f)
+            assertEquals("A ${observedWidth.get()}dp phone pane with ${observedFontScale.get()}x text uses one column",
+                1, columns.get())
             val first = compose.onNodeWithTag("phone-column-0").getUnclippedBoundsInRoot()
             val second = compose.onNodeWithTag("phone-column-1").getUnclippedBoundsInRoot()
             assertTrue("Accessibility text size restores vertical reading order", second.top >= first.bottom)
@@ -1289,9 +1321,9 @@ class NewspaperUiTest {
         val last = node.assertHasClickAction().getUnclippedBoundsInRoot()
         val viewport = compose.onNodeWithTag("fixture-content-viewport").getUnclippedBoundsInRoot()
         val bar = compose.onNodeWithTag("fixture-bottom-bar").getUnclippedBoundsInRoot()
-        assertTrue("Production scaffold reserves the measured bottom bar", viewport.bottom <= bar.top + 1.dp)
-        assertTrue("Complete last article/publication remains in the content viewport", last.top >= viewport.top - 1.dp && last.bottom <= viewport.bottom + 1.dp)
-        assertTrue("Last content remains above bottom navigation", last.bottom <= bar.top + 1.dp)
+        assertTrue("Production scaffold reserves the measured bottom bar: viewport=$viewport, bar=$bar", viewport.bottom <= bar.top + 1.dp)
+        assertTrue("Complete last article/publication remains in the content viewport: last=$last, viewport=$viewport, bar=$bar", last.top >= viewport.top - 1.dp && last.bottom <= viewport.bottom + 1.dp)
+        assertTrue("Last content remains above bottom navigation: last=$last, bar=$bar", last.bottom <= bar.top + 1.dp)
     }
 
     private fun capture(name: String) {
