@@ -144,7 +144,9 @@ internal fun LazyListScope.ArticleList(
                         }
                     }
                 }
-                HorizontalDivider(color = ruleColor, thickness = 0.5.dp)
+                // A section rule closes the lead, not every row. Column rules and the
+                // separators between stacked briefs already establish the reading order.
+                if (row.isLead) HorizontalDivider(color = ruleColor, thickness = 0.5.dp)
             }
         }
     }

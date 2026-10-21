@@ -1,6 +1,7 @@
 package me.ash.reader.ui.page.home.feeds
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
@@ -37,23 +38,22 @@ fun PublicationGrid(
             modifier = Modifier.padding(horizontal = layout.horizontalPaddingDp.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            if (itemCount > 0) {
+                HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.onSurface)
+            }
             for (start in 0 until itemCount step columns) {
                 Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
-                    repeat(columns) { column ->
+                    repeat(minOf(columns, itemCount - start)) { column ->
                         if (column > 0) {
                             Box(
                                 modifier = Modifier.width(layout.columnSpacingDp.dp).fillMaxHeight(),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                VerticalDivider(color = MaterialTheme.colorScheme.onSurface)
+                                VerticalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.onSurface)
                             }
                         }
                         val index = start + column
-                        if (index < itemCount) {
-                            itemContent(index, Modifier.weight(1f).fillMaxHeight())
-                        } else {
-                            Spacer(Modifier.weight(1f))
-                        }
+                        itemContent(index, Modifier.weight(1f).fillMaxHeight())
                     }
                 }
             }

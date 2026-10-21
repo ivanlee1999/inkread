@@ -278,7 +278,11 @@ private fun NewspaperViewportRow(
                         preceding += slot.span
                         val boundary = preceding * lane + (preceding - 0.5f) * gap
                         val x = if (rtl) size.width - boundary else boundary
-                        drawLine(color, Offset(x, 0f), Offset(x, size.height), 0.5.dp.toPx())
+                        // Keep printed-column guidance without joining it to row rules
+                        // into a grid of boxes. Match the continuous article list.
+                        drawLine(color, Offset(x, 10.dp.toPx()),
+                            Offset(x, (size.height - 12.dp.toPx()).coerceAtLeast(10.dp.toPx())),
+                            0.5.dp.toPx())
                     }
                 },
                 horizontalArrangement = Arrangement.spacedBy(columnSpacing),
@@ -318,7 +322,7 @@ private fun NewspaperViewportRow(
                 }
             }
         }
-        HorizontalDivider(color = color, thickness = 0.5.dp)
+        if (row.isLead) HorizontalDivider(color = color, thickness = 0.5.dp)
     }
 }
 

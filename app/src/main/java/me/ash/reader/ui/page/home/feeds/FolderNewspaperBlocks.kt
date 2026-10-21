@@ -25,6 +25,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -79,15 +80,18 @@ private fun FolderSectionBlock(
         return
     }
     Column(modifier.then(if (measuring) Modifier else Modifier.testTag("folder-block:${section.id}"))) {
-        HorizontalDivider(thickness = if (featured) 3.dp else 1.dp, color = color)
         Column(
-            Modifier.fillMaxWidth().then(if (measuring) Modifier else Modifier.testTag("folder-open:${section.name}"))
+            Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                .then(if (measuring) Modifier else Modifier.testTag("folder-open:${section.name}"))
+                .semantics {
+                    stateDescription = "${section.publications.size} $feedsLabel, ${section.count} $countLabel"
+                }
                 .combinedClickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null, role = Role.Button,
                     onClick = onOpen, onLongClick = onOptions,
-                ).padding(top = if (minimal) 4.dp else 10.dp, bottom = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(if (minimal) 2.dp else 8.dp),
+                ).padding(top = if (minimal) 4.dp else 8.dp, bottom = 2.dp),
+            verticalArrangement = Arrangement.spacedBy(if (minimal) 2.dp else 6.dp),
         ) {
             Text(section.name,
                 Modifier.semantics { heading() },
@@ -96,11 +100,8 @@ private fun FolderSectionBlock(
                 lineHeight = if (minimal) 22.sp else if (featured) 34.sp else 27.sp,
                 color = color, maxLines = if (minimal) 1 else 3,
                 overflow = TextOverflow.Ellipsis)
-            Text("${section.count} · $countLabel",
-                style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold,
-                color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (preview == FolderPreview.Full && section.publications.isNotEmpty()) {
-                HorizontalDivider(thickness = 0.5.dp, color = color)
+                // Names carry the hierarchy; another rule here would box every tile.
                 // These are actual subscribed publications, not fabricated news teasers.
                 section.publications.take((if (featured) 3 else 2) + extraPublicationNames).forEach { publication ->
                     Text(publication.name,
@@ -111,10 +112,11 @@ private fun FolderSectionBlock(
             }
         }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("${stringResource(R.string.feeds)} · ${section.publications.size}",
+            Text("${section.publications.size} $feedsLabel · ${section.count} $countLabel",
                 modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.labelMedium, color = color,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2, overflow = TextOverflow.Ellipsis)
             Box(Modifier.size(48.dp).then(if (measuring) Modifier else Modifier.testTag("folder-expand:${section.name}"))
                 .clickable(interactionSource = remember { MutableInteractionSource() },
                     indication = null, role = Role.Button, onClick = onExpand),
@@ -124,7 +126,6 @@ private fun FolderSectionBlock(
                     tint = color)
             }
         }
-        HorizontalDivider(thickness = 0.5.dp, color = color)
     }
 }
 
@@ -147,6 +148,11 @@ internal fun FolderNewspaperRowContent(
     val direction = LocalLayoutDirection.current
     Column(Modifier.fillMaxWidth().then(if (measuring) Modifier else Modifier.testTag("folder-row:${row.key}"))
         .padding(vertical = if (preview == FolderPreview.HeadlineOnly) 0.dp else 8.dp)) {
+        if (row.heading == null && preview != FolderPreview.HeadlineOnly) {
+            // A rule belongs to the entire newspaper row, not each individual tile.
+            HorizontalDivider(thickness = if (row.slots.any { it.featured }) 2.dp else 0.5.dp,
+                color = color)
+        }
         row.heading?.let { section ->
             if (!row.continuation) {
                 NewspaperFolderHeader(section.name, section.count, section.publications.size,
@@ -159,10 +165,11 @@ internal fun FolderNewspaperRowContent(
                     onLongClick = { onFolderOptions(section.id) })
             } else if (preview == FolderPreview.Full || preview == FolderPreview.Compact) {
                 // Repeated real section context, not another folder in the source partition.
-                Text(section.name, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold,
+                HorizontalDivider(thickness = 0.5.dp, color = color)
+                Text(section.name, modifier = Modifier.padding(top = 6.dp, bottom = 4.dp),
+                    fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.labelLarge, color = color,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
-                HorizontalDivider(thickness = 0.5.dp, color = color)
             }
         }
         // A short final row uses its real columns, not a reserved empty publication lane.
@@ -197,6 +204,5 @@ internal fun FolderNewspaperRowContent(
                 }
             }
         }
-        if (row.heading != null) HorizontalDivider(thickness = 0.5.dp, color = color)
     }
 }

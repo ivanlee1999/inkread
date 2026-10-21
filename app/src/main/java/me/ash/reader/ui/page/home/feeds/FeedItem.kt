@@ -5,7 +5,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -14,6 +13,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -26,7 +26,7 @@ import me.ash.reader.ui.component.FeedIcon
 import me.ash.reader.ui.page.home.feeds.drawer.feed.FeedOptionViewModel
 
 /** A publication, rather than another settings-style row. No animated visibility or ripple. */
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun PublicationBlock(
     name: String,
@@ -45,7 +45,7 @@ fun PublicationBlock(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = if (minimal) 48.dp else 108.dp)
+            .heightIn(min = 48.dp)
             .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -53,27 +53,9 @@ fun PublicationBlock(
                 onClick = onClick,
                 onLongClick = onLongClick,
             )
-            .padding(vertical = if (minimal) 4.dp else 10.dp),
-        verticalArrangement = Arrangement.spacedBy(if (minimal) 2.dp else 8.dp),
+            .padding(vertical = if (minimal) 4.dp else 8.dp),
+        verticalArrangement = Arrangement.spacedBy(if (minimal) 2.dp else 6.dp),
     ) {
-        if (!minimal) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            // Off-screen measurement must not fetch icons or create transient image sizes.
-            if (measuring) Spacer(Modifier.size(20.dp))
-            else FeedIcon(feedName = name, iconUrl = iconUrl, animate = false)
-            Spacer(Modifier.weight(1f))
-            if (count != 0 || countLabel != null) {
-                Text(
-                    text = if (countLabel == null) count.toString() else "$count · $countLabel",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-        }
         Text(
             text = name,
             style = MaterialTheme.typography.titleMedium.copy(
@@ -91,15 +73,45 @@ fun PublicationBlock(
             },
             overflow = TextOverflow.Ellipsis,
         )
-        if (source.isNotBlank() && !minimal) {
-            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface)
-            Text(
-                text = source,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+        if (!minimal && (source.isNotBlank() || count != 0 || countLabel != null)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                // A real favicon supports the name; a repeated initial badge adds no information.
+                // Reserve the same geometry in measurement without fetching an image.
+                if (!iconUrl.isNullOrBlank()) {
+                    if (measuring) Spacer(Modifier.size(16.dp))
+                    else FeedIcon(feedName = name, iconUrl = iconUrl, size = 16.dp, animate = false)
+                }
+                FlowRow(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    if (source.isNotBlank()) {
+                        Text(
+                            text = source,
+                            modifier = if (measuring) Modifier else Modifier.testTag("publication-source:$name"),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    if (count != 0 || countLabel != null) {
+                        // The count is an independent item: a long host may wrap or elide,
+                        // but must never consume the count's text or accessibility bounds.
+                        Text(
+                            text = if (countLabel == null) count.toString() else "$count $countLabel",
+                            modifier = if (measuring) Modifier else Modifier.testTag("publication-count:$name"),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
         }
     }
 }

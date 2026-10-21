@@ -69,7 +69,7 @@ fun NewspaperFolderHeader(
                 Row(
                     modifier = Modifier
                         .weight(1f)
-                        .heightIn(min = if (compact) 48.dp else 72.dp)
+                        .heightIn(min = 48.dp)
                         .then(if (measuring) Modifier else Modifier.testTag("folder-open:$name"))
                         .combinedClickable(
                             interactionSource = remember { MutableInteractionSource() },
@@ -78,7 +78,7 @@ fun NewspaperFolderHeader(
                             onClick = onClick,
                             onLongClick = onLongClick,
                         )
-                        .padding(vertical = if (compact) 4.dp else 12.dp),
+                        .padding(vertical = if (compact) 4.dp else 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
@@ -95,20 +95,18 @@ fun NewspaperFolderHeader(
                         )
                         if (feedCount != null && !compact) {
                             Text(
-                                text = "${stringResource(R.string.feeds)} · $feedCount" +
-                                    if (countLabel == null) "" else "   $important · $countLabel",
+                                text = "$feedCount ${stringResource(R.string.feeds)}" +
+                                    if (countLabel == null) "" else " · $important $countLabel",
                                 style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurface,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
                     if (important != 0 && countLabel == null) {
                         Text(
                             text = important.toString(),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontFamily = FontFamily.Serif,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
@@ -131,7 +129,6 @@ fun NewspaperFolderHeader(
                     )
                 }
             }
-            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface)
         }
     }
 }

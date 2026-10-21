@@ -125,6 +125,50 @@ class ViewportFolderUiTest {
         assertEquals(listOf(id), openedFolders)
     }
 
+    @Test fun folderDisclosureRemainsASeparateAccessibleActionAtLargeType() {
+        val data = sections(1)
+        val section = data.single()
+        val state = FolderNewspaperState()
+        var scale by mutableFloatStateOf(1.6f)
+        var expanded by mutableStateOf(emptySet<String>())
+        val opened = mutableListOf<String>()
+        val options = mutableListOf<String>()
+        compose.setContent {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, scale)) {
+                Fixture(data, state, expanded,
+                    onOpenFolder = { opened += it }, onFolderOptions = { options += it },
+                    onToggleFolder = { id -> expanded = if (id in expanded) expanded - id else expanded + id })
+            }
+        }
+        for (font in listOf(1.6f, 2f)) {
+            compose.runOnIdle { scale = font }
+            compose.waitForIdle()
+            val open = compose.onNodeWithTag("folder-open:${section.name}")
+            val disclosure = compose.onNodeWithTag("folder-expand:${section.name}")
+            open.assertHasClickAction()
+            disclosure.assertHasClickAction()
+            val action = disclosure.getUnclippedBoundsInRoot()
+            val label = open.getUnclippedBoundsInRoot()
+            assertTrue("Disclosure retains its own 48dp accessible touch target", action.right - action.left >= 48.dp && action.bottom - action.top >= 48.dp)
+            assertTrue("Opening and expanding never overlap", action.left >= label.right || action.right <= label.left || action.top >= label.bottom || action.bottom <= label.top)
+            assertTrue("Disclosure has an accessible description", disclosure.fetchSemanticsNode().config[SemanticsProperties.ContentDescription].any { it.isNotBlank() })
+            disclosure.performClick()
+            compose.waitForIdle()
+            assertTrue("Expand does not accidentally open the folder", opened.isEmpty())
+            assertTrue("Expand does not accidentally open options", options.isEmpty())
+            assertTrue(section.id in expanded)
+            disclosure.performClick()
+            compose.waitForIdle()
+            assertTrue(expanded.isEmpty())
+            assertCompleteRows(state)
+        }
+        compose.onNodeWithTag("folder-open:${section.name}").performClick()
+        compose.onNodeWithTag("folder-open:${section.name}").performTouchInput { longClick() }
+        assertEquals(listOf(section.id), opened)
+        assertEquals(listOf(section.id), options)
+    }
+
     @Test fun expandedMultipageEditionHasNoLostFeedsAndReflowsAroundItsAnchor() {
         val data = sections(10)
         val state = FolderNewspaperState()

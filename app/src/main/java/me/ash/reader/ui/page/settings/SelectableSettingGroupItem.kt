@@ -44,7 +44,7 @@ fun SelectableSettingGroupItem(
 
     Surface(
         modifier = modifier
-            .clickable {
+            .clickable(enabled = enable) {
                 view.playSoundEffect(SoundEffectConstants.CLICK)
                 onClick()
             }
@@ -73,8 +73,7 @@ fun SelectableSettingGroupItem(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,
-                    maxLines = if (desc == null) 2 else 1,
-                    style = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp),
+                    style = MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp),
                     color = if (selected) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.onSurface,
                 )
                 desc?.let {
@@ -82,7 +81,6 @@ fun SelectableSettingGroupItem(
                         text = it,
                         color = if (selected) MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
                         else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                        maxLines = 1,
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }

@@ -85,7 +85,7 @@ jobs:
           cat > release-notes.md <<EOF_NOTES
           Built by GitHub Actions from commit ${{ github.sha }}.
 
-          InkRead $VERSION makes newspaper pages more content-aware: a bounded order-preserving search compares complete measured page arrangements, balancing unused space against lost preview detail, while spare room shows longer real excerpts or more actual publication names. Folder and article layouts preserve source order, readable type, image geometry and whole-preview screen boundaries. Retained reader progress, visible-only forward read marking, saved phone/tablet presets and animation-free gestures are preserved. Short final pages can still contain whitespace when there is no more real content to display.
+          InkRead $VERSION refines the newspaper interface with fewer decorative rules, clearer publication titles, compact folder counts, and a shared source/author byline without duplicate attribution. Article previews keep timestamps with metadata rather than separate footers. Reader metadata is title-first; settings and dialog headings wrap more gracefully, and unnecessary decorative settings artwork is removed. Measured whole-preview pages, ordered content, saved presets, reader progress and forward-only visible-item read marking remain intact. Layouts still use bounded editorial templates, so genuinely short content can leave whitespace.
 
           Uses the existing application ID and repository signing identity. No database migration is required. Native Android emulator tests cover narrow and tablet reading flows; physical BOOX refresh behavior still needs device verification.
           EOF_NOTES

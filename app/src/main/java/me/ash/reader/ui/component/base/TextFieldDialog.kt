@@ -55,7 +55,7 @@ fun TextFieldDialog(
         visible = visible,
         onDismissRequest = onDismissRequest,
         icon = { icon?.let { Icon(imageVector = icon, contentDescription = title) } },
-        title = { Text(text = title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        title = { Text(text = title, maxLines = 3, overflow = TextOverflow.Ellipsis) },
         text = {
             ClipboardTextField(
                 state = textFieldState,
@@ -119,7 +119,7 @@ fun TextFieldDialog(
         visible = visible,
         onDismissRequest = onDismissRequest,
         icon = { icon?.let { Icon(imageVector = icon, contentDescription = title) } },
-        title = { Text(text = title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        title = { Text(text = title, maxLines = 3, overflow = TextOverflow.Ellipsis) },
         text = {
             ClipboardTextField(
                 state = textFieldState,
@@ -181,7 +181,7 @@ fun TextFieldDialog(
         properties = properties,
         onDismissRequest = onDismissRequest,
         icon = { icon?.let { Icon(imageVector = icon, contentDescription = title) } },
-        title = { Text(text = title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        title = { Text(text = title, maxLines = 3, overflow = TextOverflow.Ellipsis) },
         text = {
             ClipboardTextField(
                 state = textFieldState,

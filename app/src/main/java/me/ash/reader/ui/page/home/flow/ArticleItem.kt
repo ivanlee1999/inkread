@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -83,6 +85,7 @@ import me.ash.reader.infrastructure.preference.SwipeEndActionPreference
 import me.ash.reader.infrastructure.preference.SwipeStartActionPreference
 import me.ash.reader.infrastructure.rss.articleImageRequest
 import me.ash.reader.ui.component.FeedIcon
+import me.ash.reader.ui.component.articleByline
 import me.ash.reader.ui.component.base.RYAsyncImage
 import me.ash.reader.ui.component.menu.AnimatedDropdownMenu
 import me.ash.reader.ui.ext.requiresBidi
@@ -130,6 +133,7 @@ fun ArticleItem(
     ArticleItem(
         modifier = modifier,
         feedName = feed.name,
+        author = article.author,
         feedIconUrl = feed.icon,
         feedUnreadCount = feedUnreadCount,
         isLead = isLead,
@@ -152,11 +156,12 @@ fun ArticleItem(
     )
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun ArticleItem(
     modifier: Modifier = Modifier,
     feedName: String = "",
+    author: String? = null,
     feedIconUrl: String? = null,
     feedUnreadCount: Int = 0,
     isLead: Boolean = false,
@@ -188,8 +193,13 @@ fun ArticleItem(
     val showImage = articleListImage.value &&
         preview != NewspaperPreview.Minimal && preview != NewspaperPreview.HeadlineOnly &&
         (if (preview != null) reserveImage else (imgData != null && (imgData !is String || imgData.isNotBlank())))
+    // Deduplicate against the actual publication even when its label is hidden. A publisher
+    // repeated in the author field must not silently defeat the feed-name preference.
+    val byline = articleByline(feedName, author, showSource = articleListFeedName.value)
+    val hasDistinctAuthor = articleByline(feedName, author, showSource = false).isNotEmpty()
+    val publicationTime = timeString?.trim()?.takeIf { articleListDate.value && it.isNotEmpty() }
     val showSource = preview != NewspaperPreview.HeadlineOnly &&
-        (preview != null || articleListFeedIcon.value || articleListFeedName.value || isStarred ||
+        (preview != null || articleListFeedIcon.value || byline.isNotEmpty() || publicationTime != null || isStarred ||
             (showReadIndicator && (isUnread || preview != null)))
     // An editorial block, not a dashboard card. The list owns the rules between rows.
     // Paged previews have whole-line limits; continuous mode keeps unbounded headlines.
@@ -213,7 +223,7 @@ fun ArticleItem(
                 Text(
                     modifier = Modifier.then(if (measurementOnly) Modifier else Modifier.testTag("article-description")),
                     text = shortDescription,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyMedium.copy(
                         fontSize = if (wideLead) 17.sp else if (isLead) 15.sp else 14.sp,
                         lineHeight = if (wideLead) 24.sp else if (isLead) 21.sp else 20.sp,
@@ -254,10 +264,12 @@ fun ArticleItem(
                 },
                 overflow = TextOverflow.Ellipsis,
             )
-            // A compact source line replaces card chrome. It uses real feed metadata only.
+            // One byline, not a source label and a second timestamp footer. A real author is
+            // included only when supplied; live feed counts do not belong on every story.
             if (showSource) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth()
+                        .then(if (measurementOnly) Modifier else Modifier.testTag("article-metadata")),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -265,17 +277,35 @@ fun ArticleItem(
                         if (measurementOnly) Spacer(Modifier.size(20.dp))
                         else FeedIcon(feedName = feedName, iconUrl = feedIconUrl, animate = false)
                     }
-                    if (articleListFeedName.value) {
-                        Text(
-                            modifier = Modifier.weight(1f),
-                            text = if (feedUnreadCount > 0) "$feedName ($feedUnreadCount)" else feedName,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp, lineHeight = 16.sp),
-                            fontWeight = FontWeight.Bold,
-                            maxLines = if (preview != null) 1 else 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    } else Spacer(Modifier.weight(1f))
+                    // Fixed status slots are measured outside the flexible text group. A long
+                    // source or large font wraps the time, never pushes unread/star off-screen.
+                    FlowRow(
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (byline.isNotEmpty()) {
+                            Text(
+                                modifier = Modifier.then(if (measurementOnly) Modifier else Modifier.testTag("article-byline")),
+                                text = byline,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp, lineHeight = 16.sp)
+                                    .applyTextDirection(byline.requiresBidi()),
+                                fontWeight = FontWeight.Normal,
+                                maxLines = if (preview == null || (preview == NewspaperPreview.Full && hasDistinctAuthor)) 2 else 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        if (publicationTime != null) {
+                            Text(
+                                modifier = Modifier.then(if (measurementOnly) Modifier else Modifier.testTag("article-time")),
+                                text = publicationTime,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 12.sp, lineHeight = 16.sp),
+                            )
+                        }
+                    }
                     if (isStarred) StarredIcon()
                     else if (preview != null) Spacer(Modifier.size(with(LocalDensity.current) { LocalTextStyle.current.fontSize.toDp() }))
                     if (showReadIndicator && !isUnread && preview != null) Spacer(Modifier.size(10.dp))
@@ -301,16 +331,6 @@ fun ArticleItem(
             } else {
                 description()
                 if (showImage) ArticlePhoto(data = imgData, isLead = isLead, isBrief = isBrief, compact = preview == NewspaperPreview.Compact, measurementOnly = measurementOnly, stableGeometry = preview != null)
-            }
-            if (preview != NewspaperPreview.HeadlineOnly && articleListDate.value && !timeString.isNullOrBlank()) {
-                Text(
-                    modifier = Modifier.then(if (measurementOnly) Modifier else Modifier.testTag("article-time")),
-                    text = timeString,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 12.sp, lineHeight = 16.sp),
-                )
             }
         }
     }
