@@ -28,6 +28,7 @@ fun NewspaperMasthead(
     val fontScale = LocalDensity.current.fontScale
     BoxWithConstraints(modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 16.dp)) {
         val wide = maxWidth.value >= 560f * fontScale
+        val detailsMaxWidth = minOf(240.dp, maxWidth * 0.42f)
         Column(Modifier.testTag("newspaper-masthead")) {
             HorizontalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.onSurface)
             if (detailsContent != null) {
@@ -39,7 +40,7 @@ fun NewspaperMasthead(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     MastheadTitle(title, Modifier.weight(1f))
-                    Box(Modifier.widthIn(max = minOf(240.dp, maxWidth * 0.42f))) {
+                    Box(Modifier.widthIn(max = detailsMaxWidth)) {
                         detailsContent()
                     }
                 }
