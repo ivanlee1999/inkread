@@ -168,6 +168,33 @@ class ViewportFolderUiTest {
         assertEquals(expected, seen)
     }
 
+    @Test fun successiveReflowsAndSavingKeepTheLogicalSourceAnchorUntilAnExplicitTurn() {
+        val data = sections(4)
+        fun pages(vararg groups: List<Int>) = groups.map { ids ->
+            FolderNewspaperPage(ids.map { index ->
+                MeasuredFolderRow(FolderNewspaperRow(listOf(FolderNewspaperSlot(data[index]))), 100)
+            })
+        }
+        var state = FolderNewspaperState()
+        state.updatePages(pages(listOf(0, 1), listOf(2, 3)), "initial")
+        assertTrue(state.turn(true))
+        val anchor = state.pages[state.currentPage].keys.first()
+        assertEquals("folder:g2", anchor)
+        state.updatePages(pages(listOf(0), listOf(1, 2, 3)), "large-font-one-column")
+        assertTrue("Reflow may place an earlier source before the stable anchor", anchor in state.pages[state.currentPage].keys)
+        assertEquals("folder:g1", state.pages[state.currentPage].keys.first())
+        val saveScope = object : androidx.compose.runtime.saveable.SaverScope {
+            override fun canBeSaved(value: Any) = true
+        }
+        val saved = with(FolderNewspaperState.Saver) { saveScope.save(state) }
+        state = requireNotNull(FolderNewspaperState.Saver.restore(requireNotNull(saved)))
+        state.updatePages(pages(listOf(0, 1), listOf(2, 3)), "normal-font-two-columns-rtl")
+        assertTrue("A second reflow must not drift to the incidental first key of the intervening page", anchor in state.pages[state.currentPage].keys)
+        assertTrue(state.turn(false))
+        state.updatePages(pages(listOf(0), listOf(1, 2, 3)), "another-resize")
+        assertEquals("An explicit turn establishes a new logical source anchor", listOf("folder:g0"), state.pages[state.currentPage].keys)
+    }
+
     @Test fun shortAndLongFolderDigestsKeepWholeSourcesAtEveryFontSize() {
         val data = sections(15).mapIndexed { index, section ->
             val names = listOf("Brief", "A longer publication covering science and the natural world",

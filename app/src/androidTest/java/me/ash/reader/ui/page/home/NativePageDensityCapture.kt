@@ -74,8 +74,16 @@ internal object NativePageDensityCapture {
             for (y in r[1] until r[3]) mask.set(y * width + r[0], y * width + r[2])
         }
         val descendants = hasAnyAncestor(hasTestTag(viewportTag))
+        val placedSource = SemanticsMatcher("placed source identity") { node ->
+            val tag = node.config.getOrElse(SemanticsProperties.TestTag) { "" }
+            tag.startsWith("article-block-") || tag.startsWith("folder-block:") || tag.startsWith("folder-publication:")
+        }
+        // SubcomposeLayout can retain semantics for measurement-only Text nodes. Only a real
+        // placed source block carries these tags; viewport ancestry alone is insufficient.
+        val inPlacedSource = hasAnyAncestor(placedSource)
         val texts = compose.onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsProperties.Text) and
-            SemanticsMatcher.keyIsDefined(SemanticsActions.GetTextLayoutResult) and descendants, useUnmergedTree = true)
+            SemanticsMatcher.keyIsDefined(SemanticsActions.GetTextLayoutResult) and descendants and inPlacedSource,
+            useUnmergedTree = true)
         texts.fetchSemanticsNodes().indices.forEach { index ->
             val node = texts[index].fetchSemanticsNode()
             val layouts = mutableListOf<TextLayoutResult>()
@@ -99,7 +107,7 @@ internal object NativePageDensityCapture {
                 }
             }
         }
-        val photos = compose.onAllNodes(hasTestTag("article-photo") and descendants, useUnmergedTree = true)
+        val photos = compose.onAllNodes(hasTestTag("article-photo") and descendants and inPlacedSource, useUnmergedTree = true)
         photos.fetchSemanticsNodes().forEach { node ->
             val r = rect(node.boundsInRoot.intersect(bounds))
             var nonPaper = 0
@@ -127,10 +135,12 @@ internal object NativePageDensityCapture {
             index = textMask.nextSetBit(index + 1)
         }
         val contentBottom = if (contentMask.isEmpty) 0 else (contentMask.length() - 1) / width + 1
-        val sources = compose.onAllNodes(SemanticsMatcher("placed source identity") { node ->
-            val tag = node.config.getOrElse(SemanticsProperties.TestTag) { "" }
-            tag.startsWith("article-block-") || tag.startsWith("folder-block:") || tag.startsWith("folder-publication:")
-        } and descendants, useUnmergedTree = true).fetchSemanticsNodes()
+        val sources = compose.onAllNodes(placedSource and descendants, useUnmergedTree = true).fetchSemanticsNodes()
+        // Article: <=30 excerpt +5 headline +source/time lines. Folder: <=35 digest
+        // names +3 title +count/footer lines. Leave modest headroom, not hundreds of probes.
+        check(renderedLineCount <= sources.size * 48) {
+            "$name contains $renderedLineCount text lines for ${sources.size} placed sources; measurement-only semantics may have leaked"
+        }
         val range = if (viewport.config.contains(SemanticsProperties.VerticalScrollAxisRange))
             viewport.config[SemanticsProperties.VerticalScrollAxisRange] else null
         val report = JSONObject()
@@ -150,7 +160,7 @@ internal object NativePageDensityCapture {
             .put("renderedTextLines", renderedLineCount)
             .put("sourceIds", JSONArray(sources.map { it.config[SemanticsProperties.TestTag] }))
             .put("textLines", textLines).put("photographs", photographs)
-            .put("definition", "Union of actual laid-out text-line extents and decoded photograph non-paper pixels. Excludes card rectangles, unused photo reservations, letterboxing, rules, padding, header and controls. Sparse pages may legitimately remain blank.")
+            .put("definition", "Union of actual laid-out text-line extents and decoded photograph non-paper pixels. Includes only tagged placed source blocks. Excludes measurement-only nodes, date furniture, card rectangles, unused photo reservations, letterboxing, rules, padding, header and controls. Sparse pages may legitimately remain blank.")
         File(directory, "$stem.density.json").writeText(report.toString(2))
     }
 }

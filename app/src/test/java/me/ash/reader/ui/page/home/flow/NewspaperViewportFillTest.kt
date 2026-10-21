@@ -19,10 +19,39 @@ class NewspaperViewportFillTest {
         assertEquals(listOf(NewspaperPreview.Full, NewspaperPreview.Compact), pages.single().rows.map { it.preview })
     }
 
-    @Test fun onePrecedingRowCanCompactToAdmitAnotherWholeRow() {
+    @Test fun earlierRowCanCompactToAdmitAnotherWholeRow() {
         val pages = pack(listOf(story(0, 65, 40), story(1, 60, 50)), 100)
         assertEquals(listOf(0, 1), pages.single().indices)
         assertEquals(listOf(NewspaperPreview.Compact, NewspaperPreview.Full), pages.single().rows.map { it.preview })
+    }
+
+    @Test fun wholePageSearchCanReconsiderTwoEarlierRowsTogether() {
+        val pages = pack(listOf(story(0, 70, 50), story(1, 70, 50), story(2, 100, 90)), 200)
+        assertEquals(listOf(0, 1, 2), pages.single().indices)
+        assertEquals(listOf(NewspaperPreview.Compact, NewspaperPreview.Compact, NewspaperPreview.Full),
+            pages.single().rows.map { it.preview })
+    }
+
+    @Test fun beamPruningCannotLeaveARestorableCompactHeadlineBeforeExcerptGrowth() {
+        val geometry = listOf(Triple(94, 34, 4), Triple(116, 104, 1), Triple(220, 168, 3),
+            Triple(177, 112, 2), Triple(97, 93, 1), Triple(311, 175, 5),
+            Triple(71, 29, 1), Triple(211, 183, 2))
+        var index = 0
+        val rows = geometry.map { (full, compact, count) ->
+            story(index, full, compact, count).also { index += count }
+        }
+        val pages = pack(rows, 925)
+        val restored = pages.first().rows.first { it.row.indices == listOf(4) }
+        assertEquals(NewspaperPreview.Full, restored.preview)
+        assertEquals(116, restored.heightPx)
+        pages.forEach { page ->
+            val spare = 925 - page.heightPx
+            page.rows.filter { it.preview == NewspaperPreview.Compact }.forEach { compact ->
+                val full = rows.first { it.first().row.indices == compact.row.indices }.first()
+                assertTrue("Restore matching Full before spending spare space on excerpts",
+                    full.heightPx > compact.heightPx + spare)
+            }
+        }
     }
 
     @Test fun unsuccessfulCompactionLeavesRicherPageUntouched() {
@@ -59,6 +88,27 @@ class NewspaperViewportFillTest {
         assertEquals(8, expanded.rows.single().extraDescriptionLines[0])
         assertEquals(4, expanded.rows.single().extraDescriptionLines[1])
         assertTrue("At most two six-probe searches per story", measurements <= 24)
+    }
+
+    @Test fun compactHeadlineContextGetsSpaceBeforeLongerExcerpts() {
+        val row = story(0, 40).first().copy(preview = NewspaperPreview.Compact,
+            row = NewspaperRow(listOf(0), false, true))
+        val expanded = enrichNewspaperViewportPage(NewspaperViewportPage(listOf(row)), 60) { candidate ->
+            candidate.copy(heightPx = 40 + 10 * (candidate.extraHeadlineLines[0] ?: 0) +
+                10 * (candidate.extraDescriptionLines[0] ?: 0))
+        }
+        assertEquals(2, expanded.rows.single().extraHeadlineLines[0])
+        assertEquals(0, expanded.rows.single().extraDescriptionLines[0] ?: 0)
+        assertEquals(60, expanded.heightPx)
+    }
+
+    @Test fun compactNonLeadHeadlineNeverExceedsItsFullFourLineLimit() {
+        val row = story(0, 40).first().copy(preview = NewspaperPreview.Compact)
+        val expanded = enrichNewspaperViewportPage(NewspaperViewportPage(listOf(row)), 100) { candidate ->
+            candidate.copy(heightPx = 40 + 10 * (candidate.extraHeadlineLines[0] ?: 0))
+        }
+        assertEquals(1, expanded.rows.single().extraHeadlineLines[0])
+        assertEquals(50, expanded.heightPx)
     }
 
     @Test fun exhaustedRealContentDoesNotStretchItsBlock() {

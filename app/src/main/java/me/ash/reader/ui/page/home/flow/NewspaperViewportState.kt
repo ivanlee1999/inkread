@@ -23,6 +23,8 @@ internal class NewspaperViewportState {
     private val observedStarred = mutableMapOf<String, Boolean>()
     private val readStatus = mutableStateMapOf<String, Boolean>()
     private val starredStatus = mutableStateMapOf<String, Boolean>()
+    // A logical reading position, not the first article exposed by an automatic wider reflow.
+    private var logicalAnchorId: String? = null
     private var presentedPage = -1
     private var presentedIndices: List<Int> = emptyList()
     var items: List<ArticleFlowItem> by mutableStateOf(emptyList())
@@ -74,6 +76,7 @@ internal class NewspaperViewportState {
         pages = emptyList()
         currentPage = 0
         layoutKey = null
+        logicalAnchorId = null
         presentedPage = -1
         presentedIndices = emptyList()
         revision++
@@ -135,7 +138,7 @@ internal class NewspaperViewportState {
         sourceRevision: Int = revision,
     ): Boolean {
         if (!isCurrentSnapshot(source, sourceRevision)) return false
-        val anchor = displayedArticles.firstOrNull()?.article?.id
+        val anchor = logicalAnchorId
         val changedLayout = layoutKey != newLayoutKey
         if (changedLayout) { layoutRevision++; suspendPresentation(); lockedPageEnds = emptySet() }
         if (pages != measured) pages = measured
@@ -158,6 +161,9 @@ internal class NewspaperViewportState {
         if (!isCurrentSnapshot(source, sourceRevision)) return false
         presentedPage = currentPage
         presentedIndices = indices.toList()
+        if (logicalAnchorId == null && indices == displayedIndices) {
+            logicalAnchorId = displayedArticles.firstOrNull()?.article?.id
+        }
         return true
     }
 
@@ -169,6 +175,7 @@ internal class NewspaperViewportState {
         if (target !in pages.indices) return false
         val outgoing = if (forward && markReadEnabled) displayedArticles.toList() else emptyList()
         currentPage = target
+        logicalAnchorId = displayedArticles.firstOrNull()?.article?.id
         if (outgoing.isNotEmpty()) {
             outgoing.forEach { recordReadStatus(it.article.id, false) }
             onMarkRead(outgoing)

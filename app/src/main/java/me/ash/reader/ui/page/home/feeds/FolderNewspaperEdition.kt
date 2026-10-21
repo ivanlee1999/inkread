@@ -44,6 +44,7 @@ class FolderNewspaperState {
     private var requestedSection: String? = null
     private var restoredAnchor: String? = null
     private var restoredSection: String? = null
+    private var readingAnchor: FolderReadingAnchor? = null
     internal var presentationAvailable by mutableStateOf(false)
         private set
 
@@ -52,9 +53,8 @@ class FolderNewspaperState {
     companion object {
         val Saver = listSaver<FolderNewspaperState, String>(
             save = { state ->
-                val row = state.pages.getOrNull(state.currentPage)?.rows?.firstOrNull()?.row
-                listOf(state.currentPage.toString(), row?.keys?.firstOrNull().orEmpty(),
-                    row?.sectionIds?.firstOrNull().orEmpty())
+                val anchor = state.currentReadingAnchor()
+                listOf(state.currentPage.toString(), anchor?.key.orEmpty(), anchor?.sectionId.orEmpty())
             },
             restore = { saved -> FolderNewspaperState().also {
                 it.currentPage = saved[0].toIntOrNull() ?: 0
@@ -66,9 +66,18 @@ class FolderNewspaperState {
 
     fun anchorFolder(id: String) { requestedSection = id }
 
+    private fun currentReadingAnchor(): FolderReadingAnchor? =
+        requestedSection?.let { FolderReadingAnchor("folder:$it", it) }
+            ?: restoredAnchor?.let { FolderReadingAnchor(it, restoredSection) }
+            ?: readingAnchor
+            ?: folderReadingAnchor(pages.getOrNull(currentPage))
+
     fun firstPage() {
         requestedSection = null
+        restoredAnchor = null
+        restoredSection = null
         currentPage = 0
+        readingAnchor = folderReadingAnchor(pages.firstOrNull())
     }
 
     fun turn(forward: Boolean): Boolean {
@@ -76,19 +85,24 @@ class FolderNewspaperState {
         val next = currentPage + if (forward) 1 else -1
         if (next !in pages.indices) return false
         requestedSection = null
+        restoredAnchor = null
+        restoredSection = null
         currentPage = next
+        // Only explicit navigation replaces the logical source with the new page's first one.
+        readingAnchor = folderReadingAnchor(pages[next])
         return true
     }
 
     internal fun updatePages(next: List<FolderNewspaperPage>, identity: Any) {
         presentationAvailable = true
         if (pages == next && layoutIdentity == identity && requestedSection == null && restoredAnchor == null) return
-        val old = pages.getOrNull(currentPage)?.rows?.firstOrNull()?.row
-        val anchor = requestedSection?.let { "folder:$it" } ?: restoredAnchor ?: old?.keys?.firstOrNull()
-        val section = requestedSection ?: restoredSection ?: old?.sectionIds?.firstOrNull()
-        val target = folderPageForAnchor(next, anchor, section, currentPage)
+        val anchor = currentReadingAnchor()
+        val target = folderPageForAnchor(next, anchor?.key, anchor?.sectionId, currentPage)
         pages = next
         currentPage = target
+        // Automatic font/column/direction changes may put the same source mid-page. Preserve
+        // that source for subsequent reflows and saving; do not drift to the new first row.
+        readingAnchor = folderReadingAnchor(next.getOrNull(target), anchor)
         requestedSection = null
         if (next.isNotEmpty()) { restoredAnchor = null; restoredSection = null }
         layoutIdentity = identity

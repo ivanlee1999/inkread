@@ -95,7 +95,7 @@ internal fun EInkNewspaperViewport(
     // recompose before the parent's next measure removes it after a filter/reset; it must never
     // resolve its old row against the shared lambda's newest (possibly empty) source.
     val body: @Composable (MeasuredNewspaperRow, List<ArticleFlowItem>, Boolean, Dp) -> Unit = { measured, source, measure, height ->
-        NewspaperViewportRow(state, measured.row, source, columns, horizontalPadding, columnSpacing, measured.preview, height, measured.extraDescriptionLines,
+        NewspaperViewportRow(state, measured.row, source, columns, horizontalPadding, columnSpacing, measured.preview, height, measured.extraDescriptionLines, measured.extraHeadlineLines,
             measure, diffMap, feedUnreadCounts, articleListTonalElevation, onClick,
             onToggleStarred, onToggleRead, onMarkAboveAsRead, onMarkBelowAsRead, onShare)
     }
@@ -143,11 +143,11 @@ internal fun EInkNewspaperViewport(
         val measureConstraints = Constraints(minWidth = width, maxWidth = width)
         fun measureRow(candidate: MeasuredNewspaperRow): MeasuredNewspaperRow {
             val row = candidate.row
-            val cacheKey = listOf(row, candidate.preview, candidate.extraDescriptionLines,
+            val cacheKey = listOf(row, candidate.preview, candidate.extraDescriptionLines, candidate.extraHeadlineLines,
                 width, height, items[row.indices.first()])
             val rowHeight = measurements.getOrPut(cacheKey) {
                 val slotHeight = ((height - 2).coerceAtLeast(1) / row.slots.maxOf { it.indices.size }).toDp()
-                subcompose(listOf("measure", editionRevision, row, candidate.preview, candidate.extraDescriptionLines)) {
+                subcompose(listOf("measure", editionRevision, row, candidate.preview, candidate.extraDescriptionLines, candidate.extraHeadlineLines)) {
                     body(candidate, items, true, slotHeight)
                 }.single().measure(measureConstraints).height
             }
@@ -159,12 +159,12 @@ internal fun EInkNewspaperViewport(
             val templates = newspaperViewportTemplates(row, columns)
             val ordinary = listOf(NewspaperPreview.Full, NewspaperPreview.Compact).flatMap { preview ->
                 templates.map { measureRow(MeasuredNewspaperRow(it, 0, preview)) }
-                    .filter { it.heightPx <= height }.sortedBy { it.heightPx }
+                    .filter { it.heightPx <= height }
             }
             if (ordinary.isNotEmpty()) return ordinary
             for (preview in listOf(NewspaperPreview.Minimal, NewspaperPreview.HeadlineOnly)) {
                 val fitted = templates.map { measureRow(MeasuredNewspaperRow(it, 0, preview)) }
-                    .filter { it.heightPx <= height }.sortedBy { it.heightPx }
+                    .filter { it.heightPx <= height }
                 if (fitted.isNotEmpty()) return fitted
             }
             return emptyList()
@@ -247,6 +247,7 @@ private fun NewspaperViewportRow(
     preview: NewspaperPreview,
     previewHeight: Dp,
     extraDescriptionLines: Map<Int, Int>,
+    extraHeadlineLines: Map<Int, Int>,
     measurementOnly: Boolean,
     diffMap: Map<String, Diff>,
     feedUnreadCounts: Map<String, Int>,
@@ -292,7 +293,8 @@ private fun NewspaperViewportRow(
                                     ArticleItem(articleWithFeed = item, feedUnreadCount = 0,
                                         isLead = row.isLead, storyStyle = slot.style,
                                         preview = preview, previewHeight = previewHeight,
-                                        extraDescriptionLines = extraDescriptionLines[index] ?: 0, measurementOnly = true)
+                                        extraDescriptionLines = extraDescriptionLines[index] ?: 0,
+                                        extraHeadlineLines = extraHeadlineLines[index] ?: 0, measurementOnly = true)
                                 } else {
                                     val current = state.currentArticle(item)
                                     SwipeableArticleItem(articleWithFeed = current,
@@ -303,6 +305,7 @@ private fun NewspaperViewportRow(
                                         isLead = row.isLead, storyStyle = slot.style,
                                         preview = preview, previewHeight = previewHeight,
                                         extraDescriptionLines = extraDescriptionLines[index] ?: 0,
+                                        extraHeadlineLines = extraHeadlineLines[index] ?: 0,
                                         articleListTonalElevation = tonalElevation,
                                         onClick = { onClick(it, index) },
                                         onToggleStarred = onToggleStarred, onToggleRead = onToggleRead,
