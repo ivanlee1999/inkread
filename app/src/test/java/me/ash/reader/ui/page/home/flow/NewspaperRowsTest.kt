@@ -49,6 +49,32 @@ class NewspaperRowsTest {
         assertEquals(listOf(4), rows[0].slots.map { it.span })
     }
 
+    @Test fun partialFourLaneEditorialGroupFillsRemainingWidthWithoutChangingRows() {
+        val rows = newspaperRows(4, 4) { false }
+        assertEquals(listOf(listOf(0), listOf(1, 2, 3)), rows.map { it.indices })
+        assertEquals(listOf(listOf(1), listOf(2, 3)), rows[1].slots.map { it.indices })
+        assertEquals(listOf(2, 2), rows[1].slots.map { it.span })
+        assertEquals(4, rows[1].slots.sumOf { it.span })
+        (1..3).forEach { assertEquals(1, rows.rowForSourceIndex(it)) }
+        // Ordinary three-lane and fuller four-lane templates are unaffected.
+        assertEquals(listOf(2, 1), newspaperRows(4, 3) { false }[1].slots.map { it.span })
+        assertEquals(listOf(2, 1, 1), newspaperRows(5, 4) { false }[1].slots.map { it.span })
+        assertEquals(listOf(2, 1, 1), newspaperRows(6, 4) { false }[1].slots.map { it.span })
+    }
+
+    @Test fun partialEditorialWidthAlsoFillsAtDateAndAbsolutePageBoundaries() {
+        val atDate = newspaperRows(8, 4) { it == 4 }
+        assertEquals(listOf(1, 2, 3), atDate[1].indices)
+        assertEquals(listOf(2, 2), atDate[1].slots.map { it.span })
+        assertEquals(listOf(4), atDate[2].indices)
+        assertTrue(atDate[2].isDate)
+        assertEquals((0..7).toList(), atDate.flatMap { it.indices })
+        val atPageEnd = newspaperRows(30, 4, start = 8, end = 12) { false }
+        assertEquals(listOf(listOf(8), listOf(9, 10, 11)), atPageEnd.map { it.indices })
+        assertEquals(listOf(2, 2), atPageEnd[1].slots.map { it.span })
+        assertEquals(1, atPageEnd.rowForSourceIndex(11))
+    }
+
     @Test fun shortSectionNeverConsumesNextDateAndTemplateResets() {
         val rows = newspaperRows(13, 4) { it == 4 }
         assertEquals(listOf(listOf(0), listOf(1, 2, 3), listOf(4), listOf(5), (6..10).toList(), listOf(11, 12)), rows.map { it.indices })

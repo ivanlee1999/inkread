@@ -299,7 +299,10 @@ class NewspaperUiTest {
             groupId = "g", accountId = 1)
         val fixture = (0 until 30).map { index ->
             ArticleFlowItem.Article(ArticleWithFeed(Article(id = "slice-$index", date = Date(0),
-                title = "Article $index: a deliberately substantial headline for a measured newspaper block",
+                // Explicit lines keep the final supporting rows taller than the viewport even
+                // on a 1000dp tablet. Otherwise a legitimate end clamp hides the tested anchor.
+                title = "Article $index: a deliberately substantial headline for a measured newspaper block" +
+                    "\nA measured continuation stays readable.".repeat(6),
                 rawDescription = "", shortDescription = "A substantial text block makes each slice overflow this bounded viewport so a retained scroll offset cannot pass unnoticed.",
                 link = "about:blank", feedId = feed.id, accountId = 1), feed))
         }
@@ -372,11 +375,18 @@ class NewspaperUiTest {
             apply(change)
         }
         compose.onNodeWithText(fixture[27].articleWithFeed.article.title).assertIsDisplayed()
+        capture("pagination-anchor")
         compose.runOnIdle {
             val rows = newspaperRows(30, columns, page.value * capacity.value,
                 (page.value + 1) * capacity.value) { false }
             assertEquals(5, page.value)
-            assertTrue("Resized first row still contains source27",
+            val info = currentList.get().layoutInfo
+            val targetRow = rows.indexOfFirst { 27 in it.indices }
+            val measuredTail = info.visibleItemsInfo.filter { it.index >= targetRow }.sumOf { it.size }
+            val viewport = info.viewportEndOffset - info.viewportStartOffset
+            assertTrue("Anchor fixture must retain trailing overflow: tail=$measuredTail, viewport=$viewport",
+                measuredTail > viewport)
+            assertTrue("Resized first row still contains source27: first=${currentList.get().position()}, target=$targetRow, tail=$measuredTail, viewport=$viewport",
                 27 in rows[currentList.get().firstVisibleItemIndex].indices)
             assertEquals("Resize is not explicit forward reading", (12 until 18).toSet(), marked)
         }
@@ -390,7 +400,10 @@ class NewspaperUiTest {
             groupId = "g", accountId = 1)
         fun fixture(prefix: String) = (0 until 30).map { index ->
             ArticleFlowItem.Article(ArticleWithFeed(Article(id = "$prefix-$index", date = Date(0),
-                title = "$prefix article $index: a substantial headline for measured transition testing",
+                // This transition fixture requires real trailing overflow, not just a long
+                // sentence that becomes short when the measured tablet columns grow wider.
+                title = "$prefix article $index: a substantial headline for measured transition testing" +
+                    "\nA measured continuation stays readable.".repeat(6),
                 rawDescription = "", shortDescription = "Enough content to force scrolling within each bounded slice, exposing incorrect retained offsets and stale list ownership.",
                 link = "about:blank", feedId = feed.id, accountId = 1), feed))
         }
@@ -520,10 +533,18 @@ class NewspaperUiTest {
             val beforeResizeMarks = marked.toList()
             compose.runOnIdle { targetCapacity.value = 5 }
             compose.waitUntil(5_000) { capacity.value == 5 }
+            capture("effects-anchor")
             compose.runOnIdle {
                 assertEquals(5, page.value)
                 val rows = newspaperRows(30, columns.value, 25, 30) { false }
-                assertTrue(27 in rows[currentList.get().firstVisibleItemIndex].indices)
+                val info = currentList.get().layoutInfo
+                val targetRow = rows.indexOfFirst { 27 in it.indices }
+                val measuredTail = info.visibleItemsInfo.filter { it.index >= targetRow }.sumOf { it.size }
+                val viewport = info.viewportEndOffset - info.viewportStartOffset
+                assertTrue("Effect fixture must retain trailing overflow: tail=$measuredTail, viewport=$viewport",
+                    measuredTail > viewport)
+                assertTrue("Real measured reflow keeps source27 first: first=${currentList.get().position()}, target=$targetRow, tail=$measuredTail, viewport=$viewport",
+                    27 in rows[currentList.get().firstVisibleItemIndex].indices)
                 assertEquals("Real layout effect never marks reader-return or resized rows", beforeResizeMarks, marked)
             }
             compose.onNodeWithText(data.getValue("b")[27].articleWithFeed.article.title).assertIsDisplayed()
@@ -535,12 +556,27 @@ class NewspaperUiTest {
     @Test fun photoEditionHonorsPresetsImageOffAndLargeText() {
         val photo = cachedEarthriseUrl()
         val feed = Feed(id = "photo", name = "NASA / Bill Anders", url = "https://example.com", groupId = "g", accountId = 1)
-        val titles = listOf("Earthrise: our home beyond the lunar horizon", "A new perspective on Earth", "The text-only dispatch remains complete", "The final story stays reachable")
+        val titles = listOf(
+            "Earthrise: our home beyond the lunar horizon",
+            "A new perspective on Earth",
+            "The text-only dispatch remains complete",
+            "Mapping the quiet landscape of the Moon",
+            "What the Apollo archive reveals",
+            "One planet, many independent perspectives",
+            "Working beyond the familiar horizon",
+            "Science rewards patient observation",
+            "From the archive: a lasting view of home",
+            "The final story stays reachable",
+        )
         val source = titles.mapIndexed { index, title -> ArticleFlowItem.Article(ArticleWithFeed(
             Article(id = "photo-$index", title = title, date = Date(0),
-                rawDescription = if (index == 1) "<p><img src=\"$photo\" alt=\"Earthrise\"></p>" else "",
+                rawDescription = when (index) {
+                    1 -> "<p><img src=\"$photo\" alt=\"Earthrise\"></p>"
+                    4 -> "<meta property=\"og:image\" content=\"$photo\">"
+                    else -> ""
+                },
                 shortDescription = "A historical Apollo 8 photograph accompanies this offline reading fixture.",
-                img = if (index == 0) photo else null, link = "about:blank", feedId = feed.id, accountId = 1), feed)) }
+                img = if (index in setOf(0, 3, 6, 8)) photo else null, link = "about:blank", feedId = feed.id, accountId = 1), feed)) }
         val stream = flowOf(PagingData.from<ArticleFlowItem>(source))
         val preset = mutableStateOf<ReadingLayoutPresetPreference>(ReadingLayoutPresetPreference.Auto)
         val images = mutableStateOf<FlowArticleListImagePreference>(FlowArticleListImagePreference.ON)
@@ -554,7 +590,7 @@ class NewspaperUiTest {
                 LocalReadingLayoutPreset provides preset.value, LocalFlowArticleListImage provides images.value,
                 LocalDensity provides Density(density, fontScale.value)) {
                 AppTheme(useDarkTheme = false) {
-                    FixtureChrome(subscriptions = false, articleCount = 4) {
+                    FixtureChrome(subscriptions = false, articleCount = titles.size) {
                         val items = stream.collectAsLazyPagingItems()
                         val state = rememberLazyListState()
                         SideEffect { list.set(state) }
@@ -582,6 +618,11 @@ class NewspaperUiTest {
                 hasAnyAncestor(hasTestTag("article-lead-body")), useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
             assertTrue("Lead copy and photo occupy separate side-by-side columns", description.right <= photograph.left)
             assertEquals("Lead copy begins beside the photograph", description.top, photograph.top, 1f)
+            // Wait for the visible supporting-photo group too, not just the lead. The broad
+            // tablet screenshot must show a decoded mosaic, not transient empty image slots.
+            waitForPhotoPixels(articlePhotoFor(titles[1]))
+            if (measuredColumns.get() >= 3) waitForPhotoPixels(articlePhotoFor(titles[3]))
+            if (measuredColumns.get() == 4) waitForPhotoPixels(articlePhotoFor(titles[4]))
             capture("photos-${choice.preset.name.lowercase()}")
             compose.onNodeWithTag("photo-edition").performScrollToIndex(1)
             val firstSupport = compose.onNodeWithText(titles[1]).fetchSemanticsNode().boundsInRoot

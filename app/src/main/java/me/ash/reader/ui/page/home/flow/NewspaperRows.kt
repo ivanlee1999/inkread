@@ -55,8 +55,13 @@ internal fun newspaperRows(
                 indices.add(index++)
             }
             val slots = if (tryEditorial && indices.size >= 3) {
+                // A short four-lane section has only one brief stack. Give it the remaining
+                // two lanes rather than leaving an empty column; source/row identity is unchanged.
+                val briefSpan = if (lanes == 4 && indices.size == 3) 2 else 1
                 listOf(NewspaperSlot(listOf(indices.first()), span = 2, style = NewspaperStoryStyle.Feature)) +
-                    indices.drop(1).chunked(2).map { NewspaperSlot(it, style = NewspaperStoryStyle.Brief) }
+                    indices.drop(1).chunked(2).map {
+                        NewspaperSlot(it, span = briefSpan, style = NewspaperStoryStyle.Brief)
+                    }
             } else {
                 indices.mapIndexed { position, sourceIndex ->
                     NewspaperSlot(listOf(sourceIndex), style =
