@@ -15,9 +15,9 @@ import me.ash.reader.ui.layout.resolveReadingLayout
  * Resolve from the inset-adjusted content pane before composing its first article frame.
  * An onSizeChanged -> state -> columns feedback loop first renders a one-column fallback
  * whenever the reader disposes/recreates the list, then reflows the retained edition a frame
- * later. Even BoxWithConstraints can recompose its old content scope before a resized parent
- * has been measured. Resolve and subcompose together during measurement, so a changed width
- * can never publish old-width article geometry before the new constraints arrive.
+ * later. Resolve and subcompose together during measurement, so every measured/drawn frame
+ * uses the current constraints. A live slot may independently recompose its previous metrics
+ * before remeasurement; that intermediate composition is not itself a rendered frame.
  */
 @Composable
 internal fun ArticleListPaneLayout(

@@ -1,5 +1,6 @@
 package me.ash.reader.ui.page.adaptive
 
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
@@ -22,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -123,8 +125,10 @@ class ReaderBackNavigationUiTest {
         compose.waitForIdle()
         assertEquals(page, fixture.edition.currentPage)
         compose.runOnIdle { fixture.showImage = true }
-        compose.onNodeWithContentDescription("Modal fixture").assertIsDisplayed()
-        pressBack()
+        pressBackFromModal(
+            compose.onNodeWithContentDescription("Modal fixture"),
+            compose.onNodeWithTag("route-reader"),
+        )
         compose.waitForIdle()
         assertFalse(fixture.showImage)
         assertNotNull(fixture.readerId)
@@ -258,6 +262,25 @@ class ReaderBackNavigationUiTest {
     }
 
     private val backLabel get() = compose.activity.getString(R.string.back)
+
+    private fun pressBackFromModal(modal: SemanticsNodeInteraction, host: SemanticsNodeInteraction) {
+        val modalRoot = modal.assertIsDisplayed().fetchSemanticsNode().root as ViewRootForTest
+        val hostRoot = host.fetchSemanticsNode().root as ViewRootForTest
+        assertTrue("The image viewer must own a separate modal window", modalRoot !== hostRoot)
+        // Visible Compose semantics can precede native window-focus transfer. Espresso's global
+        // root picker can latch onto the base activity then wait forever for its focus while this
+        // dialog correctly owns it. Observe the real dialog, then send a genuine system Back key.
+        compose.waitUntil(5_000) {
+            compose.runOnUiThread { modalRoot.view.isAttachedToWindow && modalRoot.view.hasWindowFocus() }
+        }
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        compose.waitUntil(5_000) { compose.runOnUiThread { !modalRoot.view.isAttachedToWindow } }
+        compose.waitUntil(5_000) {
+            compose.runOnUiThread { hostRoot.view.isAttachedToWindow && hostRoot.view.hasWindowFocus() }
+        }
+        compose.runOnIdle { assertTrue(hostRoot.isLifecycleInResumedState) }
+        host.assertIsDisplayed()
+    }
 
     private fun awaitDocumentFrame() {
         val ready = CountDownLatch(1)
