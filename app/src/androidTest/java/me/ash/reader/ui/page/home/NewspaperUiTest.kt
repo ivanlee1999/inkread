@@ -54,6 +54,7 @@ import me.ash.reader.ui.component.base.RYScaffold
 import me.ash.reader.ui.component.base.NewspaperMasthead
 import me.ash.reader.ui.component.base.newspaperSwipeScroll
 import me.ash.reader.ui.page.home.flow.EInkPaginationBar
+import me.ash.reader.ui.page.home.flow.EInkArticlePageControl
 import me.ash.reader.infrastructure.preference.FlowFilterBarStylePreference
 import androidx.compose.material3.Text
 import androidx.compose.foundation.lazy.LazyColumn
@@ -90,6 +91,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.ViewRootForTest
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.platform.LocalDensity
@@ -110,6 +112,7 @@ import me.ash.reader.ui.page.home.feeds.PublicationGrid
 import me.ash.reader.ui.page.home.feeds.NewspaperFolderHeader
 import me.ash.reader.ui.theme.AppTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -155,7 +158,7 @@ class NewspaperUiTest {
         capture("subscriptions")
         compose.onNodeWithTag("publication-5").performScrollTo().assertIsDisplayed().performClick()
         assertEquals(3, opened.get())
-        assertAboveBottomBar(compose.onNodeWithTag("publication-5"))
+        assertLastBlockInsideSafeViewport(compose.onNodeWithTag("publication-5"))
     }
 
     @Test fun articlesRenderRealPagingRowsAndKeepSourceIndices() {
@@ -235,7 +238,7 @@ class NewspaperUiTest {
         compose.onNodeWithText(titles[4]).assertIsDisplayed().performClick()
         assertEquals(5, opened.last())
         compose.runOnIdle { list.get().requestScrollToItem(list.get().layoutInfo.totalItemsCount - 1) }
-        assertAboveBottomBar(compose.onNodeWithText(titles[4]))
+        assertLastBlockInsideSafeViewport(compose.onNodeWithText(titles[4]))
         compose.runOnIdle { assertTrue("The screenshot is at the actual article-list end", !list.get().canScrollForward) }
         capture("articles-end")
     }
@@ -288,7 +291,7 @@ class NewspaperUiTest {
         compose.onNodeWithTag("large-font-list").performScrollToNode(hasText("Last article remains reachable"))
         compose.onNodeWithText("Last article remains reachable").assertIsDisplayed().performClick().performClick()
         assertEquals(2, clicked.get())
-        assertAboveBottomBar(compose.onNodeWithText("Last article remains reachable"))
+        assertLastBlockInsideSafeViewport(compose.onNodeWithText("Last article remains reachable"))
         capture("articles-large-font-end")
     }
 
@@ -877,7 +880,7 @@ class NewspaperUiTest {
         assertEquals("A folder-only list swipe must not expand a folder", 3, disclosures.get())
         compose.runOnIdle { list.get().requestScrollToItem(20) }
         compose.onNodeWithTag("folder-open:Section 19").assertIsDisplayed()
-        assertAboveBottomBar(compose.onNodeWithTag("folder-open:Section 19"))
+        assertLastBlockInsideSafeViewport(compose.onNodeWithTag("folder-open:Section 19"))
         compose.onNodeWithTag("folder-expand:Section 19").performTouchInput { click() }
         assertEquals("An empty folder keeps its independent disclosure target", 4, disclosures.get())
         assertEquals(2, opened.get())
@@ -961,7 +964,7 @@ class NewspaperUiTest {
         assertEquals("Existing horizontal shortcut still works", listOf("gesture-0", "gesture-0"), toggled)
         compose.runOnIdle { list.get().requestScrollToItem(list.get().layoutInfo.totalItemsCount - 1) }
         compose.onNodeWithText(fixture[11].articleWithFeed.article.title).assertIsDisplayed()
-        assertAboveBottomBar(compose.onNodeWithText(fixture[11].articleWithFeed.article.title))
+        assertLastBlockInsideSafeViewport(compose.onNodeWithText(fixture[11].articleWithFeed.article.title))
         compose.runOnIdle { assertTrue(!list.get().canScrollForward) }
         val bottomRange = compose.onNodeWithTag("article-swipe-list").fetchSemanticsNode()
             .config[SemanticsProperties.VerticalScrollAxisRange]
@@ -1040,7 +1043,7 @@ class NewspaperUiTest {
                 compose.runOnIdle { list.get().requestScrollToItem(19) }
                 val last = compose.onNodeWithTag("footer-article-19").assertIsDisplayed()
                 capture("articles-footer-insets-$inset-${if (expanded) "expanded" else "compact"}")
-                assertAboveBottomBar(last)
+                assertLastBlockInsideSafeViewport(last)
                 val bar = compose.onNodeWithTag("fixture-bottom-bar").getUnclippedBoundsInRoot()
                 val navigation = compose.onNodeWithTag("fixture-system-navigation").getUnclippedBoundsInRoot()
                 assertEquals("Requested navigation inset is fully reserved", inset.toFloat(), (navigation.bottom - navigation.top).value, 0.5f)
@@ -1601,6 +1604,371 @@ class NewspaperUiTest {
         if (columns.get() >= 3) compose.onNodeWithText(selectedTitle).assertIsNotDisplayed()
     }
 
+    @Test fun compactCountUsesStaticDialogAndLatestConcretePageWithoutHiddenReads() {
+        val page = mutableStateOf(0)
+        val marked = mutableListOf<String>()
+        val opened = mutableListOf<Int>()
+        val list = java.util.concurrent.atomic.AtomicReference<LazyListState>()
+        val turn = java.util.concurrent.atomic.AtomicReference<(Boolean) -> Boolean>()
+        val feed = Feed(id = "count-navigation", name = "The Count Edition", url = "https://example.com",
+            groupId = "g", accountId = 1)
+        val fixture = (0 until 12).map { index ->
+            ArticleFlowItem.Article(ArticleWithFeed(Article(id = "count-$index", date = Date(0),
+                title = "Count edition dispatch $index", rawDescription = "", shortDescription = "A complete report with source and reading metadata.",
+                link = "about:blank", feedId = feed.id, accountId = 1), feed))
+        }
+        val stream = flowOf(PagingData.from<ArticleFlowItem>(fixture))
+        val lastSync = System.currentTimeMillis() - 120_000L
+        compose.setContent {
+            CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON) {
+                AppTheme(useDarkTheme = false) {
+                    FixtureChrome(subscriptions = false, articleCount = fixture.size,
+                        articlePage = page.value + 1, articlePages = 3, lastSyncTime = lastSync,
+                        onPreviousPage = { turn.get().invoke(false) }, onNextPage = { turn.get().invoke(true) }) {
+                        val items = stream.collectAsLazyPagingItems()
+                        val state = rememberLazyListState()
+                        SideEffect {
+                            list.set(state)
+                            turn.set { forward ->
+                                turnNewspaperPage(currentPage = page.value, pageCount = 3, capacity = 4,
+                                    forward = forward, listState = state, snapshot = items.itemSnapshotList,
+                                    snapshotPager = stream, activePager = stream, markReadEnabled = true,
+                                    article = { (it as? ArticleFlowItem.Article)?.articleWithFeed },
+                                    onMarkRead = { articles -> marked.addAll(articles.map { it.article.id }) },
+                                    onPageChange = { page.value = it })
+                            }
+                        }
+                        BoxWithConstraints(Modifier.fillMaxSize()) {
+                            val layout = resolveReadingLayout(maxWidth.value)
+                            LazyColumn(Modifier.fillMaxSize().testTag("count-navigation-list"), state = state) {
+                                ArticleList(items, emptyMap(), false, false, 0, columns = layout.columns,
+                                    horizontalPadding = layout.horizontalPaddingDp.dp,
+                                    columnSpacing = layout.columnSpacingDp.dp,
+                                    einkPageStart = page.value * 4, einkPageEnd = (page.value + 1) * 4,
+                                    onClick = { _, index -> opened.add(index) })
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        val control = compose.onNodeWithTag("article-page-control")
+        val dialog = compose.onNodeWithTag("article-page-dialog")
+        val host = compose.onNodeWithTag("count-navigation-list")
+        control.assertIsDisplayed().assertHasClickAction()
+        dialog.assertDoesNotExist()
+        compose.onNodeWithTag("fixture-bottom-bar").assertDoesNotExist()
+        compose.onNodeWithText(fixture[0].articleWithFeed.article.title).assertIsDisplayed()
+        val viewport = compose.onNodeWithTag("fixture-content-viewport").getUnclippedBoundsInRoot()
+        val position = compose.runOnIdle { list.get().position() }
+        capture("compact-count-closed", fullWindow = true)
+
+        try {
+            compose.mainClock.autoAdvance = false
+            control.performClick()
+            compose.mainClock.advanceTimeByFrame()
+            dialog.assertIsDisplayed()
+            assertStaticDialog(dialog)
+            compose.onNodeWithTag("article-page-last-sync").assertIsDisplayed()
+            compose.onNodeWithTag("article-page-previous").assertIsNotEnabled().performTouchInput { click() }
+            compose.onNodeWithTag("article-page-next").assertIsEnabled()
+            capture("compact-count-open", fullWindow = true)
+        } finally {
+            compose.mainClock.autoAdvance = true
+        }
+        pressBackFromModal(dialog, host)
+        dialog.assertDoesNotExist()
+        control.performClick()
+        compose.onNodeWithTag("article-page-close").assertIsDisplayed().performClick()
+        dialog.assertDoesNotExist()
+        control.performClick()
+        dismissDialogFromOutside(dialog, host)
+        dialog.assertDoesNotExist()
+        compose.runOnIdle {
+            assertEquals("Count/Back/Close/outside taps cannot change the current page", 0, page.value)
+            assertEquals("Dismissing controls preserves the reading position", position, list.get().position())
+            assertTrue("Opening and dismissing controls never marks an unseen article", marked.isEmpty())
+            assertTrue("A dismissing tap does not click through into an article", opened.isEmpty())
+        }
+        assertEquals("Opening controls does not resize or permanently cover the reading pane", viewport,
+            compose.onNodeWithTag("fixture-content-viewport").getUnclippedBoundsInRoot())
+
+        control.performClick()
+        compose.onNodeWithTag("article-page-next").performClick()
+        dialog.assertDoesNotExist()
+        compose.onNodeWithText(fixture[4].articleWithFeed.article.title).assertIsDisplayed()
+        compose.runOnIdle {
+            assertEquals(1, page.value)
+            assertEquals(0 to 0, list.get().position())
+            assertEquals("Next marks only the concrete page being left", (0 until 4).map { "count-$it" }, marked)
+        }
+        control.performClick()
+        assertPageStatus(2, 3)
+        compose.onNodeWithTag("article-page-previous").assertIsEnabled()
+        compose.onNodeWithTag("article-page-next").assertIsEnabled()
+        // A hardware/page-controller change may happen while the controls are open. Neither
+        // the status nor the next callback may retain the page captured when they opened.
+        compose.runOnIdle { assertTrue(turn.get().invoke(true)) }
+        assertPageStatus(3, 3)
+        compose.onNodeWithTag("article-page-next").assertIsNotEnabled().performTouchInput { click() }
+        compose.onNodeWithTag("article-page-previous").performClick()
+        dialog.assertDoesNotExist()
+        compose.runOnIdle {
+            assertEquals("Previous uses the latest page, not its opening page", 1, page.value)
+            assertEquals("Previous and disabled Next never mark another page", (0 until 8).map { "count-$it" }, marked)
+            assertTrue("Page navigation remains immediate without a scrolling animation", !list.get().isScrollInProgress)
+        }
+        control.performClick()
+        assertPageStatus(2, 3)
+        compose.onNodeWithTag("article-page-close").performClick()
+        compose.onNodeWithText(fixture[4].articleWithFeed.article.title).performClick()
+        assertEquals("The original activity remains actionable after repeated modal openings", listOf(4), opened)
+    }
+
+    @Test fun compactCountHandlesEmptySinglePageAndReplacedCounts() {
+        val count = mutableStateOf(0)
+        val pages = mutableStateOf(1)
+        val current = mutableStateOf(1)
+        val previous = AtomicInteger()
+        val next = AtomicInteger()
+        val navigationKey = mutableStateOf("first-feed")
+        val callbackVersion = mutableStateOf(1)
+        compose.setContent {
+            CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON) {
+                AppTheme(useDarkTheme = false) {
+                    // Capture an immutable value per composition so this detects a stale
+                    // callback retained by an already-open production control.
+                    val version = callbackVersion.value
+                    FixtureChrome(subscriptions = false, articleCount = count.value,
+                        articlePage = current.value, articlePages = pages.value, navigationKey = navigationKey.value,
+                        onPreviousPage = { previous.addAndGet(version) }, onNextPage = { next.addAndGet(version) }) {
+                        Text("The current edition stays visible", Modifier.testTag("empty-count-host"))
+                    }
+                }
+            }
+        }
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val control = compose.onNodeWithTag("article-page-control")
+        for (articleCount in listOf(0, 1)) {
+            compose.runOnIdle { count.value = articleCount }
+            control.performClick()
+            compose.onNodeWithTag("article-page-previous").assertIsNotEnabled().performTouchInput { click() }
+            compose.onNodeWithTag("article-page-next").assertIsNotEnabled().performTouchInput { click() }
+            compose.onNodeWithTag("article-page-last-sync").assertDoesNotExist()
+            compose.onNodeWithTag("article-page-close").performClick()
+        }
+        compose.runOnIdle { count.value = 45; pages.value = 9; current.value = 8 }
+        control.performClick()
+        assertPageStatus(8, 9)
+        compose.runOnIdle { count.value = 2; pages.value = 1; current.value = 1 }
+        assertPageStatus(1, 1)
+        compose.onNodeWithTag("article-page-previous").assertIsNotEnabled()
+        compose.onNodeWithTag("article-page-next").assertIsNotEnabled()
+        compose.onNodeWithTag("article-page-close").performClick()
+        control.assert(hasContentDescription(context.getString(R.string.articles_count, 2), substring = true))
+        control.performClick()
+        assertPageStatus(1, 1)
+        pressBackFromModal(compose.onNodeWithTag("article-page-dialog"), compose.onNodeWithTag("empty-count-host"))
+        control.performClick()
+        compose.runOnIdle { navigationKey.value = "replacement-feed"; count.value = 0 }
+        compose.onNodeWithTag("article-page-dialog").assertDoesNotExist()
+        waitForHostFocus(compose.onNodeWithTag("empty-count-host"))
+        control.performClick()
+        assertPageStatus(1, 1)
+        compose.onNodeWithTag("article-page-previous").assertIsNotEnabled()
+        compose.onNodeWithTag("article-page-next").assertIsNotEnabled()
+        compose.onNodeWithTag("article-page-close").performClick()
+        assertEquals(0, previous.get())
+        assertEquals(0, next.get())
+        compose.runOnIdle { count.value = 12; pages.value = 3; current.value = 2 }
+        control.performClick()
+        compose.runOnIdle { callbackVersion.value = 2 }
+        compose.onNodeWithTag("article-page-next").performClick()
+        compose.onNodeWithTag("article-page-dialog").assertDoesNotExist()
+        assertEquals("Next invokes the latest callback exactly once, not the opening callback", 2, next.get())
+        control.performClick()
+        compose.runOnIdle { callbackVersion.value = 3 }
+        compose.onNodeWithTag("article-page-previous").performClick()
+        compose.onNodeWithTag("article-page-dialog").assertDoesNotExist()
+        assertEquals("Previous invokes the latest callback exactly once, not the opening callback", 3, previous.get())
+    }
+
+    @Test fun compactHeaderKeepsCountTouchTargetAndTitleSeparateAtLargeType() {
+        val scale = mutableStateOf(1f)
+        val title = "A publication with a deliberately very long name"
+        compose.setContent {
+            val density = LocalDensity.current.density
+            CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON,
+                LocalDensity provides Density(density, scale.value)) {
+                AppTheme(useDarkTheme = false) {
+                    FixtureChrome(subscriptions = false, articleTitle = title, articleCount = 99999,
+                        articlePage = 999, articlePages = 1000) {
+                        ArticleItem(title = "The first article keeps its own space", feedName = "The Dispatch",
+                            shortDescription = "Neither the count nor its touch target covers this content.",
+                            modifier = Modifier.padding(horizontal = 16.dp).testTag("compact-header-first-article"))
+                    }
+                }
+            }
+        }
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        for (fontScale in listOf(1f, 1.6f, 2f)) {
+            compose.runOnIdle { scale.value = fontScale }
+            val control = compose.onNodeWithTag("article-page-control").assertIsDisplayed().assertHasClickAction()
+            val target = control.getUnclippedBoundsInRoot()
+            val masthead = compose.onNodeWithTag("newspaper-masthead").getUnclippedBoundsInRoot()
+            val titleBounds = compose.onNodeWithText(title).getUnclippedBoundsInRoot()
+            val article = compose.onNodeWithTag("compact-header-first-article").getUnclippedBoundsInRoot()
+            assertTrue("Count keeps a real 48dp touch target at fontScale=$fontScale: $target",
+                target.right - target.left >= 48.dp && target.bottom - target.top >= 48.dp)
+            assertTrue("Count stays inside the actual masthead width at fontScale=$fontScale: $target in $masthead",
+                target.left >= masthead.left && target.right <= masthead.right + 1.dp)
+            assertTrue("Count never overlaps the edition title at fontScale=$fontScale: title=$titleBounds, count=$target",
+                titleBounds.right <= target.left + 1.dp && titleBounds.right > titleBounds.left)
+            assertTrue("Header never overlaps article content at fontScale=$fontScale", article.top >= masthead.bottom - 1.dp)
+            control.assert(hasContentDescription(context.getString(R.string.articles_count, 99999), substring = true))
+            control.performClick()
+            assertPageStatus(999, 1000)
+            compose.onNodeWithTag("article-page-previous").assertIsDisplayed().assertIsEnabled()
+            compose.onNodeWithTag("article-page-next").assertIsDisplayed().assertIsEnabled()
+            compose.onNodeWithTag("article-page-close").assertIsDisplayed().performClick()
+        }
+        capture("compact-count-large-font", fullWindow = true)
+    }
+
+    @Test fun footerlessArticlesReclaimTheWholeFooterAndKeepFinalRowsAboveSystemInsets() {
+        val navigationInset = mutableStateOf(0)
+        val showLegacyFooter = mutableStateOf(false)
+        val list = java.util.concurrent.atomic.AtomicReference<LazyListState>()
+        compose.setContent {
+            CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON) {
+                AppTheme(useDarkTheme = false) {
+                    RYScaffold(modifier = Modifier.fillMaxSize().testTag("fixture-scaffold"),
+                        reserveBottomBarSpace = true,
+                        contentWindowInsets = WindowInsets(bottom = navigationInset.value.dp),
+                        topBar = {
+                            NewspaperMasthead(title = "Unread", detailsContent = {
+                                EInkArticlePageControl(currentPage = 1, totalPages = 1, totalArticles = 20,
+                                    onPrev = {}, onNext = {})
+                            })
+                        },
+                        bottomBar = {
+                            if (showLegacyFooter.value) {
+                                Column(Modifier.testTag("fixture-bottom-bar")
+                                    .consumeWindowInsets(WindowInsets.navigationBars)) {
+                                    EInkPaginationBar(currentPage = 1, totalPages = 1, totalArticles = 20,
+                                        onPrev = {}, onNext = {})
+                                    Spacer(Modifier.fillMaxWidth().height(navigationInset.value.dp))
+                                }
+                            }
+                        }) {
+                        val state = rememberLazyListState()
+                        SideEffect { list.set(state) }
+                        LazyColumn(Modifier.fillMaxSize().testTag("fixture-content-viewport"), state = state) {
+                            items(20) { index ->
+                                ArticleItem(title = "Complete final-page report $index", feedName = "The Dispatch",
+                                    shortDescription = "The whole actionable article, including its last metadata line, must remain reachable.",
+                                    modifier = Modifier.padding(horizontal = 16.dp).testTag("safe-article-$index"))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (inset in listOf(0, 24, 48)) {
+            compose.runOnIdle { navigationInset.value = inset; showLegacyFooter.value = false }
+            compose.waitForIdle()
+            compose.runOnIdle { list.get().requestScrollToItem(19) }
+            compose.onNodeWithTag("fixture-bottom-bar").assertDoesNotExist()
+            assertLastBlockInsideSafeViewport(compose.onNodeWithTag("safe-article-19"))
+            val viewport = compose.onNodeWithTag("fixture-content-viewport").getUnclippedBoundsInRoot()
+            val scaffold = compose.onNodeWithTag("fixture-scaffold").getUnclippedBoundsInRoot()
+            assertEquals("Only the requested Android inset is reserved, never a phantom footer",
+                inset.toFloat(), (scaffold.bottom - viewport.bottom).value, 0.5f)
+            compose.runOnIdle { assertTrue("The complete last row is visible at the real list end", !list.get().canScrollForward) }
+            compose.runOnIdle { showLegacyFooter.value = true }
+            val legacyViewport = compose.onNodeWithTag("fixture-content-viewport").getUnclippedBoundsInRoot()
+            assertEquals("Removing pagination reclaims the full 57dp legacy footer at every system inset",
+                57f, (viewport.bottom - legacyViewport.bottom).value, 0.5f)
+            assertEquals("The same compact header owns both comparisons", viewport.top, legacyViewport.top)
+            compose.runOnIdle { showLegacyFooter.value = false }
+            compose.waitForIdle()
+            compose.runOnIdle { list.get().requestScrollToItem(19) }
+            assertLastBlockInsideSafeViewport(compose.onNodeWithTag("safe-article-19"))
+        }
+        capture("compact-footerless-end", fullWindow = true)
+    }
+
+    private fun assertPageStatus(current: Int, total: Int) {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        compose.onNodeWithTag("article-page-status")
+            .assertTextEquals(context.getString(R.string.article_page_position, current, total))
+    }
+
+    private fun waitForModalFocus(modal: SemanticsNodeInteraction): ViewRootForTest {
+        val root = modal.assertIsDisplayed().fetchSemanticsNode().root as ViewRootForTest
+        compose.waitUntil(5_000) {
+            compose.runOnUiThread { root.view.isAttachedToWindow && root.view.hasWindowFocus() }
+        }
+        return root
+    }
+
+    private fun waitForHostFocus(host: SemanticsNodeInteraction) {
+        val root = host.fetchSemanticsNode().root as ViewRootForTest
+        compose.waitUntil(5_000) {
+            compose.runOnUiThread { root.view.isAttachedToWindow && root.view.hasWindowFocus() }
+        }
+        compose.runOnIdle { assertTrue("Closing controls keeps the host resumed", root.isLifecycleInResumedState) }
+        host.assertIsDisplayed()
+    }
+
+    private fun assertStaticDialog(dialog: SemanticsNodeInteraction) {
+        val root = waitForModalFocus(dialog)
+        compose.runOnUiThread {
+            var parent = root.view.parent
+            while (parent != null && parent !is DialogWindowProvider) parent = parent.parent
+            val window = requireNotNull(parent as? DialogWindowProvider).window
+            assertEquals("E-ink controls explicitly disable Android window transitions", 0, window.attributes.windowAnimations)
+        }
+        val bounds = dialog.getUnclippedBoundsInRoot()
+        fun pixels(): IntArray {
+            val bitmap = dialog.captureToImage().asAndroidBitmap()
+            return IntArray(bitmap.width * bitmap.height).also {
+                bitmap.getPixels(it, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+            }
+        }
+        val initial = pixels()
+        compose.mainClock.advanceTimeBy(1_000)
+        assertEquals("Dialog does not slide or expand after appearing", bounds, dialog.getUnclippedBoundsInRoot())
+        assertArrayEquals("Static controls do not fade, ripple or animate after appearing", initial, pixels())
+    }
+
+    private fun dismissDialogFromOutside(modal: SemanticsNodeInteraction, host: SemanticsNodeInteraction) {
+        val modalRoot = waitForModalFocus(modal)
+        val hostRoot = host.fetchSemanticsNode().root as ViewRootForTest
+        val modalBounds = modal.fetchSemanticsNode().boundsInRoot
+        val hostBounds = host.fetchSemanticsNode().boundsInRoot
+        val modalOrigin = IntArray(2)
+        val hostOrigin = IntArray(2)
+        compose.runOnUiThread {
+            modalRoot.view.getLocationOnScreen(modalOrigin)
+            hostRoot.view.getLocationOnScreen(hostOrigin)
+        }
+        val x = hostOrigin[0] + hostBounds.left + 2f
+        val y = hostOrigin[1] + hostBounds.top + 2f
+        assertTrue("The native dismissal tap is genuinely outside the dialog",
+            x < modalOrigin[0] + modalBounds.left || x > modalOrigin[0] + modalBounds.right ||
+                y < modalOrigin[1] + modalBounds.top || y > modalOrigin[1] + modalBounds.bottom)
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val now = android.os.SystemClock.uptimeMillis()
+        for (action in listOf(android.view.MotionEvent.ACTION_DOWN, android.view.MotionEvent.ACTION_UP)) {
+            val event = android.view.MotionEvent.obtain(now, now + if (action == android.view.MotionEvent.ACTION_UP) 16 else 0,
+                action, x, y, 0)
+            try { instrumentation.sendPointerSync(event) } finally { event.recycle() }
+        }
+        compose.waitUntil(5_000) { compose.runOnUiThread { !modalRoot.view.isAttachedToWindow } }
+        waitForHostFocus(host)
+    }
+
     private fun pressBackFromModal(modal: SemanticsNodeInteraction, host: SemanticsNodeInteraction) {
         val modalRoot = modal.assertIsDisplayed().fetchSemanticsNode().root as ViewRootForTest
         val hostRoot = host.fetchSemanticsNode().root as ViewRootForTest
@@ -1619,7 +1987,7 @@ class NewspaperUiTest {
             assertTrue("Cancelling a dialog/popup must leave the original activity resumed",
                 hostRoot.isLifecycleInResumedState && hostRoot.view.isAttachedToWindow)
         }
-        host.assertIsDisplayed()
+        waitForHostFocus(host)
     }
 
     private fun LazyListState.position(): Pair<Int, Int> = firstVisibleItemIndex to firstVisibleItemScrollOffset
@@ -1683,12 +2051,26 @@ class NewspaperUiTest {
         }
     }
 
-    /** Production chrome around deterministic content fixtures, not an account-backed app session. */
+    /** Production chrome around deterministic content fixtures, not an account-backed app session.
+     * Article count/navigation is the exact production control. The unchanged app toolbar is
+     * deliberately simplified here; these fixtures do not claim live-account toolbar coverage. */
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
-    private fun FixtureChrome(subscriptions: Boolean, articleCount: Int = 5, content: @Composable () -> Unit) {
+    private fun FixtureChrome(
+        subscriptions: Boolean,
+        articleCount: Int = 5,
+        articlePage: Int = 1,
+        articlePages: Int = 1,
+        articleTitle: String? = null,
+        lastSyncTime: Long? = null,
+        navigationKey: Any? = null,
+        onPreviousPage: () -> Unit = {},
+        onNextPage: () -> Unit = {},
+        content: @Composable () -> Unit,
+    ) {
         var filter by remember { mutableStateOf(Filter.Unread) }
         RYScaffold(
+            modifier = Modifier.testTag("fixture-scaffold"),
             reserveBottomBarSpace = true,
             topBar = {
                 Column {
@@ -1703,8 +2085,15 @@ class NewspaperUiTest {
                                 imageVector = if (subscriptions) Icons.Rounded.Add else Icons.Rounded.Search,
                                 contentDescription = stringResource(if (subscriptions) R.string.subscribe else R.string.search))
                         })
-                    NewspaperMasthead(title = if (subscriptions) "Subscriptions" else filter.toName(),
-                        details = if (subscriptions) null else "$articleCount articles")
+                    if (subscriptions) {
+                        NewspaperMasthead(title = "Subscriptions")
+                    } else {
+                        NewspaperMasthead(title = articleTitle ?: filter.toName(), detailsContent = {
+                            EInkArticlePageControl(currentPage = articlePage, totalPages = articlePages,
+                                totalArticles = articleCount, lastSyncTime = lastSyncTime, navigationKey = navigationKey,
+                                onPrev = onPreviousPage, onNext = onNextPage)
+                        })
+                    }
                 }
             },
             bottomBar = {
@@ -1713,27 +2102,31 @@ class NewspaperUiTest {
                         filterBarStyle = FlowFilterBarStylePreference.Icon.value,
                         filterBarFilled = true, filterBarPadding = 12.dp, filterBarTonalElevation = 0.dp,
                         filterOnClick = { filter = it })
-                } else {
-                    EInkPaginationBar(modifier = Modifier.testTag("fixture-bottom-bar"),
-                        currentPage = 1, totalPages = 1, totalArticles = articleCount, onPrev = {}, onNext = {})
                 }
+                // Like FlowPage, an article list has no footer placeable. RYScaffold reserves
+                // only the actual Android safe inset, not a phantom legacy pagination bar.
             },
         ) {
             Box(Modifier.fillMaxSize().testTag("fixture-content-viewport")) { content() }
         }
     }
 
-    private fun assertAboveBottomBar(node: SemanticsNodeInteraction) {
+    private fun assertLastBlockInsideSafeViewport(node: SemanticsNodeInteraction) {
         // Match the complete actionable block, not just a headline that could hide clipped metadata.
         val last = node.assertHasClickAction().getUnclippedBoundsInRoot()
         val viewport = compose.onNodeWithTag("fixture-content-viewport").getUnclippedBoundsInRoot()
-        val bar = compose.onNodeWithTag("fixture-bottom-bar").getUnclippedBoundsInRoot()
-        assertTrue("Production scaffold reserves the measured bottom bar: viewport=$viewport, bar=$bar", viewport.bottom <= bar.top + 1.dp)
-        assertTrue("Complete last article/publication remains in the content viewport: last=$last, viewport=$viewport, bar=$bar", last.top >= viewport.top - 1.dp && last.bottom <= viewport.bottom + 1.dp)
-        assertTrue("Last content remains above bottom navigation: last=$last, bar=$bar", last.bottom <= bar.top + 1.dp)
+        assertTrue("Complete last article/publication remains in its safe content viewport: last=$last, viewport=$viewport",
+            last.top >= viewport.top - 1.dp && last.bottom <= viewport.bottom + 1.dp)
+        val bars = compose.onAllNodesWithTag("fixture-bottom-bar").fetchSemanticsNodes()
+        if (bars.isNotEmpty()) {
+            val bar = compose.onNodeWithTag("fixture-bottom-bar").getUnclippedBoundsInRoot()
+            assertTrue("Production scaffold reserves the measured bottom bar: viewport=$viewport, bar=$bar",
+                viewport.bottom <= bar.top + 1.dp)
+            assertTrue("Last content remains above bottom navigation: last=$last, bar=$bar", last.bottom <= bar.top + 1.dp)
+        }
     }
 
-    private fun capture(name: String) {
+    private fun capture(name: String, fullWindow: Boolean = false) {
         compose.waitForIdle()
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         // AGP collects this directory before uninstalling the test/application packages.
@@ -1744,8 +2137,13 @@ class NewspaperUiTest {
         } else File(additionalOutput)
         check(directory.isDirectory || directory.mkdirs()) { "Cannot create screenshot directory: $directory" }
         val output = File(directory, "newspaper-$name-${context.resources.configuration.screenWidthDp}.png")
+        val bitmap = if (fullWindow) {
+            // A native screenshot includes both the host activity and the real Dialog window.
+            // onRoot() alone would omit the dialog or become ambiguous with multiple roots.
+            requireNotNull(InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot())
+        } else compose.onRoot().captureToImage().asAndroidBitmap()
         output.outputStream().use {
-            check(compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it)) {
+            check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) {
                 "Could not encode screenshot: $output"
             }
         }

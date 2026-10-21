@@ -81,7 +81,7 @@ jobs:
           destination = pathlib.Path("newspaper-screenshots")
           destination.mkdir(exist_ok=True)
           width = ${{ matrix.width }}
-          names = ("subscriptions", "subscriptions-gestures", "folders", "folders-collapsed", "articles-footer-insets", "articles", "articles-end", "articles-image-large-font", "articles-large-font-end", "photos-auto", "photos-phone", "photos-tablet", "photos-off", "photos-cached-offline", "editorial-templates", "photos-alternate", "photos-missing")
+          names = ("subscriptions", "subscriptions-gestures", "folders", "folders-collapsed", "articles-footer-insets", "articles", "articles-end", "articles-image-large-font", "articles-large-font-end", "photos-auto", "photos-phone", "photos-tablet", "photos-off", "photos-cached-offline", "editorial-templates", "photos-alternate", "photos-missing", "compact-count-closed", "compact-count-open", "compact-count-large-font", "compact-footerless-end")
           for name in names:
               filename = f"newspaper-{name}-{width}.png"
               matches = list(root.rglob(filename))
@@ -91,6 +91,9 @@ jobs:
               assert data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) > 100, f"Invalid PNG: {source}"
               image_width, image_height = struct.unpack(">II", data[16:24])
               assert image_width == width and image_height > 0, f"Unexpected screenshot dimensions: {source}: {image_width}x{image_height}"
+              if name.startswith("compact-"):
+                  height = int("${{ matrix.size }}".split("x")[1])
+                  assert image_height == height, f"Compact navigation must be captured at full native screen height: {source}: {image_width}x{image_height}"
               shutil.copy2(source, destination / filename)
               print(f"Collected {filename}: {image_width}x{image_height}, {len(data)} bytes")
           PYTHON

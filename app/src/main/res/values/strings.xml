@@ -337,6 +337,10 @@
     <string name="last_sync_days_ago">%1$dd ago</string>
     <string name="last_sync_prefix">Last sync: %1$s</string>
     <string name="articles_count">%1$d articles</string>
+    <string name="article_page_controls">Page controls</string>
+    <string name="article_page_control_description">%1$d articles. Page %2$d of %3$d.</string>
+    <string name="article_page_position">Page %1$d of %2$d</string>
+    <string name="article_page_position_short">%1$d / %2$d</string>
     <string name="permission_denied">Permission denied</string>
     <string name="shared_content">Shared content</string>
     <string name="only_link">Only link</string>

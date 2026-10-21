@@ -193,7 +193,7 @@ fun FlowPage(
     val targetColumns by rememberUpdatedState(newspaperColumns)
     val composedPaneWidth by rememberUpdatedState(articlePaneWidthPx)
     val composedPaneHeight by rememberUpdatedState(einkAvailableHeightPx)
-    // Hoisted so bottomBar can read them (updated via SideEffect inside AnimatedContent)
+    // Hoisted for the masthead page control (updated inside AnimatedContent).
     var einkTotalPagesState by remember { mutableIntStateOf(1) }
     var einkArticleCountState by remember { mutableIntStateOf(0) }
 
@@ -545,7 +545,17 @@ fun FlowPage(
                         )
                         NewspaperMasthead(
                             title = titleText,
-                            details = stringResource(R.string.articles_count, einkArticleCountState),
+                            detailsContent = {
+                                EInkArticlePageControl(
+                                    currentPage = einkCurrentPage + 1,
+                                    totalPages = einkTotalPagesState,
+                                    totalArticles = einkArticleCountState,
+                                    lastSyncTime = lastSyncTime,
+                                    navigationKey = pagerData.pager,
+                                    onPrev = { turnEinkPage(false) },
+                                    onNext = { turnEinkPage(true) },
+                                )
+                            },
                         )
                         }
                     } else {
@@ -780,7 +790,7 @@ fun FlowPage(
                         },
                         onPageChange = { articleRestoration.cancel(); einkCurrentPage = it },
                     )
-                    // Hoist pagination state up so bottomBar can access it
+                    // Share the live pagination state with the masthead control.
                     SideEffect {
                         einkTotalPagesState = einkTotalPages
                         einkArticleCountState = einkArticleCount
@@ -923,7 +933,7 @@ fun FlowPage(
                     LazyColumn(
                             // Page buttons remain instant; scrolling keeps oversized text/cards reachable.
                             userScrollEnabled = !einkMode,
-                            contentPadding = PaddingValues(bottom = 16.dp),
+                            contentPadding = PaddingValues(bottom = if (einkMode) 0.dp else 16.dp),
                             modifier =
                                 Modifier.newspaperSwipeScroll(
                                         listState = listState,
@@ -1021,16 +1031,7 @@ fun FlowPage(
             },
             floatingActionButtonPosition = FabPosition.Center,
             bottomBar = {
-                if (einkMode) {
-                    EInkPaginationBar(
-                        currentPage = einkCurrentPage + 1,
-                        totalPages = einkTotalPagesState,
-                        totalArticles = einkArticleCountState,
-                        lastSyncTime = lastSyncTime,
-                        onPrev = { turnEinkPage(false) },
-                        onNext = { turnEinkPage(true) },
-                    )
-                } else {
+                if (!einkMode) {
                     FilterBar(
                         filter = filterUiState.filter,
                         filterBarStyle = filterBarStyle.value,
