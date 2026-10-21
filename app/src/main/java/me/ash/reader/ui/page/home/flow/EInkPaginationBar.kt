@@ -51,6 +51,7 @@ fun EInkPaginationBar(
     progress: Int? = null,
     currentArticleIndex: Int? = null,
     totalArticleCount: Int? = null,
+    onBack: (() -> Unit)? = null,
 ) {
     // Bottom bar: page controls, font size, article nav, progress
     Column(
@@ -101,12 +102,17 @@ fun EInkPaginationBar(
                 Icon(Icons.AutoMirrored.Rounded.ArrowForward, stringResource(R.string.next_page), tint = Color.Black)
             }
         }
-        if (onPrevArticle != null || onNextArticle != null || canDecreaseFontSize || canIncreaseFontSize) {
+        if (onBack != null || onPrevArticle != null || onNextArticle != null || canDecreaseFontSize || canIncreaseFontSize) {
             Row(
                 modifier = Modifier.fillMaxWidth().height(48.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (onBack != null) {
+                    IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.back), tint = Color.Black)
+                    }
+                }
                 IconButton(onClick = { onPrevArticle?.invoke() }, enabled = onPrevArticle != null, modifier = Modifier.size(48.dp)) {
                     Text("⏮", color = Color.Black)
                 }

@@ -71,7 +71,6 @@ import me.ash.reader.infrastructure.preference.LocalFeedsTopBarTonalElevation
 import me.ash.reader.infrastructure.preference.LocalNewVersionNumber
 import me.ash.reader.infrastructure.preference.LocalSkipVersionNumber
 import me.ash.reader.ui.component.FilterBar
-import me.ash.reader.ui.component.base.NewspaperMasthead
 import me.ash.reader.ui.component.base.FeedbackIconButton
 import me.ash.reader.ui.component.base.RYScaffold
 import me.ash.reader.ui.component.base.newspaperSwipeScroll
@@ -88,6 +87,7 @@ import me.ash.reader.ui.page.home.feeds.drawer.feed.FeedOptionViewModel
 import me.ash.reader.ui.page.home.feeds.drawer.group.GroupOptionDrawer
 import me.ash.reader.ui.page.home.feeds.drawer.group.GroupOptionViewModel
 import me.ash.reader.ui.page.home.feeds.subscribe.SubscribeDialog
+import me.ash.reader.ui.page.home.feeds.subscribe.SubscribeState
 import me.ash.reader.ui.page.home.feeds.subscribe.SubscribeViewModel
 import me.ash.reader.ui.page.settings.accounts.AccountViewModel
 
@@ -119,6 +119,7 @@ fun FeedsPage(
 
     val accounts = accountViewModel.accounts.collectAsStateValue(initial = emptyList())
 
+    val subscribeState = subscribeViewModel.subscribeState.collectAsStateValue()
     val feedsUiState = feedsViewModel.feedsUiState.collectAsStateValue()
     val filterState = feedsViewModel.filterStateFlow.collectAsStateValue()
     val importantSum = feedsUiState.importantSum
@@ -257,14 +258,18 @@ fun FeedsPage(
         content = {
             FeedsRefreshContainer(einkMode = einkMode, isSyncing = isSyncing, onRefresh = doSync) {
                 Column(Modifier.fillMaxSize()) {
-                    NewspaperMasthead(
+                    FolderEditionHeader(
                         title = feedsUiState.account?.name.orEmpty(),
-                        details = "${stringResource(R.string.folder)}: ${folderSections.size}   " +
-                            "${stringResource(R.string.feeds)}: ${folderSections.sumOf { it.publications.size }}",
-                        modifier = Modifier.clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                        ) {
+                        folderCount = folderSections.size,
+                        publicationCount = folderSections.sumOf { it.publications.size },
+                        state = folderState,
+                        paged = einkMode,
+                        navigationEnabled = !accountTabVisible && subscribeState is SubscribeState.Hidden &&
+                            groupDrawerState.currentValue == ModalBottomSheetValue.Hidden &&
+                            groupDrawerState.targetValue == ModalBottomSheetValue.Hidden &&
+                            feedDrawerState.currentValue == ModalBottomSheetValue.Hidden &&
+                            feedDrawerState.targetValue == ModalBottomSheetValue.Hidden,
+                        onOpenAccounts = {
                             hapticFeedback.performHapticFeedback(HapticFeedbackType.ContextClick)
                             accountTabVisible = true
                         },

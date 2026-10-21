@@ -97,6 +97,7 @@ fun EInkPaginatedContent(
     totalArticleCount: Int? = null,
     reserveVolumeKeys: Boolean = true,
     volumeKeyOwner: Any? = null,
+    onBack: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -579,6 +580,7 @@ fun EInkPaginatedContent(
                 progress = progress,
                 currentArticleIndex = currentArticleIndex,
                 totalArticleCount = totalArticleCount,
+                onBack = onBack,
             )
         }
     }

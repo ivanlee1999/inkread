@@ -69,7 +69,7 @@ jobs:
           fi
           result=0
           ./gradlew --no-daemon --max-workers=2 connectedGithubDebugAndroidTest \
-            -Pandroid.testInstrumentationRunnerArguments.class=me.ash.reader.ui.page.home.NewspaperUiTest,me.ash.reader.ui.page.home.ViewportNewspaperUiTest,me.ash.reader.ui.page.home.ViewportFolderUiTest,me.ash.reader.ui.page.home.EditorialChromeUiTest,me.ash.reader.ui.page.home.reading.EInkReaderUiTest \
+            -Pandroid.testInstrumentationRunnerArguments.class=me.ash.reader.ui.page.home.NewspaperUiTest,me.ash.reader.ui.page.home.ViewportNewspaperUiTest,me.ash.reader.ui.page.home.ViewportFolderUiTest,me.ash.reader.ui.page.home.EditorialChromeUiTest,me.ash.reader.ui.page.home.reading.EInkReaderUiTest,me.ash.reader.ui.page.home.FirstFrameArticleLayoutUiTest,me.ash.reader.ui.page.adaptive.ReaderBackNavigationUiTest \
             -Pandroid.testInstrumentationRunnerArguments.additionalTestOutputDir=/sdcard/Android/media/me.ash.reader/newspaper-screenshots || result=$?
           # AGP copies additional test outputs to the host before removing the app.
           # Do not silently succeed if tests passed but screenshot delivery failed.
@@ -90,8 +90,9 @@ jobs:
           editorial += tuple(f"editorial-settings-components-{scale}" for scale in (160, 200, "dark"))
           editorial += tuple(f"editorial-reader-metadata-{scale}" for scale in (100, 160, 200, "dark"))
           editorial += ("editorial-layout-dialog-160", "editorial-layout-dialog-200", "editorial-text-dialog", "editorial-accounts-dialog", "editorial-reader-page", "editorial-reader-controls")
-          names += extra + mixed + folders + editorial
-          assert len(names) == 96 and len(set(names)) == 96, "Every native capture must have one unique manifest entry"
+          navigation = ("folders-page-dialog", "folders-page-dialog-large", "route-list-full-width", "route-list-reader-return", "route-list-landscape-return", "route-reader-back-controls")
+          names += extra + mixed + folders + editorial + navigation
+          assert len(names) == 102 and len(set(names)) == 102, "Every native capture must have one unique manifest entry"
           density_names = {"viewport-cjk-first", "viewport-cjk-second", "viewport-cjk-middle", "viewport-cjk-last", "viewport-cjk-large-font", "viewport-delayed-photo", "viewport-failed-photo", "viewport-resized-anchor", "folders-first", "folders-middle", "folders-last", "folders-expanded", "folders-large-font", "folders-rtl"} | {name for name in names if name.startswith("density-")}
           for name in names:
               filename = f"newspaper-{name}-{width}.png"
@@ -102,7 +103,7 @@ jobs:
               assert data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) > 100, f"Invalid PNG: {source}"
               image_width, image_height = struct.unpack(">II", data[16:24])
               assert image_width == width and image_height > 0, f"Unexpected screenshot dimensions: {source}: {image_width}x{image_height}"
-              if name in editorial or name.startswith(("compact-", "viewport-", "density-")) or name in ("folders-first", "folders-middle", "folders-last", "folders-expanded", "folders-large-font", "folders-rtl"):
+              if name in editorial or name in navigation or name.startswith(("compact-", "viewport-", "density-")) or name in ("folders-first", "folders-middle", "folders-last", "folders-expanded", "folders-large-font", "folders-rtl"):
                   height = int("${{ matrix.size }}".split("x")[1])
                   assert image_height == height, f"Production paged screens must be captured at full native screen height: {source}: {image_width}x{image_height}"
               shutil.copy2(source, destination / filename)

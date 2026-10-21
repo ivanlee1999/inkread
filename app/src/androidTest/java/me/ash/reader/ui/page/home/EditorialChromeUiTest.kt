@@ -67,19 +67,35 @@ class EditorialChromeUiTest {
             }
         }
         val routes = listOf("appearance", "interaction", "feeds", "articles", "reading", "title", "text", "images", "video", "languages", "dark")
-        val backLabel = context.getString(R.string.back)
         for (name in routes) {
             compose.runOnIdle { route = name }
             compose.waitForIdle()
-            compose.onNodeWithContentDescription(backLabel).assertIsDisplayed().assertHasClickAction()
+            pageBack().assertIsDisplayed().assertHasClickAction()
             assertTrue("$name renders actual production text", compose.onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsProperties.Text), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty())
             if (name == "video") {
                 for (setting in listOf(R.string.rounded_corners, R.string.horizontal_padding)) {
                     compose.onNodeWithText(context.getString(setting)).assertIsNotEnabled()
                 }
             }
+            if (name == "feeds") {
+                val parent = compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.ScrollToIndex))
+                val disclosure = hasTestTag("folder-expand:${context.getString(R.string.defaults)}")
+                val sample = hasText(context.getString(R.string.preview_feed_name)) and hasAnyAncestor(hasTestTag("feeds-style-preview"))
+                parent.performScrollToNode(disclosure)
+                val initiallyExpanded = compose.onAllNodes(sample).fetchSemanticsNodes().isNotEmpty()
+                compose.onNode(disclosure).performClick()
+                if (initiallyExpanded) compose.onNode(sample).assertDoesNotExist() else compose.onNode(sample).assertIsDisplayed()
+                compose.onNode(disclosure).performClick()
+                if (initiallyExpanded) compose.onNode(sample).assertIsDisplayed() else compose.onNode(sample).assertDoesNotExist()
+                for (filter in listOf(R.string.starred, R.string.unread)) {
+                    val target = hasContentDescription(context.getString(filter)) and hasAnyAncestor(hasTestTag("feeds-style-preview"))
+                    parent.performScrollToNode(target)
+                    compose.onNode(target).assertIsDisplayed().performClick().assertIsSelected()
+                }
+                parent.performScrollToIndex(0)
+            }
             capture("editorial-settings-$name")
-            compose.onNodeWithContentDescription(backLabel).performClick()
+            pageBack().performClick()
             assertEquals(name, backs.last())
         }
         compose.runOnIdle { route = "appearance" }
@@ -88,14 +104,16 @@ class EditorialChromeUiTest {
         // controls and all three screen-style destinations must remain in the actual page.
         compose.onAllNodesWithContentDescription(context.getString(R.string.color_and_style)).assertCountEquals(0)
         for ((id, destination) in listOf(R.string.feeds_page to "feeds", R.string.flow_page to "articles", R.string.reading_page to "reading")) {
-            compose.onNodeWithText(context.getString(id)).performScrollTo().assertIsDisplayed().performClick()
+            val target = hasText(context.getString(id))
+            compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.ScrollToIndex)).performScrollToNode(target)
+            compose.onNode(target).assertIsDisplayed().performClick()
             assertEquals(destination, navigations.last())
         }
         capture("editorial-settings-appearance-end")
         for (name in listOf("appearance", "interaction", "reading")) {
             compose.runOnIdle { route = name; scale = 1.6f }
             compose.waitForIdle()
-            compose.onNodeWithContentDescription(backLabel).assertIsDisplayed().performClick()
+            pageBack().assertIsDisplayed().performClick()
             assertEquals(name, backs.last())
             capture("editorial-settings-$name-large")
         }
@@ -123,12 +141,15 @@ class EditorialChromeUiTest {
         for (font in listOf(1.6f, 2f)) {
             compose.runOnIdle { scale = font }
             for (tag in listOf("setting-row", "setting-group")) {
-                val row = compose.onNodeWithTag(tag).performScrollTo().assertIsDisplayed().assertHasClickAction()
+                compose.onNodeWithTag("settings-components").performScrollToNode(hasTestTag(tag))
+                val row = compose.onNodeWithTag(tag).assertIsDisplayed().assertHasClickAction()
                 assertCompleteText(tag)
                 row.performClick()
             }
-            compose.onNodeWithTag("disabled-setting").performScrollTo().assertIsNotEnabled().performTouchInput { click() }
-            compose.onNodeWithTag("disabled-group").performScrollTo().assertIsNotEnabled().performTouchInput { click() }
+            for (tag in listOf("disabled-setting", "disabled-group")) {
+                compose.onNodeWithTag("settings-components").performScrollToNode(hasTestTag(tag))
+                compose.onNodeWithTag(tag).assertIsDisplayed().assertIsNotEnabled().performTouchInput { click() }
+            }
             assertEquals(0, disabledClicks)
             compose.onNodeWithTag("settings-components").performScrollToIndex(0)
             capture("editorial-settings-components-${(font * 100).toInt()}")
@@ -137,7 +158,8 @@ class EditorialChromeUiTest {
         assertEquals(2, groupClicks)
         compose.runOnIdle { scale = 1.6f; dark = true }
         compose.waitForIdle()
-        compose.onNodeWithTag("setting-row").performScrollTo()
+        compose.onNodeWithTag("settings-components").performScrollToNode(hasTestTag("setting-row"))
+        compose.onNodeWithTag("setting-row").assertIsDisplayed()
         assertCompleteText("setting-row")
         capture("editorial-settings-components-dark")
     }
@@ -190,9 +212,13 @@ class EditorialChromeUiTest {
             compose.runOnIdle { scale = font }
             compose.onNodeWithText(title).performClick()
             for (option in ReadingLayoutPresetPreference.values) {
-                compose.onNode(hasText(option.toDesc(context)) and isSelectable()).performScrollTo().assertIsDisplayed()
+                val target = hasText(option.toDesc(context)) and isSelectable()
+                compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.ScrollToIndex)).performScrollToNode(target)
+                compose.onNode(target).assertIsDisplayed()
             }
-            val first = compose.onNode(hasText(ReadingLayoutPresetPreference.Auto.toDesc(context)) and isSelectable()).performScrollTo()
+            val firstChoice = hasText(ReadingLayoutPresetPreference.Auto.toDesc(context)) and isSelectable()
+            compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.ScrollToIndex)).performScrollToNode(firstChoice)
+            val first = compose.onNode(firstChoice).assertIsDisplayed()
             capture("editorial-layout-dialog-${(font * 100).toInt()}")
             pressBackFromModal(first, host)
             compose.onAllNodes(isSelectable()).assertCountEquals(0)
@@ -291,7 +317,14 @@ class EditorialChromeUiTest {
             compose.onNodeWithText("Observatory", useUnmergedTree = true).assertIsDisplayed()
             compose.onNodeWithText(source, useUnmergedTree = true).assertIsDisplayed()
             val count = compose.onNodeWithText("7 Unread", useUnmergedTree = true).assertIsDisplayed()
-            assertFalse("A long source may not ellipsize the independent unread count", textLayout(count).hasVisualOverflow)
+            val countLayout = textLayout(count)
+            val countDiagnostics = "text=${countLayout.layoutInput.text.text}, font=$font, style=${countLayout.layoutInput.style}, constraints=${countLayout.layoutInput.constraints}, size=${countLayout.size}, " +
+                "paragraph=${countLayout.multiParagraph.width}x${countLayout.multiParagraph.height}, " +
+                "overflowWidth=${countLayout.didOverflowWidth}, overflowHeight=${countLayout.didOverflowHeight}, " +
+                "lines=${(0 until countLayout.lineCount).map { line -> listOf(countLayout.getLineStart(line), countLayout.getLineEnd(line), countLayout.isLineEllipsized(line), countLayout.getLineTop(line), countLayout.getLineBottom(line), countLayout.getLineLeft(line), countLayout.getLineRight(line)) }}, " +
+                "countBounds=${count.getUnclippedBoundsInRoot()}, blockBounds=${compose.onNodeWithTag("publication-clean").getUnclippedBoundsInRoot()}"
+            if (countLayout.hasVisualOverflow) capture("diagnostic-publication-count-${(font * 100).toInt()}")
+            assertFalse("A long source may not ellipsize the independent unread count: $countDiagnostics", countLayout.hasVisualOverflow)
             val block = compose.onNodeWithTag("publication-clean").getUnclippedBoundsInRoot()
             val countBounds = count.getUnclippedBoundsInRoot()
             val screen = compose.onRoot().getUnclippedBoundsInRoot()
@@ -308,6 +341,16 @@ class EditorialChromeUiTest {
         }
         assertEquals(2, opens)
         assertEquals(2, options)
+    }
+
+    private fun pageBack(): SemanticsNodeInteraction {
+        val buttons = compose.onAllNodesWithContentDescription(context.getString(R.string.back))
+        val nodes = buttons.fetchSemanticsNodes()
+        val top = nodes.indices.filter { nodes[it].boundsInRoot.top >= 0f && nodes[it].boundsInRoot.height > 0f }
+            .minBy { nodes[it].boundsInRoot.top }
+        // Embedded style samples can have a Back icon too. The actual scaffold is topmost;
+        // each caller additionally verifies that its real route onBack callback fires.
+        return buttons[top]
     }
 
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
@@ -347,7 +390,13 @@ class EditorialChromeUiTest {
         assertTrue(rows.fetchSemanticsNodes().isNotEmpty())
         rows.fetchSemanticsNodes().indices.forEach { index ->
             val layout = textLayout(rows[index])
-            assertFalse("Setting text must wrap completely: ${layout.layoutInput.text.text}", layout.hasVisualOverflow)
+            val diagnostics = "text=${layout.layoutInput.text.text}, fontScale=${layout.layoutInput.density.fontScale}, style=${layout.layoutInput.style}, " +
+                "constraints=${layout.layoutInput.constraints}, size=${layout.size}, paragraph=${layout.multiParagraph.width}x${layout.multiParagraph.height}, " +
+                "overflowWidth=${layout.didOverflowWidth}, overflowHeight=${layout.didOverflowHeight}, " +
+                "lines=${(0 until layout.lineCount).map { line -> listOf(layout.getLineStart(line), layout.getLineEnd(line), layout.isLineEllipsized(line), layout.getLineTop(line), layout.getLineBottom(line), layout.getLineLeft(line), layout.getLineRight(line)) }}, " +
+                "bounds=${rows[index].getUnclippedBoundsInRoot()}"
+            if (layout.hasVisualOverflow) capture("diagnostic-settings-$parent-${(layout.layoutInput.density.fontScale * 100).toInt()}")
+            assertFalse("Setting text must wrap completely: $diagnostics", layout.hasVisualOverflow)
             for (line in 0 until layout.lineCount) assertFalse(layout.isLineEllipsized(line))
         }
     }

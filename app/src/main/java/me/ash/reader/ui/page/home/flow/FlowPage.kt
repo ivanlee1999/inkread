@@ -51,11 +51,9 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -69,14 +67,12 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -112,13 +108,10 @@ import me.ash.reader.ui.component.FilterBar
 import me.ash.reader.ui.component.base.FeedbackIconButton
 import me.ash.reader.ui.component.base.RYExtensibleVisibility
 import me.ash.reader.ui.component.base.newspaperSwipeScroll
-import me.ash.reader.infrastructure.preference.LocalReadingColumns
 import me.ash.reader.ui.component.base.RYScaffold
 import me.ash.reader.ui.component.scrollbar.VerticalScrollIndicatorFactory
 import me.ash.reader.ui.component.scrollbar.drawVerticalScrollIndicator
 import me.ash.reader.ui.component.scrollbar.scrollIndicator
-import me.ash.reader.infrastructure.preference.LocalReadingLayoutPreset
-import me.ash.reader.ui.layout.resolveReadingLayout
 import me.ash.reader.infrastructure.preference.LocalEInkMode
 import me.ash.reader.ui.ext.collectAsStateValue
 import me.ash.reader.ui.ext.openURL
@@ -167,23 +160,13 @@ fun FlowPage(
     val haptic = LocalHapticFeedback.current
 
 
-    val density = LocalDensity.current
-    var einkAvailableHeightPx by remember { mutableIntStateOf(0) }
-    var articlePaneWidthPx by remember { mutableIntStateOf(0) }
-    val readingLayout = resolveReadingLayout(
-        availableWidthDp = with(density) { articlePaneWidthPx.toDp() }.value,
-        fontScale = density.fontScale,
-        preset = LocalReadingLayoutPreset.current.preset,
-        columnPreference = LocalReadingColumns.current.columns,
-    )
-    val newspaperColumns = readingLayout.columns
     val einkViewport = viewModel.newspaperViewportState
     val einkCurrentPage = einkViewport.currentPage
-    val renderedColumns = newspaperColumns
-    val currentColumns by rememberUpdatedState(renderedColumns)
-    // Hoisted for the masthead page control (updated inside AnimatedContent).
-    var einkTotalPagesState by remember { mutableIntStateOf(1) }
-    var einkArticleCountState by remember { mutableIntStateOf(0) }
+    // The retained edition is also the header's initial state when returning from the reader.
+    val einkTotalPages = maxOf(1, einkViewport.pages.size)
+    val einkArticleCount = remember(einkViewport.items) {
+        einkViewport.items.count { it is ArticleFlowItem.Article }
+    }
 
     val flowUiState = viewModel.flowUiState.collectAsStateValue()
     if (flowUiState == null) return
@@ -195,12 +178,6 @@ fun FlowPage(
     val listState = rememberSaveable(pagerData, saver = LazyListState.Saver) { LazyListState(0, 0) }
     // A replacement feed/filter owns a fresh target; old geometry must never move its list.
     val articleRestoration = remember(pagerData.pager, listState) { NewspaperArticleRestoration() }
-    val activePager by rememberUpdatedState(pagerData.pager)
-    val activeEinkMode by rememberUpdatedState(einkMode)
-    fun restorationLayoutKey(page: Int = einkCurrentPage): List<Any?> = listOf(
-        activePager, if (activeEinkMode) page else null,
-        currentColumns,
-    )
     // Keep the source and its identity together: a new filter must not use the old snapshot.
     var currentPagingItems by remember {
         mutableStateOf<Pair<Any, LazyPagingItems<ArticleFlowItem>>?>(null)
@@ -338,43 +315,14 @@ fun FlowPage(
             },
         )
     }
+    val readerState = viewModel.readerStateStateFlow.collectAsStateValue()
     // ReadingPage's HIGH-priority consumer takes precedence in two-pane layouts.
-    EInkVolumePageKeys(einkMode, einkViewport, onTurn = { forward ->
+    EInkVolumePageKeys(einkMode && !onSearch && !markAsRead && readerState.articleId == null, einkViewport, onTurn = { forward ->
         // initData establishes the reader synchronously, before its HIGH-priority consumer's
         // composition effect. Hardware must not mark a hidden list during that gap.
-        if (viewModel.readerStateStateFlow.value.articleId != null) false else turnEinkPage(forward)
+        if (onSearch || markAsRead || viewModel.readerStateStateFlow.value.articleId != null) false else turnEinkPage(forward)
     }) {
         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-    }
-
-    val readerState = viewModel.readerStateStateFlow.collectAsStateValue()
-
-    // Restore the selected article once when it loads. E-ink resizes separately preserve
-    // the current viewport, rather than jumping back to a previously selected article.
-    LaunchedEffect(
-        readerState.articleId, listState, pagerData.pager, einkMode,
-        if (einkMode) null else newspaperColumns,
-    ) {
-        articleRestoration.cancel()
-        // The e-ink edition stays at the exact page opened, even if the unread source has removed
-        // the selected story. Only continuous mode scrolls to the current reader article.
-        if (einkMode) return@LaunchedEffect
-        val articleId = readerState.articleId ?: return@LaunchedEffect
-        snapshotFlow {
-            currentPagingItems?.takeIf { it.first === pagerData.pager }?.second?.itemSnapshotList
-        }.first { snapshot ->
-            val index = snapshot?.indexOfFirst {
-                it is ArticleFlowItem.Article && it.articleWithFeed.article.id == articleId
-            } ?: -1
-            if (index != -1) {
-                snapAppBarToCollapsed()
-                val rows = newspaperRows(snapshot!!.size, currentColumns) { snapshot[it] is ArticleFlowItem.Date }
-                articleRestoration.request(NewspaperArticleRestoreTarget(
-                    articleId, index, rows.rowForSourceIndex(index), currentColumns, restorationLayoutKey(),
-                ), listState)
-                true
-            } else false
-        }
     }
 
     val isSyncing = viewModel.isSyncingFlow.collectAsStateValue()
@@ -415,8 +363,8 @@ fun FlowPage(
                             title = titleText,
                             filter = filterUiState.filter,
                             currentPage = einkCurrentPage + 1,
-                            totalPages = einkTotalPagesState,
-                            totalArticles = einkArticleCountState,
+                            totalPages = einkTotalPages,
+                            totalArticles = einkArticleCount,
                             isSyncing = isSyncing,
                             lastSyncTime = lastSyncTime,
                             navigationKey = pagerData.pager,
@@ -581,6 +529,44 @@ fun FlowPage(
                 }
             },
             content = {
+                ArticleListPaneLayout { readingLayout ->
+                    val newspaperColumns = readingLayout.columns
+                    val renderedColumns = newspaperColumns
+                    val currentColumns by rememberUpdatedState(renderedColumns)
+                    val activePager by rememberUpdatedState(pagerData.pager)
+                    val activeEinkMode by rememberUpdatedState(einkMode)
+                    fun restorationLayoutKey(page: Int = einkCurrentPage): List<Any?> = listOf(
+                        activePager, if (activeEinkMode) page else null,
+                        currentColumns,
+                    )
+                    // Restore the selected article once when it loads. E-ink resizes separately preserve
+                    // the current viewport, rather than jumping back to a previously selected article.
+                    LaunchedEffect(
+                        readerState.articleId, listState, pagerData.pager, einkMode,
+                        if (einkMode) null else newspaperColumns,
+                    ) {
+                        articleRestoration.cancel()
+                        // The e-ink edition stays at the exact page opened, even if the unread source has removed
+                        // the selected story. Only continuous mode scrolls to the current reader article.
+                        if (einkMode) return@LaunchedEffect
+                        val articleId = readerState.articleId ?: return@LaunchedEffect
+                        snapshotFlow {
+                            currentPagingItems?.takeIf { it.first === pagerData.pager }?.second?.itemSnapshotList
+                        }.first { snapshot ->
+                            val index = snapshot?.indexOfFirst {
+                                it is ArticleFlowItem.Article && it.articleWithFeed.article.id == articleId
+                            } ?: -1
+                            if (index != -1) {
+                                snapAppBarToCollapsed()
+                                val rows = newspaperRows(snapshot!!.size, currentColumns) { snapshot[it] is ArticleFlowItem.Date }
+                                articleRestoration.request(NewspaperArticleRestoreTarget(
+                                    articleId, index, rows.rowForSourceIndex(index), currentColumns, restorationLayoutKey(),
+                                ), listState)
+                                true
+                            } else false
+                        }
+                    }
+
                 RYExtensibleVisibility(animated = false, modifier = Modifier.zIndex(1f), visible = onSearch) {
                     BackHandler(onSearch) { onSearch = false }
                     SearchBar(
@@ -678,10 +664,6 @@ fun FlowPage(
                     val einkEndIndex: Int? = null
                     val visibleNewspaperRows = remember(itemSnapshot, renderedColumns) {
                         newspaperRows(itemSnapshot.size, renderedColumns) { itemSnapshot[it] is ArticleFlowItem.Date }
-                    }
-                    SideEffect {
-                        einkTotalPagesState = maxOf(1, einkViewport.pages.size)
-                        einkArticleCountState = einkViewport.items.count { it is ArticleFlowItem.Article }
                     }
 
                     if (!einkMode && markAsReadOnScroll && filterState.filter.isUnread()) {
@@ -828,10 +810,7 @@ fun FlowPage(
                             columns = newspaperColumns,
                             horizontalPadding = readingLayout.horizontalPaddingDp.dp,
                             columnSpacing = readingLayout.columnSpacingDp.dp,
-                            modifier = Modifier.fillMaxSize().onSizeChanged { size ->
-                                einkAvailableHeightPx = size.height
-                                articlePaneWidthPx = size.width
-                            },
+                            modifier = Modifier.fillMaxSize(),
                             diffMap = diffMap,
                             feedUnreadCounts = feedUnreadCounts,
                             articleListTonalElevation = articleListTonalElevation.value,
@@ -908,10 +887,6 @@ fun FlowPage(
                                     )
                                     .let { if (!einkMode) it.nestedScroll(scrollBehavior.nestedScrollConnection) else it }
                                     .fillMaxSize()
-                                    .onSizeChanged { size ->
-                                        einkAvailableHeightPx = size.height
-                                        articlePaneWidthPx = size.width
-                                    }
                                     .drawVerticalScrollIndicator(listState),
                             state = listState,
                         ) {
@@ -964,6 +939,7 @@ fun FlowPage(
 
                         }
                     }
+                }
                 }
             },
             floatingActionButtonPosition = FabPosition.Center,

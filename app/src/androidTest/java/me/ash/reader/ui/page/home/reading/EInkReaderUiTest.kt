@@ -6,10 +6,13 @@ import android.webkit.WebView
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
 import androidx.test.runner.lifecycle.Stage
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import me.ash.reader.infrastructure.preference.LocalEInkEnglishFont
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.platform.app.InstrumentationRegistry
@@ -62,7 +65,8 @@ class EInkReaderUiTest {
                 findWebView(activity.window.decorView)!!.evaluateJavascript("document.querySelector('.eink-meta').textContent.includes('Regression fixture · Fixture Reporter')") { metadata.set(it) }
             }
             compose.waitUntil(5_000) { metadata.get() == "true" }
-            NativePageDensityCapture.capture(compose, "editorial-reader-page", "", recordDensity = false)
+            NativePageDensityCapture.capture(compose, "editorial-reader-page", "", recordDensity = false,
+                contentBoundsOnScreen = ::documentBodyBounds, beforeCaptureFrame = ::awaitDocumentFrame)
             compose.onRoot().performTouchInput { click(Offset(width * .8f, height * .5f)) }
             compose.waitUntil(5_000) { page.get() == 2 }
             // Controls fit without overlap on both 320dp phone and tablet layouts.
@@ -70,7 +74,8 @@ class EInkReaderUiTest {
             compose.onNodeWithContentDescription("Next page").assertIsDisplayed().performClick()
             compose.waitUntil(5_000) { page.get() == 3 }
             compose.onNodeWithText("A↑").assertIsDisplayed()
-            NativePageDensityCapture.capture(compose, "editorial-reader-controls", "", recordDensity = false)
+            NativePageDensityCapture.capture(compose, "editorial-reader-controls", "", recordDensity = false,
+                contentBoundsOnScreen = ::documentBodyBounds, beforeCaptureFrame = ::awaitDocumentFrame)
             // Trigger multiple changes before old-document delayed recounts have finished.
             compose.runOnIdle { article.value = fixture("Second"); title.value = "Second article"; page.set(0); count.set(0) }
             compose.waitUntil(15_000) { count.get() > 2 && page.get() == 1 }
@@ -103,6 +108,37 @@ class EInkReaderUiTest {
             compose.onRoot().performTouchInput { click(Offset(width * .8f, height * .5f)) }
             compose.waitUntil(5_000) { navigations.get() == expected }
         }
+    }
+
+    private fun awaitDocumentFrame() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val ready = CountDownLatch(1)
+        instrumentation.runOnMainSync {
+            val activity = ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED).first()
+            val webView = requireNotNull(findWebView(activity.window.decorView))
+            webView.postVisualStateCallback(0L, object : WebView.VisualStateCallback() {
+                override fun onComplete(requestId: Long) { ready.countDown() }
+            })
+        }
+        assertTrue("The real WebView document must reach visual readiness before capture", ready.await(10, TimeUnit.SECONDS))
+    }
+
+    private fun documentBodyBounds(): Rect {
+        var bounds: Rect? = null
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val activity = ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED).first()
+            val webView = requireNotNull(findWebView(activity.window.decorView))
+            val origin = IntArray(2)
+            webView.getLocationOnScreen(origin)
+            check(webView.isShown && webView.width > 0 && webView.height > 0)
+            // This known long document fills the center of each captured page with body text.
+            // Exclude the title, metadata, edge borders, controls, and all system bars: none may
+            // conceal a white/unrendered HTML body. Native pixels, not DOM readiness, decide.
+            bounds = Rect(origin[0] + webView.width * .08f, origin[1] + webView.height * .35f,
+                origin[0] + webView.width * .92f, origin[1] + webView.height * .85f)
+        }
+        return requireNotNull(bounds)
     }
 
     private fun findWebView(view: View): WebView? {

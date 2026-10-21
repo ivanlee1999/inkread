@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -111,20 +110,25 @@ private fun FolderSectionBlock(
                 }
             }
         }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("${section.publications.size} $feedsLabel · ${section.count} $countLabel",
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Box(Modifier.size(48.dp).then(if (measuring) Modifier else Modifier.testTag("folder-expand:${section.name}"))
+        val expandLabel = "${stringResource(if (expanded) R.string.expand_less else R.string.expand_more)} ${section.name}"
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                .then(if (measuring) Modifier else Modifier.testTag("folder-expand:${section.name}"))
                 .clickable(interactionSource = remember { MutableInteractionSource() },
-                    indication = null, role = Role.Button, onClick = onExpand),
-                contentAlignment = Alignment.Center) {
-                Icon(if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                    contentDescription = "${stringResource(if (expanded) R.string.expand_less else R.string.expand_more)} ${section.name}",
-                    tint = color)
-            }
+                    indication = null, role = Role.Button, onClickLabel = expandLabel, onClick = onExpand)
+                .semantics(mergeDescendants = true) { contentDescription = expandLabel },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            // The whole metadata row is the disclosure target. A 48dp empty icon column
+            // would steal count width; keep the touch target without reserving that space.
+            // Non-breaking spaces keep each number with its label when the groups wrap.
+            Text("${section.publications.size}\u00a0$feedsLabel · ${section.count}\u00a0$countLabel",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Icon(if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                contentDescription = null, modifier = Modifier.size(20.dp), tint = color)
         }
     }
 }
@@ -148,11 +152,8 @@ internal fun FolderNewspaperRowContent(
     val direction = LocalLayoutDirection.current
     Column(Modifier.fillMaxWidth().then(if (measuring) Modifier else Modifier.testTag("folder-row:${row.key}"))
         .padding(vertical = if (preview == FolderPreview.HeadlineOnly) 0.dp else 8.dp)) {
-        if (row.heading == null && preview != FolderPreview.HeadlineOnly) {
-            // A rule belongs to the entire newspaper row, not each individual tile.
-            HorizontalDivider(thickness = if (row.slots.any { it.featured }) 2.dp else 0.5.dp,
-                color = color)
-        }
+        // Collapsed sections are separated by type, whitespace and column rules, not
+        // another horizontal stroke below each preceding count/disclosure row.
         row.heading?.let { section ->
             if (!row.continuation) {
                 NewspaperFolderHeader(section.name, section.count, section.publications.size,
@@ -165,7 +166,6 @@ internal fun FolderNewspaperRowContent(
                     onLongClick = { onFolderOptions(section.id) })
             } else if (preview == FolderPreview.Full || preview == FolderPreview.Compact) {
                 // Repeated real section context, not another folder in the source partition.
-                HorizontalDivider(thickness = 0.5.dp, color = color)
                 Text(section.name, modifier = Modifier.padding(top = 6.dp, bottom = 4.dp),
                     fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.labelLarge, color = color,

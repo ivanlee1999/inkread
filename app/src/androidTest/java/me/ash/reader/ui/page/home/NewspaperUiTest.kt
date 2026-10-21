@@ -769,10 +769,10 @@ class NewspaperUiTest {
                         ) {
                             item {
                                 NewspaperFolderHeader("The daily subscriptions", important = 143,
-                                    feedCount = 24, isExpanded = true)
+                                    feedCount = 72, isExpanded = true)
                             }
                             item {
-                                PublicationGrid(itemCount = 24) { index, modifier ->
+                                PublicationGrid(itemCount = 72) { index, modifier ->
                                     PublicationBlock(name = "Publication $index", count = index + 1,
                                         source = "example.com", modifier = modifier.testTag("swipe-publication-$index"),
                                         onClick = { opened.incrementAndGet() },
@@ -788,6 +788,7 @@ class NewspaperUiTest {
         compose.onNodeWithTag("swipe-publication-0").performTouchInput { longClick() }
         assertEquals(1, opened.get())
         assertEquals(1, options.get())
+        compose.runOnIdle { assertTrue("The gesture fixture contains more real publications than fit even on the broad tablet", list.get().canScrollForward) }
         val before = compose.runOnIdle { list.get().position() }
         compose.mainClock.autoAdvance = false
         compose.onNodeWithTag("swipe-publication-0").performTouchInput { swipeUp() }

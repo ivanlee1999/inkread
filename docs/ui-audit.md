@@ -6,7 +6,7 @@ This inventory covers all **22 active Navigation 3 routes** in `ui/page/nav3/key
 
 **Static audit is not full visual validation.** Every destination below was inspected in source. Native screenshots/tests are separate evidence and must be recorded from the exact final candidate. The cloud checkout has no Android SDK/emulator, so this document does not claim that every route has been opened, rendered, or exercised end to end. The release verification record should identify the actual CI run and screenshot artifacts.
 
-The editorial rule is hierarchy, not decoration: headline first, restrained source/actual-author/date, readable summaries, and spacing rather than repeated borders. Functional separators, input outlines, selected states, warnings, and discoverable controls remain. Existing typography, image, date, source-name, layout, and toolbar preferences remain available. No paginator, read-state, storage, WebView security, navigation, or account workflow was redesigned for this cleanup.
+The editorial rule is hierarchy, not decoration: headline first, restrained source/actual-author/date, readable summaries, and spacing rather than repeated borders. Functional separators, input outlines, selected states, warnings, and discoverable controls remain. Existing typography, image, date, source-name, layout, and toolbar preferences remain available. No storage, WebView security, or account workflow was redesigned. The later requested navigation refinements below are separately covered by production state/effect and native tests; the measured page planner and forward-only visible-item read policy remain unchanged.
 
 ## Shared changes
 
@@ -33,7 +33,7 @@ The editorial rule is hierarchy, not decoration: headline first, restrained sour
 | `AddAccounts` | Local and self-hosted service choices | Shared headings/rows. Retain service names/icons/descriptions and service grouping; necessary to distinguish account types. |
 | `ColorAndStyle` | Palette selection, dark/E-Ink mode, font downloads, size/word spacing, page-style links | Shared typography plus removal of the large decorative palette illustration with an empty click handler. Real palette choices, selected states, font-download feedback and all settings remain. |
 | `DarkTheme` | Theme mode selection and AMOLED option | Shared headings/rows. Retain mutually exclusive choices, selected state and AMOLED switch. |
-| `FeedsPageStyle` | Live feeds preview, top bar, groups, filter bar | Shared headings/rows/dialog titles; preview inherits production feed changes. Retain preview and section labels because they explain the controls being adjusted. |
+| `FeedsPageStyle` | Live feeds preview, top bar, groups, filter bar | Shared headings/rows/dialog titles; preview directly composes production folder/publication presentation without account ViewModels or size animation. It retains preference-driven expansion, local sample disclosure and filter selection. Retain preview and section labels because they explain the controls being adjusted. |
 | `FlowPageStyle` | Live article preview, icons/sources/images/descriptions/dates, read styling, filter bar | Shared headings/rows/dialog titles; preview inherits production article changes. Preserve every saved visibility/layout preference, even when its default is visually quieter. |
 | `ReadingPageStyle` | Reader preview, renderer/font, toolbar and advanced page links | Shared headings/rows/dialog titles. Retain renderer choice, preview, toolbar elevation and all customization links. |
 | `ReadingBoldCharacters` | Bold-character example and toggle | Shared heading/row. Retain the example because it communicates the actual transformation. |
@@ -81,3 +81,12 @@ Verification plan for the final candidate (only executed cases may be reported a
 5. Untouched DI-backed startup/terms, account create/edit, subscribe search/error/configure, feed/folder management, crash handling and widget-host workflows are source-reviewed but not fully exercised by this targeted cleanup. Their coverage gap is explicit; new real-account creation or terms acceptance is not a prerequisite introduced by this visual change. Physical BOOX refresh/ghosting and hardware-volume-key behavior cannot be established by the representative screenshots.
 
 At source-audit completion, `git diff --check` passed for the edited checkout. Native runtime execution and screenshot review are **pending external Android CI/device evidence**, not asserted here. Update this final verification record with the candidate commit, run IDs, executed tests, inspected screenshot paths, and any unrendered routes before describing the result as fully verified.
+
+## Requested navigation refinements
+
+- Folder editions no longer reserve a permanent pager strip. The existing masthead page count opens dismissible previous/next/jump controls; the global favorites/unread/articles navigation remains available. The content viewport receives the reclaimed space rather than drawing underneath a floating control.
+- Folder and article volume up/down paging follows the existing E-Ink mode. A resumed, focused, nonempty active pager owns events; modals, search, hidden reader/list states and empty editions release or block ownership. Initial key-down turns once; repeats/key-up do not turn again. One-page endpoints consume without mutation, matching article behavior; mute retains its system function.
+- Article pane layout resolves actual inset-adjusted constraints before its first composition, instead of starting from width zero and correcting after drawing. Retained editions and explicit presets continue to determine page content.
+- Tablet article navigation is single-pane within the app: the list uses the available window, and the reader opens separately at full width. Legitimate OS split-screen constraints still apply. Back and reader lifecycle ownership are reviewed together so returning restores the retained edition/page without a hidden reader retaining hardware keys.
+
+These refinements require their final candidate's native runtime evidence. Existing interim screenshots still show the earlier pager and are not proof of these final changes.

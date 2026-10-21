@@ -1,6 +1,5 @@
 package me.ash.reader.ui.page.settings.color.feeds
 
-import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -21,6 +20,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -33,8 +33,8 @@ import me.ash.reader.infrastructure.preference.FeedsTopBarTonalElevationPreferen
 import me.ash.reader.ui.component.FilterBar
 import me.ash.reader.ui.component.base.FeedbackIconButton
 import me.ash.reader.ui.ext.surfaceColorAtElevation
-import me.ash.reader.ui.page.home.feeds.FeedItem
-import me.ash.reader.ui.page.home.feeds.GroupItem
+import me.ash.reader.ui.page.home.feeds.PublicationBlock
+import me.ash.reader.ui.page.home.feeds.NewspaperFolderHeader
 import me.ash.reader.ui.page.home.feeds.GroupWithFeedsContainer
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -48,10 +48,11 @@ fun FeedsPagePreview(
     filterBarTonalElevation: Dp,
 ) {
     var filter by remember { mutableStateOf(Filter.Unread) }
+    var expanded by remember(groupListExpand) { mutableStateOf(groupListExpand.value) }
 
     Column(
         modifier = Modifier
-            .animateContentSize()
+            .testTag("feeds-style-preview")
             .background(
                 color = MaterialTheme.colorScheme.surface,
                 shape = RoundedCornerShape(24.dp)
@@ -85,14 +86,13 @@ fun FeedsPagePreview(
         )
         Spacer(modifier = Modifier.height(12.dp))
         GroupWithFeedsContainer {
-            GroupItem(
-                isExpanded = { groupListExpand.value },
-                group = generateGroupPreview(),
+            NewspaperFolderHeader(
+                name = generateGroupPreview().name,
                 important = 250,
+                isExpanded = expanded,
+                onExpanded = { expanded = !expanded },
             )
-            FeedItemExpandSwitcher(
-                isExpanded = groupListExpand.value
-            )
+            FeedItemExpandSwitcher(isExpanded = expanded)
         }
         Spacer(modifier = Modifier.height(12.dp))
         FilterBar(
@@ -118,11 +118,15 @@ fun FeedItemExpandSwitcher(isExpanded: Boolean) {
 @Stable
 @Composable
 fun FeedPreview(isExpanded: Boolean) {
-    FeedItem(
-        feed = generateFeedPreview(),
-        isLastItem = { true },
-        isExpanded = { isExpanded }
-    )
+    if (isExpanded) {
+        val feed = generateFeedPreview()
+        // Style previews render the real presentation without account/navigation ViewModels.
+        PublicationBlock(
+            name = feed.name,
+            iconUrl = feed.icon,
+            count = feed.important,
+        )
+    }
 }
 
 @Stable
