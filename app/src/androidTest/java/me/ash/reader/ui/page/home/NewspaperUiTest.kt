@@ -1452,7 +1452,7 @@ class NewspaperUiTest {
             shortDescription = "The same saved photograph returns when a photo-capable preview is restored.",
             link = "about:blank", feedId = feed.id, accountId = 1), feed)
         val preview = mutableStateOf(me.ash.reader.ui.page.home.flow.NewspaperPreview.Minimal)
-        val images = mutableStateOf(FlowArticleListImagePreference.ON)
+        val images = mutableStateOf<FlowArticleListImagePreference>(FlowArticleListImagePreference.ON)
         try {
             Coil.setImageLoader(loader)
             compose.setContent {

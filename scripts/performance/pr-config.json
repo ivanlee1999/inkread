@@ -1,3 +1,5 @@
 {
-  "scales": ["small"]
+  "scales": [
+    "stress"
+  ]
 }

@@ -1,0 +1,142 @@
+name: Reader page alignment
+
+on:
+  pull_request:
+    paths:
+      - 'app/src/main/java/me/ash/reader/ui/page/home/reading/**'
+      - 'app/src/androidTest/java/me/ash/reader/ui/page/home/reading/EInkReaderAlignmentUiTest.kt'
+      - '.github/workflows/reader-alignment.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reader-alignment-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-reader:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: phone
+            size: 400x1000
+            density: 160
+          - name: fractional-phone
+            size: 1080x2400
+            density: 420
+          - name: tablet
+            size: 1000x1200
+            density: 160
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - name: Install compile SDK
+        run: sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Prepare native geometry checks
+        run: |
+          cat > "$RUNNER_TEMP/reader-alignment-tests.sh" <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          adb shell wm size ${{ matrix.size }}
+          adb shell wm density ${{ matrix.density }}
+          # Same disposable-AVD launcher workaround as newspaper-ui.yml.
+          if adb shell pm path com.google.android.apps.nexuslauncher | grep -q '^package:'; then
+            adb shell pm disable-user --user 0 com.google.android.apps.nexuslauncher
+            adb shell am force-stop com.google.android.apps.nexuslauncher
+            adb shell pm list packages -d | tr -d '\r' | grep -qx 'package:com.google.android.apps.nexuslauncher'
+          fi
+          mkdir -p reader-alignment-evidence
+          git rev-parse HEAD > reader-alignment-evidence/source-sha.txt
+          adb shell dumpsys webviewupdate > reader-alignment-evidence/webview.txt
+          adb shell wm size > reader-alignment-evidence/size.txt
+          adb shell wm density > reader-alignment-evidence/density.txt
+          result=0
+          for scale in 1.0 1.6; do
+            adb shell settings put system font_scale "$scale"
+            export ALIGNMENT_FONT_SCALE="$scale"
+            test_result=0
+            ./gradlew --no-daemon --max-workers=2 connectedGithubDebugAndroidTest \
+              -Pandroid.testInstrumentationRunnerArguments.class=me.ash.reader.ui.page.home.reading.EInkReaderAlignmentUiTest \
+              -Pandroid.testInstrumentationRunnerArguments.additionalTestOutputDir=/sdcard/Android/media/me.ash.reader/reader-alignment || test_result=$?
+            # Preserve even partial evidence before another Gradle run can clean its outputs.
+            destination="reader-alignment-evidence/font-$scale"
+            mkdir -p "$destination"
+            for output in app/build/outputs/connected_android_test_additional_output app/build/outputs/androidTest-results app/build/reports/androidTests; do
+              if [ -d "$output" ]; then cp -R "$output" "$destination/"; fi
+            done
+            adb logcat -d > "$destination/logcat.txt"
+            validation=0
+            python3 - <<'PYTHON' || validation=$?
+          import json, os, pathlib, struct
+          root = pathlib.Path("reader-alignment-evidence") / f"font-{os.environ['ALIGNMENT_FONT_SCALE']}"
+          reports = list(root.rglob("reader-alignment.json"))
+          assert len(reports) == 1, f"Expected one geometry report, got {reports}"
+          report = json.loads(reports[0].read_text())
+          assert report["schema"] == 1 and report["densityDpi"] == ${{ matrix.density }}
+          assert abs(report["systemFontScale"] - float(os.environ["ALIGNMENT_FONT_SCALE"])) < .01
+          samples = report["samples"]
+          assert len(samples) >= 139, f"Incomplete navigation coverage: {len(samples)} samples"
+          for name in ("tap-before-image", "volume-after-image", "large-font", "resized"):
+              labels = {s["label"] for s in samples}
+              assert all(f"{name}-{direction}-{page}" in labels for direction in ("forward", "back") for page in range(1, 13))
+          assert all(f"swipe-{direction}-{page}" in {s["label"] for s in samples} for direction in ("next", "previous") for page in range(12))
+          before = next(s for s in samples if s["label"] == "before-late-image")
+          after = next(s for s in samples if s["label"] == "after-late-image")
+          assert not before["lateImage"]["complete"] and after["lateImage"]["naturalWidth"] > 0
+          if ${{ matrix.density }} == 420:
+              assert any(abs(s["viewportWidth"] - round(s["viewportWidth"])) > .05 for s in samples), "Fractional-density job did not exercise a fractional CSS viewport"
+          names = ["initial", "before-late-image", "after-late-image", "swipe-next-11", "swipe-previous-11"]
+          names += [f"{phase}-{position}" for phase in ("tap-before-image", "volume-after-image", "large-font", "resized") for position in ("first", "forward-6", "forward-12")]
+          for name in names:
+              matches = list(root.rglob(f"newspaper-reader-alignment-{name}-*.png"))
+              assert len(matches) == 1, f"Missing/duplicate native capture: {name}"
+              data = matches[0].read_bytes()
+              assert data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) > 100
+              assert struct.unpack(">II", data[16:24]) == tuple(map(int, "${{ matrix.size }}".split("x")))
+          assert not report["violations"], "\n".join(report["violations"])
+          PYTHON
+            if [ "$test_result" -ne 0 ] || [ "$validation" -ne 0 ]; then result=1; fi
+          done
+          exit "$result"
+          SCRIPT
+      - name: Test production reader on a native AVD
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: bash "$RUNNER_TEMP/reader-alignment-tests.sh"
+      - name: Upload native reader evidence and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reader-alignment-${{ matrix.name }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            reader-alignment-evidence/**
+            app/build/reports/androidTests/**
+            app/build/outputs/androidTest-results/**
+            app/build/outputs/connected_android_test_additional_output/**
+          if-no-files-found: error
