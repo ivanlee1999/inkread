@@ -21,18 +21,13 @@ enum class VolumeKeyPriority {
 }
 
 object VolumeKeyEventBus {
-    private var _events = MutableSharedFlow<VolumeKeyEvent>(
-        replay = 0,
-        extraBufferCapacity = 8,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST,
-    )
+    private val activeConsumers = mutableMapOf<VolumeKeyPriority, LinkedHashMap<Any, Int>>()
+    private val ownerEvents = mutableMapOf<Pair<VolumeKeyPriority, Any>, MutableSharedFlow<VolumeKeyEvent>>()
 
-    /**
-     * Tracks active consumers by priority. Events are delivered only to the
-     * highest-priority active consumer, preventing duplicate handling in
-     * two-pane layouts where both FlowPage and ReadingPage collect simultaneously.
-     */
-    private val activeConsumers = mutableSetOf<VolumeKeyPriority>()
+    private fun eventFlow(priority: VolumeKeyPriority, owner: Any) =
+        ownerEvents.getOrPut(priority to owner) {
+            MutableSharedFlow(replay = 0, extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+        }
 
     /**
      * Register a consumer at the given [priority]. While a higher-priority
@@ -41,47 +36,69 @@ object VolumeKeyEventBus {
      * Returns a [SharedFlow] that the caller should collect. The caller must
      * call [unregister] when it leaves composition / is disposed.
      */
-    fun register(priority: VolumeKeyPriority): SharedFlow<VolumeKeyEvent> {
-        synchronized(activeConsumers) { activeConsumers.add(priority) }
-        return _events.asSharedFlow()
+    fun register(priority: VolumeKeyPriority, owner: Any = priority): SharedFlow<VolumeKeyEvent> {
+        synchronized(activeConsumers) {
+            val owners = activeConsumers.getOrPut(priority) { linkedMapOf() }
+            owners[owner] = (owners[owner] ?: 0) + 1
+        }
+        return events(priority, owner)
     }
 
     /**
      * Unregister a previously registered consumer.
      */
-    fun unregister(priority: VolumeKeyPriority) {
-        synchronized(activeConsumers) { activeConsumers.remove(priority) }
+    fun unregister(priority: VolumeKeyPriority, owner: Any = priority) {
+        synchronized(activeConsumers) {
+            val owners = activeConsumers[priority] ?: return
+            val remaining = (owners[owner] ?: 0) - 1
+            if (remaining > 0) owners[owner] = remaining
+            else {
+                owners.remove(owner)
+                ownerEvents.remove(priority to owner)
+            }
+            if (owners.isEmpty()) activeConsumers.remove(priority)
+        }
     }
+
+    /** Leave volume controls alone on feeds, settings, or any screen without a pager. */
+    fun hasActiveConsumer(): Boolean = synchronized(activeConsumers) { activeConsumers.isNotEmpty() }
+
+    /** Collect without owning focus when a containing reader already owns it. */
+    fun events(priority: VolumeKeyPriority, owner: Any = priority): SharedFlow<VolumeKeyEvent> =
+        synchronized(activeConsumers) { eventFlow(priority, owner).asSharedFlow() }
 
     /**
      * Returns true if [priority] is currently the highest active priority,
      * meaning it should handle events.
      */
-    fun isActiveConsumer(priority: VolumeKeyPriority): Boolean {
+    fun isActiveConsumer(priority: VolumeKeyPriority, owner: Any? = null): Boolean {
         synchronized(activeConsumers) {
             if (activeConsumers.isEmpty()) return false
-            return activeConsumers.max() == priority
+            return activeConsumers.keys.max() == priority &&
+                (owner == null || activeConsumers.getValue(priority).keys.lastOrNull() === owner)
         }
     }
 
     /**
-     * Emit a volume key event to all collectors. No debounce — every valid
+     * Route at emission, not collection: a reader key queued just before closing
+     * the reader must never become a list turn. No debounce — every valid
      * press is delivered. The buffer (capacity 8) absorbs short bursts during
      * e-ink refresh without building an unbounded queue.
      */
     fun emit(event: VolumeKeyEvent) {
-        _events.tryEmit(event)
+        synchronized(activeConsumers) {
+            activeConsumers.keys.maxOrNull()?.let { priority ->
+                activeConsumers.getValue(priority).keys.lastOrNull()?.let { owner ->
+                    eventFlow(priority, owner).tryEmit(event)
+                }
+            }
+        }
     }
 
     /**
      * Reset all internal state. Intended for use in tests only.
      */
     fun resetForTest() {
-        synchronized(activeConsumers) { activeConsumers.clear() }
-        _events = MutableSharedFlow(
-            replay = 0,
-            extraBufferCapacity = 8,
-            onBufferOverflow = BufferOverflow.DROP_OLDEST,
-        )
+        synchronized(activeConsumers) { activeConsumers.clear(); ownerEvents.clear() }
     }
 }

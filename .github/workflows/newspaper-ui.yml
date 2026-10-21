@@ -14,7 +14,7 @@ concurrency:
 jobs:
   compose-layouts:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -69,7 +69,7 @@ jobs:
           fi
           result=0
           ./gradlew --no-daemon --max-workers=2 connectedGithubDebugAndroidTest \
-            -Pandroid.testInstrumentationRunnerArguments.class=me.ash.reader.ui.page.home.NewspaperUiTest \
+            -Pandroid.testInstrumentationRunnerArguments.class=me.ash.reader.ui.page.home.NewspaperUiTest,me.ash.reader.ui.page.home.ViewportNewspaperUiTest,me.ash.reader.ui.page.home.ViewportFolderUiTest \
             -Pandroid.testInstrumentationRunnerArguments.additionalTestOutputDir=/sdcard/Android/media/me.ash.reader/newspaper-screenshots || result=$?
           # AGP copies additional test outputs to the host before removing the app.
           # Do not silently succeed if tests passed but screenshot delivery failed.
@@ -81,7 +81,7 @@ jobs:
           destination = pathlib.Path("newspaper-screenshots")
           destination.mkdir(exist_ok=True)
           width = ${{ matrix.width }}
-          names = ("subscriptions", "subscriptions-gestures", "folders", "folders-collapsed", "articles-footer-insets", "articles", "articles-end", "articles-image-large-font", "articles-large-font-end", "photos-auto", "photos-phone", "photos-tablet", "photos-off", "photos-cached-offline", "editorial-templates", "photos-alternate", "photos-missing", "compact-count-closed", "compact-count-open", "compact-count-large-font", "compact-footerless-end")
+          names = ("subscriptions", "subscriptions-gestures", "folders", "folders-collapsed", "articles-footer-insets", "articles", "articles-end", "articles-image-large-font", "articles-large-font-end", "photos-auto", "photos-phone", "photos-tablet", "photos-off", "photos-cached-offline", "editorial-templates", "photos-alternate", "photos-missing", "compact-count-closed", "compact-count-open", "compact-count-large-font", "compact-footerless-end", "viewport-cjk-first", "viewport-cjk-second", "viewport-cjk-last", "viewport-cjk-large-font", "viewport-delayed-photo", "viewport-failed-photo", "viewport-resized-anchor", "viewport-header-actions", "folders-first", "folders-last", "folders-expanded", "folders-large-font", "folders-rtl")
           for name in names:
               filename = f"newspaper-{name}-{width}.png"
               matches = list(root.rglob(filename))
@@ -91,9 +91,9 @@ jobs:
               assert data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) > 100, f"Invalid PNG: {source}"
               image_width, image_height = struct.unpack(">II", data[16:24])
               assert image_width == width and image_height > 0, f"Unexpected screenshot dimensions: {source}: {image_width}x{image_height}"
-              if name.startswith("compact-"):
+              if name.startswith(("compact-", "viewport-")) or name in ("folders-first", "folders-last", "folders-expanded", "folders-large-font", "folders-rtl"):
                   height = int("${{ matrix.size }}".split("x")[1])
-                  assert image_height == height, f"Compact navigation must be captured at full native screen height: {source}: {image_width}x{image_height}"
+                  assert image_height == height, f"Production paged screens must be captured at full native screen height: {source}: {image_width}x{image_height}"
               shutil.copy2(source, destination / filename)
               print(f"Collected {filename}: {image_width}x{image_height}, {len(data)} bytes")
           PYTHON

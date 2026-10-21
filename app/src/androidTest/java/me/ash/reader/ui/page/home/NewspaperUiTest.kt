@@ -117,7 +117,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
-/** Native Compose fixtures using production components. Article links are about:blank so
+/** Retained native component and continuous/legacy-list regression fixtures. Screen-paged
+ * acceptance lives in ViewportNewspaperUiTest, which uses the current production header/body.
+ * Article links are about:blank so
  * text-only fixtures never trigger external metadata fetches; photo URLs are seeded in Coil. */
 class NewspaperUiTest {
     @get:Rule val compose = createComposeRule()
@@ -295,9 +297,9 @@ class NewspaperUiTest {
         capture("articles-large-font-end")
     }
 
-    @Test fun pageTurnsResetMeasuredRowsAndResizeKeepsExactSource() {
+    @Test fun legacyCountSliceHelpersResetMeasuredRowsAndRetainSource() {
         // Render real rows while invoking the same page transition and scroll-request helpers
-        // used by FlowPage's volume and on-screen controls. This is not a hardware-key test.
+        // retained for the legacy scrollable slice. Current screen pages are tested separately.
         val feed = Feed(id = "slice-fixture", name = "Pagination Journal", url = "https://example.com",
             groupId = "g", accountId = 1)
         val fixture = (0 until 30).map { index ->
@@ -395,8 +397,8 @@ class NewspaperUiTest {
         }
     }
 
-    @Test fun productionEffectsHandleRapidVolumeBusEventsFilterReplacementAndResize() {
-        // Exercises FlowPage's exact production effects/controller, not copied lifecycle logic.
+    @Test fun legacyLazyListEffectsHandleVolumeRegistrationAndFilterReplacement() {
+        // Retains lifecycle coverage for the legacy LazyList effects, not the screen-page controller.
         // Events enter its real hardware-volume bus; Android OS key dispatch is not simulated.
         VolumeKeyEventBus.resetForTest()
         val feed = Feed(id = "effects", name = "Transition Journal", url = "https://example.com",
@@ -886,7 +888,7 @@ class NewspaperUiTest {
         assertEquals(2, opened.get())
     }
 
-    @Test fun articleSwipesScrollThenTurnOnlyTheConcretePageAtTheBoundary() {
+    @Test fun legacyScrollableSlicesTurnOnlyAtTheirConcreteBoundary() {
         val opened = mutableListOf<Int>()
         val toggled = mutableListOf<String>()
         val marked = mutableListOf<String>()
@@ -1131,7 +1133,7 @@ class NewspaperUiTest {
         }
     }
 
-    @Test fun heldSwipeCannotTurnOrMarkThePageSelectedByAVolumeKey() {
+    @Test fun legacyLazyListHeldSwipeCannotTurnTheReplacementSlice() {
         VolumeKeyEventBus.resetForTest()
         val page = mutableStateOf(0)
         val marked = mutableListOf<String>()

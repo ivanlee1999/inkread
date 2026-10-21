@@ -36,11 +36,16 @@ fun PublicationBlock(
     modifier: Modifier = Modifier,
     onClick: () -> Unit = {},
     onLongClick: (() -> Unit)? = null,
+    featured: Boolean = false,
+    preview: FolderPreview = FolderPreview.Full,
+    measuring: Boolean = false,
+    countLabel: String? = null,
 ) {
+    val minimal = preview == FolderPreview.Minimal || preview == FolderPreview.HeadlineOnly
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 108.dp)
+            .heightIn(min = if (minimal) 48.dp else 108.dp)
             .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -48,31 +53,45 @@ fun PublicationBlock(
                 onClick = onClick,
                 onLongClick = onLongClick,
             )
-            .padding(vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(vertical = if (minimal) 4.dp else 10.dp),
+        verticalArrangement = Arrangement.spacedBy(if (minimal) 2.dp else 8.dp),
     ) {
+        if (!minimal) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            FeedIcon(feedName = name, iconUrl = iconUrl, animate = false)
+            // Off-screen measurement must not fetch icons or create transient image sizes.
+            if (measuring) Spacer(Modifier.size(20.dp))
+            else FeedIcon(feedName = name, iconUrl = iconUrl, animate = false)
             Spacer(Modifier.weight(1f))
-            if (count != 0) {
+            if (count != 0 || countLabel != null) {
                 Text(
-                    text = count.toString(),
+                    text = if (countLabel == null) count.toString() else "$count · $countLabel",
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
+        }
         Text(
             text = name,
-            style = MaterialTheme.typography.titleMedium.copy(fontSize = 17.sp, lineHeight = 22.sp),
+            style = MaterialTheme.typography.titleMedium.copy(
+                fontSize = if (featured && !minimal) 23.sp else 17.sp,
+                lineHeight = if (featured && !minimal) 28.sp else 22.sp,
+            ),
             fontFamily = FontFamily.Serif,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 3,
+            maxLines = when (preview) {
+                FolderPreview.Full -> 3
+                FolderPreview.Compact -> 2
+                FolderPreview.Minimal -> 1
+                FolderPreview.HeadlineOnly -> 1
+            },
             overflow = TextOverflow.Ellipsis,
         )
-        if (source.isNotBlank()) {
+        if (source.isNotBlank() && !minimal) {
             HorizontalDivider(color = MaterialTheme.colorScheme.onSurface)
             Text(
                 text = source,

@@ -57,13 +57,15 @@ internal fun EInkVolumePageKeys(
     val currentOnTurn by rememberUpdatedState(onTurn)
     val currentOnTurned by rememberUpdatedState(onTurned)
     if (enabled) {
-        val volumeKeyFlow = remember { VolumeKeyEventBus.register(VolumeKeyPriority.LOW) }
-        DisposableEffect(Unit) {
-            onDispose { VolumeKeyEventBus.unregister(VolumeKeyPriority.LOW) }
+        val owner = remember(listState) { Any() }
+        val volumeKeyFlow = remember(owner) { VolumeKeyEventBus.events(VolumeKeyPriority.LOW, owner) }
+        DisposableEffect(owner) {
+            VolumeKeyEventBus.register(VolumeKeyPriority.LOW, owner)
+            onDispose { VolumeKeyEventBus.unregister(VolumeKeyPriority.LOW, owner) }
         }
         LaunchedEffect(volumeKeyFlow, listState) {
             volumeKeyFlow.collect { event ->
-                if (VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.LOW) &&
+                if (VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.LOW, owner) &&
                     currentOnTurn(event == VolumeKeyEvent.NEXT)
                 ) {
                     currentOnTurned()

@@ -109,8 +109,61 @@ class VolumeKeyEventBusTest {
 
     @Test
     fun `isActiveConsumer returns false when no consumers registered`() {
+        assertFalse(VolumeKeyEventBus.hasActiveConsumer())
         assertFalse(VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.HIGH))
         assertFalse(VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.LOW))
+    }
+
+    @Test fun `loading reader reservation survives ready content disposal`() {
+        VolumeKeyEventBus.register(VolumeKeyPriority.LOW)
+        VolumeKeyEventBus.register(VolumeKeyPriority.HIGH) // visible reader reservation
+        VolumeKeyEventBus.register(VolumeKeyPriority.HIGH) // ready content collector
+        VolumeKeyEventBus.unregister(VolumeKeyPriority.HIGH) // content starts loading again
+        assertTrue(VolumeKeyEventBus.hasActiveConsumer())
+        assertTrue(VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.HIGH))
+        assertFalse(VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.LOW))
+        VolumeKeyEventBus.unregister(VolumeKeyPriority.HIGH) // exit reader
+        assertTrue(VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.LOW))
+        VolumeKeyEventBus.unregister(VolumeKeyPriority.LOW)
+        assertFalse(VolumeKeyEventBus.hasActiveConsumer())
+    }
+
+    @Test fun `key emitted during reader loading cannot leak to list after reader closes`() = runTest {
+        val low = VolumeKeyEventBus.register(VolumeKeyPriority.LOW)
+        val received = mutableListOf<VolumeKeyEvent>()
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) { low.collect { received += it } }
+        VolumeKeyEventBus.register(VolumeKeyPriority.HIGH)
+        VolumeKeyEventBus.emit(VolumeKeyEvent.NEXT)
+        VolumeKeyEventBus.unregister(VolumeKeyPriority.HIGH)
+        assertTrue(received.isEmpty())
+        VolumeKeyEventBus.emit(VolumeKeyEvent.PREV)
+        assertEquals(listOf(VolumeKeyEvent.PREV), received)
+        job.cancel()
+        VolumeKeyEventBus.unregister(VolumeKeyPriority.LOW)
+    }
+
+    @Test fun `overlapping reader owners receive each key once and keep their own queues`() = runTest {
+        val first = Any()
+        val second = Any()
+        val firstFlow = VolumeKeyEventBus.register(VolumeKeyPriority.HIGH, first)
+        val a = mutableListOf<VolumeKeyEvent>()
+        val b = mutableListOf<VolumeKeyEvent>()
+        val firstJob = launch(UnconfinedTestDispatcher(testScheduler)) { firstFlow.collect { a += it } }
+        VolumeKeyEventBus.emit(VolumeKeyEvent.PREV)
+        val secondFlow = VolumeKeyEventBus.register(VolumeKeyPriority.HIGH, second)
+        assertFalse(VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.HIGH, first))
+        assertTrue(VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.HIGH, second))
+        val secondJob = launch(UnconfinedTestDispatcher(testScheduler)) { secondFlow.collect { b += it } }
+        VolumeKeyEventBus.emit(VolumeKeyEvent.NEXT)
+        assertEquals(listOf(VolumeKeyEvent.PREV), a)
+        assertEquals(listOf(VolumeKeyEvent.NEXT), b)
+        VolumeKeyEventBus.unregister(VolumeKeyPriority.HIGH, second)
+        VolumeKeyEventBus.emit(VolumeKeyEvent.PREV)
+        assertEquals(listOf(VolumeKeyEvent.PREV, VolumeKeyEvent.PREV), a)
+        assertEquals(listOf(VolumeKeyEvent.NEXT), b)
+        firstJob.cancel()
+        secondJob.cancel()
+        VolumeKeyEventBus.unregister(VolumeKeyPriority.HIGH, first)
     }
 
     @Test

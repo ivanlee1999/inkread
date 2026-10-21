@@ -25,6 +25,7 @@ fun FeedsBanner(
     modifier: Modifier = Modifier,
     filter: Filter,
     desc: String? = null,
+    compact: Boolean = false,
     onClick: () -> Unit = {},
 ) {
     Column(
@@ -32,17 +33,21 @@ fun FeedsBanner(
             .fillMaxWidth()
             .clickable(interactionSource = remember { MutableInteractionSource() },
                 indication = null, role = Role.Button, onClick = onClick)
-            .padding(vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .padding(vertical = if (compact) 6.dp else 12.dp),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 12.dp),
     ) {
-        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface, thickness = 2.dp)
+        if (!compact) HorizontalDivider(color = MaterialTheme.colorScheme.onSurface, thickness = 2.dp)
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             Column(Modifier.weight(1f)) {
                 Text(filter.toName(), fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold,
-                    style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onSurface)
+                    style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.headlineMedium,
+                    color = MaterialTheme.colorScheme.onSurface)
                 if (!desc.isNullOrBlank()) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(desc, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+                    Spacer(Modifier.height(if (compact) 2.dp else 8.dp))
+                    Text(desc, style = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.bodyMedium,
+                        maxLines = if (compact) 1 else Int.MAX_VALUE,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        color = MaterialTheme.colorScheme.onSurface)
                 }
             }
             Icon(imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
