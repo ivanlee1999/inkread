@@ -3,10 +3,12 @@ package me.ash.reader.ui.page.home.reading
 import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.MenuItem
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
+import android.widget.ListView
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
@@ -16,6 +18,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.test.espresso.Espresso.onView
+import androidx.test.espresso.Espresso.onData
 import androidx.test.espresso.Espresso.pressBack
 import androidx.test.espresso.NoMatchingViewException
 import androidx.test.espresso.action.GeneralClickAction
@@ -26,6 +29,7 @@ import androidx.test.espresso.assertion.ViewAssertions.matches
 import androidx.test.espresso.matcher.RootMatchers.withDecorView
 import androidx.test.espresso.matcher.ViewMatchers.hasDescendant
 import androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom
+import androidx.test.espresso.matcher.ViewMatchers.isCompletelyDisplayed
 import androidx.test.espresso.matcher.ViewMatchers.isDisplayed
 import androidx.test.espresso.matcher.ViewMatchers.withContentDescription
 import androidx.test.espresso.matcher.ViewMatchers.withTagValue
@@ -46,8 +50,10 @@ import me.ash.reader.infrastructure.preference.LocalEInkMode
 import me.ash.reader.infrastructure.preference.LocalReaderFormatting
 import me.ash.reader.infrastructure.preference.ReaderFormatting
 import me.ash.reader.ui.theme.AppTheme
+import org.hamcrest.Description
 import org.hamcrest.Matchers.allOf
 import org.hamcrest.Matchers.equalTo
+import org.hamcrest.TypeSafeMatcher
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
@@ -325,7 +331,17 @@ class EInkReaderAnnotationUiTest {
             onView(allOf(withContentDescription("More options"), isDisplayed()))
                 .inRoot(nativeToolbarRoot()).perform(click())
             nativeOverflowOpen = true
-            nativeAction(label).check(matches(isDisplayed()))
+            // The platform overflow is a real ListView. At narrow widths / large
+            // font scales its lower rows are partial or not bound at all. Let
+            // Espresso scroll the native adapter before the normal visible click.
+            onData(object : TypeSafeMatcher<MenuItem>() {
+                override fun matchesSafely(item: MenuItem) = item.title.toString() == label
+                override fun describeTo(description: Description) {
+                    description.appendText("native selection menu item titled ").appendValue(label)
+                }
+            }).inRoot(nativeToolbarRoot())
+                .inAdapterView(allOf(isAssignableFrom(ListView::class.java), isDisplayed()))
+                .check(matches(isCompletelyDisplayed()))
         }
         return true
     }
