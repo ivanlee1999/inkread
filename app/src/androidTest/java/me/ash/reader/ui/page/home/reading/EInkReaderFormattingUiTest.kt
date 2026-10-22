@@ -22,6 +22,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -92,6 +93,7 @@ class EInkReaderFormattingUiTest {
     private val content = mutableStateOf("<p>Preparing an ordinary reading article.</p>")
     private val visible = mutableStateOf(true)
     private val viewportFraction = mutableStateOf(1f)
+    private val toolbarWidthFraction = mutableStateOf(1f)
     private val preferenceError = mutableStateOf<Throwable?>(null)
     private val preferenceRetries = AtomicInteger()
     private val successfulRetrySnapshots = AtomicInteger()
@@ -219,12 +221,38 @@ class EInkReaderFormattingUiTest {
             openPanel()
             section("text")
             step("font_size", increase = index == 0)
-            val expected = persisted.copy(fontSize = persisted.fontSize + if (index == 0) 1 else 0)
+            val expected = if (index == 0) persisted.copy(fontSize = persisted.fontSize + 1,
+                marginLeft = 0, marginRight = 0, marginTop = 0, marginBottom = 0) else persisted
+            section("layout")
+            listOf("left" to expected.marginLeft, "right" to expected.marginRight,
+                "top" to expected.marginTop, "bottom" to expected.marginBottom).forEach { (edge, value) ->
+                setControlValue("margin_$edge", value.toFloat())
+            }
+            if (index == 0) capture("zero-margin-layout-fixture")
             clickTag("reader_formatting_apply")
             panelClosed()
             assertEquals(expected, awaitPersisted { it == expected })
             assertStyleMatches(expected, settled("repeated-apply-${index + 1}"))
             assertAnchor("repeated-apply-${index + 1}-anchor")
+            if (index == 0) {
+                assertFormattingActionOutsideArticle()
+                clickTag("reader_controls_toggle")
+                settleBarrier()
+                compose.onNodeWithTag("reader_formatting_open").assertDoesNotExist()
+                compose.onNodeWithTag("reader_controls_toggle").assert(
+                    SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Hidden"))
+                assertNoPermanentReaderSpacer()
+                val zeroMargins = settled("zero-margin-controls-hidden")
+                assertStyleMatches(expected, zeroMargins)
+                assertAnchor("zero-margin-controls-hidden-anchor")
+                val glyph = zeroMargins.getJSONObject("anchorGlyph")
+                assertTrue("At zero margins the full anchored glyph must fit inside the actual WebView, not just the CSS line box",
+                    glyph.getDouble("left") >= -1.25 && glyph.getDouble("right") <= zeroMargins.getDouble("viewportWidth") + 1.25 &&
+                        glyph.getDouble("top") >= -1.25 && glyph.getDouble("bottom") <= zeroMargins.getDouble("viewportHeight") + 1.25)
+                capture("zero-margin-article-fixture")
+                revealReaderControls()
+                assertAnchor("zero-margin-controls-revealed-anchor")
+            }
         }
         openPanel()
         clickTag("reader_formatting_reset")
@@ -288,6 +316,7 @@ class EInkReaderFormattingUiTest {
         delayFonts = true
         releaseLate.countDown()
         startReader()
+        verifyNarrowToolbar()
         goToMiddlePage()
         rememberAnchor()
         openPanel()
@@ -355,6 +384,11 @@ class EInkReaderFormattingUiTest {
         assertAnchor("back-cancels-draft")
         assertEquals(applied, readPersisted())
         assertEquals("Font readiness and modal cycles must not reload article HTML", 1, htmlRequests.get())
+        assertFormattingActionOutsideArticle()
+        pressBack()
+        compose.onNodeWithTag("reader_formatting_open").assertDoesNotExist()
+        assertEquals("Second Back hides restored reading controls, not the article", 0, readerBacks.get())
+        assertAnchor("back-hides-toolbar")
         val beforeTurn = page.get()
         dispatchVolume(KeyEvent.KEYCODE_VOLUME_DOWN)
         compose.waitUntil(5_000) { page.get() == beforeTurn + 1 }
@@ -364,10 +398,22 @@ class EInkReaderFormattingUiTest {
         compose.waitUntil(5_000) { articleChanges.get() == 1 }
         pressBack()
         compose.onNodeWithTag("formatting-reader-closed").assertIsDisplayed()
-        assertEquals("Second Back exits the reader exactly once", 1, readerBacks.get())
+        assertEquals("Third Back exits the reader exactly once", 1, readerBacks.get())
         // Dispose/reopen the real composable with preferences from DataStore, not a draft copy.
-        compose.runOnIdle { visible.value = true; page.set(0); count.set(0) }
+        // Its new WebView needs the same test-only ordinary photo interceptor as the first;
+        // otherwise the offline .invalid photos fail and the tablet fixture has only 7 pages.
+        compose.runOnIdle {
+            content.value = "<p>Preparing an ordinary reading article.</p>"
+            visible.value = true; page.set(0); count.set(0)
+        }
+        compose.waitUntil(15_000) { count.get() > 0 }
+        installOrdinaryResources()
+        compose.runOnIdle { page.set(0); count.set(0); content.value = fixture() }
         awaitReader()
+        compose.waitUntil(15_000) {
+            js("document.images.length === 2 && Array.from(document.images).every(function(i){return i.complete && i.naturalWidth > 0;})") == true
+        }
+        assertEquals("A reopened article loads once into its new WebView", 2, htmlRequests.get())
         assertStyleMatches(applied, settled("reader-reopened"))
         openPanel()
         section("fonts")
@@ -437,7 +483,8 @@ class EInkReaderFormattingUiTest {
                         BackHandler { readerBacks.incrementAndGet(); visible.value = false }
                         Box(Modifier.fillMaxSize()) {
                             EInkPaginatedContent(
-                                modifier = Modifier.fillMaxWidth(viewportFraction.value).fillMaxHeight(viewportFraction.value).testTag("formatting-reader"),
+                                modifier = Modifier.fillMaxWidth(viewportFraction.value * toolbarWidthFraction.value)
+                                    .fillMaxHeight(viewportFraction.value).testTag("formatting-reader"),
                                 articleId = "ordinary-formatting-fixture", content = content.value,
                                 title = "A quiet afternoon · 安静的午后", feedName = "Native formatting fixture", publishedDate = Date(0),
                                 onPageChanged = { current, total -> page.set(current); count.set(total) },
@@ -473,10 +520,7 @@ class EInkReaderFormattingUiTest {
     }
 
     private fun openPanel() {
-        // Open the real reader bar by its middle tap zone, then the production Aa action.
-        if (compose.onAllNodesWithTag("reader_formatting_open").fetchSemanticsNodes().isEmpty()) {
-            compose.onNodeWithTag("formatting-reader").performTouchInput { click(Offset(width * .5f, height * .85f)) }
-        }
+        revealReaderControls()
         clickTag("reader_formatting_open")
         compose.onNodeWithTag("reader_formatting_panel").assertIsDisplayed()
         activeSection = "text"
@@ -486,6 +530,102 @@ class EInkReaderFormattingUiTest {
             capture("initial-panel-fixture")
             capturedInitialPanel = true
         }
+    }
+
+    private fun revealReaderControls() {
+        val toggle = compose.onNodeWithTag("reader_controls_toggle")
+            .assertContentDescriptionEquals("Reading controls").assertHasClickAction()
+        if (compose.onAllNodesWithTag("reader_formatting_open").fetchSemanticsNodes().isEmpty()) {
+            toggle.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Hidden"))
+                .performTouchInput { click(center) }
+            settleBarrier()
+        }
+        compose.onNodeWithTag("reader_controls_toggle").assert(
+            SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Shown"))
+        assertFormattingActionOutsideArticle()
+    }
+
+    private fun assertFormattingActionOutsideArticle() {
+        val action = compose.onNodeWithTag("reader_formatting_open").assertIsDisplayed().assertIsEnabled()
+        assertTouchTarget("reader_formatting_open")
+        assertFullyInside("reader_formatting_open", "formatting-reader")
+        assertOutsideArticle(action, "Aa")
+    }
+
+    private fun assertOutsideArticle(action: SemanticsNodeInteraction, label: String) {
+        val semantics = action.fetchSemanticsNode()
+        instrumentation.runOnMainSync {
+            val rootOrigin = IntArray(2)
+            (semantics.root as ViewRootForTest).view.getLocationOnScreen(rootOrigin)
+            val articleOrigin = IntArray(2)
+            val article = webView()
+            article.getLocationOnScreen(articleOrigin)
+            assertTrue("$label must be in the on-demand toolbar, never over the article, even at zero margins",
+                semantics.boundsInRoot.top + rootOrigin[1] >= articleOrigin[1] + article.height - 1)
+        }
+    }
+
+    private fun assertNoPermanentReaderSpacer() {
+        val reader = compose.onNodeWithTag("formatting-reader").fetchSemanticsNode()
+        instrumentation.runOnMainSync {
+            val rootOrigin = IntArray(2)
+            (reader.root as ViewRootForTest).view.getLocationOnScreen(rootOrigin)
+            val article = webView()
+            val origin = IntArray(2)
+            article.getLocationOnScreen(origin)
+            assertEquals("Hidden controls must not leave an article header spacer",
+                reader.boundsInRoot.top + rootOrigin[1], origin[1].toFloat(), 1f)
+            assertEquals("Hidden controls must not reserve side space", reader.boundsInRoot.width, article.width.toFloat(), 1f)
+            assertEquals("Only the existing 3 dp progress line remains below the article, not a hidden toolbar spacer",
+                reader.boundsInRoot.height - 3f * context.resources.displayMetrics.density, article.height.toFloat(), 1f)
+        }
+    }
+
+    private fun verifyNarrowToolbar() {
+        rememberAnchor()
+        revealReaderControls()
+        val full = compose.onNodeWithTag("formatting-reader").getUnclippedBoundsInRoot()
+        compose.runOnIdle { toolbarWidthFraction.value = 240f / (full.right.value - full.left.value) }
+        settled("narrow-toolbar")
+        val row = compose.onNodeWithTag("reader_secondary_controls").getUnclippedBoundsInRoot()
+        assertOutsideArticle(compose.onNodeWithTag("reader_secondary_controls"), "The complete secondary control row")
+        assertEquals("The toolbar regression exercises an actual 240 dp window", 240f, row.right.value - row.left.value, .5f)
+        val controls = listOf(
+            compose.onNodeWithContentDescription(context.getString(me.ash.reader.R.string.back)),
+            compose.onNodeWithText("⏮"), compose.onNodeWithText("A↓"), compose.onNodeWithText("A↑"),
+            compose.onNodeWithTag("reader_formatting_open"), compose.onNodeWithText("⏭"))
+        val bounds = controls.mapIndexed { index, control ->
+            control.assertIsDisplayed().assertIsEnabled()
+            assertTouchTarget(control, "secondary toolbar control $index")
+            control.getUnclippedBoundsInRoot().also { b ->
+                assertTrue("All six toolbar controls must remain fully inside the wrapping row",
+                    b.left.value >= row.left.value - .5f && b.right.value <= row.right.value + .5f &&
+                        b.top.value >= row.top.value - .5f && b.bottom.value <= row.bottom.value + .5f)
+            }
+        }
+        for (first in bounds.indices) for (second in first + 1 until bounds.size) {
+            val a = bounds[first]; val b = bounds[second]
+            assertTrue("Toolbar touch targets must not overlap after wrapping",
+                a.right.value <= b.left.value + .5f || b.right.value <= a.left.value + .5f ||
+                    a.bottom.value <= b.top.value + .5f || b.bottom.value <= a.top.value + .5f)
+        }
+        assertTrue("Six 48 dp controls must wrap rather than shrink in a 240 dp row", bounds.last().top.value > bounds.first().top.value)
+        assertFormattingActionOutsideArticle()
+        val currentPage = page.get()
+        controls.last().performTouchInput { click(center) }
+        settleBarrier()
+        assertEquals("The wrapped trailing physical target invokes only next article", 1, articleChanges.get())
+        assertEquals(currentPage, page.get())
+        controls[1].performTouchInput { click(center) }
+        settleBarrier()
+        assertEquals("The previous-article physical target is distinct", 0, articleChanges.get())
+        assertEquals(currentPage, page.get())
+        openPanel()
+        clickTag("reader_formatting_cancel")
+        panelClosed()
+        clickTag("reader_controls_toggle")
+        compose.runOnIdle { toolbarWidthFraction.value = 1f }
+        assertAnchor("narrow-toolbar-restored")
     }
 
     private fun section(name: String) { clickTag("reader_formatting_section_$name"); activeSection = name }
@@ -512,11 +652,15 @@ class EInkReaderFormattingUiTest {
     }
 
     private fun assertTouchTarget(tag: String) {
-        val node = compose.onNodeWithTag(tag).assertHasClickAction()
+        assertTouchTarget(compose.onNodeWithTag(tag), tag)
+    }
+
+    private fun assertTouchTarget(node: SemanticsNodeInteraction, label: String) {
+        node.assertHasClickAction()
         if (!node.fetchSemanticsNode().config.contains(SemanticsProperties.Disabled))
             node.assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Focused))
         val bounds = node.getUnclippedBoundsInRoot()
-        assertTrue("$tag must retain a 48 dp touch/focus target", bounds.right.value - bounds.left.value >= 47.5f &&
+        assertTrue("$label must retain a 48 dp touch/focus target", bounds.right.value - bounds.left.value >= 47.5f &&
             bounds.bottom.value - bounds.top.value >= 47.5f)
     }
 
@@ -579,11 +723,16 @@ class EInkReaderFormattingUiTest {
         val control = scrollToTag("reader_formatting_${name}_value")
         assertEquals("The advertised formatting endpoint remains available", expectedMaximum,
             control.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].range.endInclusive, .001f)
+        setControlValue(name, expectedMaximum)
+    }
+
+    private fun setControlValue(name: String, value: Float) {
+        val control = scrollToTag("reader_formatting_${name}_value")
         control.performSemanticsAction(SemanticsActions.SetProgress) { setProgress ->
-            assertTrue("The real accessible control must accept its maximum", setProgress(expectedMaximum))
+            assertTrue("The real accessible control must accept $name=$value", setProgress(value))
         }
         advanceComposeDraftClock()
-        assertEquals(expectedMaximum,
+        assertEquals(value,
             control.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current, .001f)
     }
 

@@ -9,9 +9,9 @@ const defaults = {fontSize:18,lineHeight:1,marginLeft:24,marginRight:24,marginTo
     letterSpacing:.5,wordSpacing:0,textDarkness:1,textWeight:400,paragraphGap:1,paragraphIndent:0,
     alignment:'start',imageContrast:1,imageGrayscale:false,fontCss:''};
 
-function fixture() {
+function fixture({layoutUnit=0, layoutScale=1, nodeCount=30}={}) {
     const listeners = new Map(), frameListeners = new Map(), fontListeners = new Map();
-    const variables = {}, queue = new Map(), calls = [], timers = new Map();
+    const variables = {}, queue = new Map(), calls = [], timers = new Map(), bodyChildren = [];
     let serial=0, prefix=0, glyphScale=1, fontScale=1;
     const context = {console, Math, Object, Array, isFinite, innerWidth:411.42, innerHeight:760,
         _inkreadInitialFormatting:{...defaults}, _inkreadGeneration:'unchanged-document',
@@ -23,10 +23,12 @@ function fixture() {
         Android:{onInitialPaginationReady:(...args)=>calls.push(['ready',...args]),onRepaginated:(...args)=>calls.push(['reflow',...args])}
     };
     const style = {};
-    const nodes=Array.from({length:30},(_,i)=>({data:`Paragraph${i}: `+'abcdefghijklmn 中文'.repeat(60),
+    const nodes=Array.from({length:nodeCount},(_,i)=>({data:`Paragraph${i}: `+'abcdefghijklmn 中文'.repeat(60),
         get length(){return this.data.length;}, parentElement:{tagName:'P'}}));
+    const layoutValue = value => layoutUnit ? Math.floor(parseFloat(value)*layoutScale/layoutUnit+1e-8)*layoutUnit/layoutScale : parseFloat(value);
+    const actualStride = () => layoutValue(style.width) + layoutValue(style.columnGap);
     function geometry(node, offset) {
-        const width = parseFloat(style.width), height = parseFloat(style.height);
+        const width = layoutValue(style.width), height = layoutValue(style.height);
         const charWidth = parseFloat(variables['--reader-font-size'])*fontScale*.5*glyphScale;
         const line = parseFloat(variables['--reader-font-size'])*fontScale*Number(variables['--reader-line-height']);
         const chars = Math.max(1,Math.floor(width/charWidth)), rows = Math.max(1,Math.floor(height/line));
@@ -34,20 +36,30 @@ function fixture() {
         for(let i=0;i<nodes.indexOf(node);i++) absolute+=nodes[i].length;
         const col=Math.floor(absolute/(chars*rows)), row=Math.floor(absolute/chars)%rows;
         const translation=Number((style.transform||'').match(/translateX\(-([0-9.]+)px\)/)?.[1]||0);
-        const left=parseFloat(style.left)+col*context._pageStride+(absolute%chars)*charWidth-translation;
+        const left=parseFloat(style.left)+col*actualStride()+(absolute%chars)*charWidth-translation;
         const top=parseFloat(style.top)+row*line;
         return {left,top,right:left+charWidth,bottom:top+line,width:charWidth,height:line};
     }
     const frame={style,addEventListener:(n,cb)=>frameListeners.set(n,cb),removeEventListener:n=>frameListeners.delete(n),
         querySelectorAll:()=>[],getBoundingClientRect:()=>({width:parseFloat(style.width),height:parseFloat(style.height)}),
         get scrollWidth(){
+            if(!nodes.length)return Math.round(layoutValue(style.width));
             const last=geometry(nodes.at(-1),nodes.at(-1).length-1);
             const translation=Number((style.transform||'').match(/translateX\(-([0-9.]+)px\)/)?.[1]||0);
-            const pages=Math.floor((last.left+translation-parseFloat(style.left))/context._pageStride)+1;
-            return Math.round(pages*context._pageStride-parseFloat(style.columnGap));
+            const pages=Math.floor((last.left+translation-parseFloat(style.left))/actualStride())+1;
+            return Math.round(pages*actualStride()-layoutValue(style.columnGap));
         }};
     const fontFaceStyle={textContent:''};
-    const document={readyState:'complete', documentElement:{style:{setProperty:(name,value)=>variables[name]=String(value)},
+    function createElement() {
+        const element={style:{},children:[],attributes:{},parentElement:null,
+            setAttribute:(name,value)=>element.attributes[name]=value,
+            appendChild:child=>{child.parentElement=element;element.children.push(child);},
+            remove:()=>{const index=bodyChildren.indexOf(element);if(index>=0)bodyChildren.splice(index,1);},
+            getBoundingClientRect:()=>({left:element.parentElement.children.indexOf(element)*(
+                layoutValue(element.parentElement.style.width)+layoutValue(element.parentElement.style.columnGap))})};
+        return element;
+    }
+    const document={readyState:'complete',createElement,body:{appendChild:child=>bodyChildren.push(child)}, documentElement:{style:{setProperty:(name,value)=>variables[name]=String(value)},
         getBoundingClientRect:()=>({width:context.innerWidth}),clientHeight:context.innerHeight},
         fonts:{ready:Promise.resolve(), addEventListener:(n,cb)=>fontListeners.set(n,cb),removeEventListener:n=>fontListeners.delete(n)},
         getElementById:id=>id==='eink-content'?frame:fontFaceStyle,
@@ -67,7 +79,7 @@ function fixture() {
     vm.createContext(context);vm.runInContext(runtime,context);
     async function flush() {await Promise.resolve();while(queue.size){const work=[...queue.values()];queue.clear();work.forEach(cb=>cb());await Promise.resolve();}}
     function fireResize(width,height){context.innerWidth=width;context.innerHeight=height;listeners.get('resize')();for(const cb of timers.values())cb();timers.clear();}
-    return {context,frame,nodes,calls,listeners,frameListeners,fontListeners,variables,flush,fireResize,
+    return {context,frame,nodes,calls,listeners,frameListeners,fontListeners,variables,bodyChildren,actualStride,flush,fireResize,
         setPrefix:n=>prefix=n,setGlyphScale:n=>glyphScale=n,setFontScale:n=>fontScale=n,
         anchor:()=>JSON.parse(JSON.stringify(context.InkReadFormatting.currentAnchor())),
         anchorRect:()=>{const a=context.InkReadFormatting.currentAnchor();return geometry(nodes[a.node],a.offset);}};
@@ -140,4 +152,57 @@ test('image controls are variables only, pagehide removes listeners and queued r
     assert.equal(f.variables['--reader-text-weight'],'700');
     f.frameListeners.get('load')();const count=f.calls.length;f.listeners.get('pagehide')();await f.flush();
     assert.equal(f.calls.length,count);assert.equal(f.frameListeners.size,0);assert.equal(f.fontListeners.size,0);assert.ok(!f.listeners.has('resize'));
+    assert.equal(f.bodyChildren.length,0,'The hidden column measurement is removed on pagehide');
+});
+
+for (const {name,layoutScale,width,height} of [
+    {name:'phone',layoutScale:1,width:220,height:276},
+    {name:'fractional phone',layoutScale:2.625,width:596/2.625,height:252}
+]) {
+    test(`${name}: measured column pitch prevents accumulated drift at maximum scaled formatting`,async()=>{
+        const f=fixture({layoutUnit:1/64,layoutScale});await f.flush();
+        f.context.goToPage(11);const anchor=f.anchor(),node=f.nodes[anchor.node],text=node.data;
+        f.context.InkReadFormatting.beginSession();
+        f.setFontScale(1.6);f.fireResize(width,height);await f.flush();
+        const requested={...defaults,fontSize:48,lineHeight:2.5,marginLeft:96,marginRight:96,marginTop:96,marginBottom:96};
+        f.context.InkReadFormatting.apply(requested);await f.flush();
+        assert.ok(f.context._currentPage>500,'Exercise hundreds of independently rounded column advances');
+        assert.deepEqual(f.anchor(),anchor);assertAnchorVisible(f);
+        assert.equal(f.context._pageStride,f.actualStride());
+        assert.notEqual(f.context._pageStride,width,'The actual column advance differs from the fractional viewport');
+        assert.equal(f.context._vw,width,'Do not round or change the actual viewport');
+        assert.ok(parseFloat(f.frame.style.height)>=200-1e-6);
+        assert.ok(parseFloat(f.frame.style.width)>=115.2-1e-6);
+        assert.equal(f.bodyChildren.length,1,'Reuse one hidden measurement outside the article');
+        assert.equal(f.bodyChildren[0].attributes['aria-hidden'],'true');
+        assert.equal(f.bodyChildren[0].attributes.inert,'');
+        assert.equal(f.nodes[anchor.node],node);assert.equal(node.data,text);
+        f.setPrefix(9000);f.frameListeners.get('load')();await f.flush();
+        assert.deepEqual(f.anchor(),anchor);assertAnchorVisible(f);
+        f.setGlyphScale(1.3);f.fontListeners.get('loadingdone')();await f.flush();
+        assert.deepEqual(f.anchor(),anchor);assertAnchorVisible(f);
+        f.fireResize(width+37.25,height+19);await f.flush();
+        assert.deepEqual(f.anchor(),anchor);assertAnchorVisible(f);
+        f.context.InkReadFormatting.endSession(true,defaults);f.fireResize(411.42,760);await f.flush();
+        assert.deepEqual(f.anchor(),anchor);assertAnchorVisible(f);
+        assert.equal(f.bodyChildren.length,1);
+    });
+}
+
+for (const nodeCount of [0,1]) test(`column measurement handles ${nodeCount ? 'one-glyph' : 'text-free'} single-page documents`,async()=>{
+    const f=fixture({layoutUnit:1/64,nodeCount});
+    if(nodeCount)f.nodes[0].data='A';
+    await f.flush();
+    f.fireResize(220,276);await f.flush();
+    f.setFontScale(1.6);
+    f.context.InkReadFormatting.apply({...defaults,fontSize:48,lineHeight:2.5,marginLeft:96,marginRight:96});await f.flush();
+    assert.equal(f.context._totalPages,1);
+    assert.equal(f.context._pageStride,f.actualStride());
+    assert.equal(f.nodes.length,nodeCount,'No synthetic source text or anchor is introduced');
+    if(nodeCount)assert.equal(f.nodes[0].data,'A');
+    assert.equal(f.bodyChildren[0].children.length,2);
+    assert.match(f.bodyChildren[0].style.cssText,/visibility:hidden/);
+    assert.match(f.bodyChildren[0].style.cssText,/pointer-events:none/);
+    assert.match(f.bodyChildren[0].style.cssText,/overflow:hidden/);
+    assert.equal(f.bodyChildren[0].children[1].style.breakBefore,'column');
 });

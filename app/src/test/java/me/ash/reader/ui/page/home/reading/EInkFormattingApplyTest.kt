@@ -3,6 +3,7 @@ package me.ash.reader.ui.page.home.reading
 import java.io.IOException
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -16,7 +17,10 @@ import org.junit.Test
 
 class EInkFormattingApplyTest {
     @Test(timeout = 10_000) fun workerCompletionReturnsToUiBeforeClosingPanel() {
-        Executors.newSingleThreadExecutor { Thread(it, "formatting-ui") }.asCoroutineDispatcher().use { ui ->
+        val uiThread = AtomicReference<Thread>()
+        Executors.newSingleThreadExecutor { task ->
+            Thread(task, "formatting-ui").also(uiThread::set)
+        }.asCoroutineDispatcher().use { ui ->
             val worker = Executors.newSingleThreadExecutor { Thread(it, "formatting-store") }
             try {
                 val saves = AtomicInteger()
@@ -33,12 +37,12 @@ class EInkFormattingApplyTest {
                         },
                         onSaved = {
                             assertSame(saved, it)
-                            assertEquals("formatting-ui", Thread.currentThread().name)
+                            assertSame(uiThread.get(), Thread.currentThread())
                             callbacks += "close"
                         },
                         onSaveFailed = { throw AssertionError("Successful commit must not report save failure", it) },
                         onFinished = {
-                            assertEquals("formatting-ui", Thread.currentThread().name)
+                            assertSame(uiThread.get(), Thread.currentThread())
                             callbacks += "finished"
                         },
                         uiDispatcher = ui,
@@ -53,7 +57,7 @@ class EInkFormattingApplyTest {
     }
 
     @Test(timeout = 10_000) fun failedSaveStaysOpenAndReportsFailureOnUi() =
-        withUiDispatcher { ui ->
+        withUiDispatcher { ui, uiThread ->
             val failure = IOException("storage unavailable")
             val callbacks = mutableListOf<String>()
             applyEInkFormatting(
@@ -61,11 +65,11 @@ class EInkFormattingApplyTest {
                 onSaved = { throw AssertionError("Failed persistence cannot close the panel") },
                 onSaveFailed = {
                     assertSame(failure, it)
-                    assertEquals("formatting-ui", Thread.currentThread().name)
+                    assertSame(uiThread.get(), Thread.currentThread())
                     callbacks += "error"
                 },
                 onFinished = {
-                    assertEquals("formatting-ui", Thread.currentThread().name)
+                    assertSame(uiThread.get(), Thread.currentThread())
                     callbacks += "finished"
                 },
                 uiDispatcher = ui,
@@ -74,7 +78,7 @@ class EInkFormattingApplyTest {
         }
 
     @Test(timeout = 10_000) fun cancellationPropagatesWithoutFalseSaveError() =
-        withUiDispatcher { ui ->
+        withUiDispatcher { ui, uiThread ->
             val cancellation = CancellationException("reader disposed")
             var finished = false
             try {
@@ -82,38 +86,52 @@ class EInkFormattingApplyTest {
                     persist = { throw cancellation },
                     onSaved = { throw AssertionError("Cancelled save cannot close the panel") },
                     onSaveFailed = { throw AssertionError("Cancellation is not a storage error") },
-                    onFinished = { finished = true },
+                    onFinished = { assertSame(uiThread.get(), Thread.currentThread()); finished = true },
                     uiDispatcher = ui,
                 )
                 throw AssertionError("Cancellation must propagate")
             } catch (actual: CancellationException) {
-                assertSame(cancellation, actual)
+                assertOriginalFailure(cancellation, actual)
             }
             assertTrue(finished)
         }
 
     @Test(timeout = 10_000) fun postCommitUiFailureIsNotReportedAsFailedPersistence() =
-        withUiDispatcher { ui ->
+        withUiDispatcher { ui, uiThread ->
             val failure = IllegalStateException("UI failure after commit")
             var finished = false
             try {
                 applyEInkFormatting(
                     persist = { "saved" },
-                    onSaved = { throw failure },
+                    onSaved = { assertSame(uiThread.get(), Thread.currentThread()); throw failure },
                     onSaveFailed = { throw AssertionError("The write already succeeded") },
-                    onFinished = { finished = true },
+                    onFinished = { assertSame(uiThread.get(), Thread.currentThread()); finished = true },
                     uiDispatcher = ui,
                 )
                 throw AssertionError("UI failure must propagate")
             } catch (actual: IllegalStateException) {
-                assertSame(failure, actual)
+                assertOriginalFailure(failure, actual)
             }
             assertTrue(finished)
         }
 
-    private fun withUiDispatcher(block: suspend (kotlinx.coroutines.CoroutineDispatcher) -> Unit) {
-        Executors.newSingleThreadExecutor { Thread(it, "formatting-ui") }.asCoroutineDispatcher().use { ui ->
-            runBlocking(Dispatchers.Unconfined) { block(ui) }
+    private fun assertOriginalFailure(expected: Throwable, actual: Throwable) {
+        // Coroutine debug stack-trace recovery copies exceptions at dispatcher
+        // boundaries while retaining the original as a cause. Check semantics
+        // AND original identity, not a debug-mode-dependent top-level identity.
+        assertEquals(expected.javaClass, actual.javaClass)
+        assertEquals(expected.message, actual.message)
+        assertTrue("Original failure must be preserved", generateSequence(actual) { it.cause }.any { it === expected })
+    }
+
+    private fun withUiDispatcher(block: suspend (kotlinx.coroutines.CoroutineDispatcher, AtomicReference<Thread>) -> Unit) {
+        val uiThread = AtomicReference<Thread>()
+        // Debug mode decorates thread names; the actual executor Thread is the
+        // invariant that matters for WebView confinement.
+        Executors.newSingleThreadExecutor { task ->
+            Thread(task, "formatting-ui").also(uiThread::set)
+        }.asCoroutineDispatcher().use { ui ->
+            runBlocking(Dispatchers.Unconfined) { block(ui, uiThread) }
         }
     }
 }

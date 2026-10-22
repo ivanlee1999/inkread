@@ -7,7 +7,7 @@ var _didFinishInitialPagination = false;
     var anchor = null, sessionAnchor = null, sessionOpen = false, revision = 0;
     var resizeTimer = 0, reflowFrame = 0, destroyed = false;
     var margins = { left: 0, right: 0, top: 0, bottom: 0 };
-    var fontCss = '', pendingAnchor = null;
+    var fontCss = '', pendingAnchor = null, columnProbe = null;
 
     function notify(name) {
         try {
@@ -95,7 +95,6 @@ var _didFinishInitialPagination = false;
         // Never round the CSS viewport: integer innerWidth drifts at 420dpi.
         _vw = document.documentElement.getBoundingClientRect().width || window.innerWidth || 360;
         var vh = window.innerHeight || document.documentElement.clientHeight || 640;
-        _pageStride = _vw;
         // Retain a usable line/column on tiny split views or while an IME is open.
         // Android WebView text zoom can make computed type larger than the
         // requested CSS value (e.g. 18px becomes 28.8px at system scale 1.6).
@@ -120,6 +119,35 @@ var _didFinishInitialPagination = false;
         frame.style.columnWidth = width + 'px';
         frame.style.columnGap = (margins.left + margins.right) + 'px';
         document.documentElement.style.setProperty('--reader-column-height', height + 'px');
+        measurePageStride();
+    }
+    function measurePageStride() {
+        // Blink quantizes column width and gap independently to layout units.
+        // Their actual sum can differ from the fractional viewport by a fraction
+        // of a pixel, accumulating into an entire wrong column in long articles.
+        // Measure two empty columns outside the immutable article. This works for
+        // text, unbroken code, image-only and single-page documents alike.
+        if (!columnProbe) {
+            columnProbe = document.createElement('div');
+            columnProbe.setAttribute('aria-hidden', 'true');
+            columnProbe.setAttribute('inert', '');
+            columnProbe.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none;left:0;top:0;' +
+                'height:1px;margin:0;padding:0;border:0;overflow:hidden;box-sizing:border-box;column-fill:auto;' +
+                'column-count:auto;direction:ltr;writing-mode:horizontal-tb;';
+            for (var i = 0; i < 2; i++) {
+                var marker = document.createElement('div');
+                marker.style.cssText = 'display:block;width:1px;height:1px;margin:0;padding:0;border:0;';
+                if (i) marker.style.breakBefore = 'column';
+                columnProbe.appendChild(marker);
+            }
+            document.body.appendChild(columnProbe);
+        }
+        columnProbe.style.width = frame.style.width;
+        columnProbe.style.columnWidth = frame.style.columnWidth;
+        columnProbe.style.columnGap = frame.style.columnGap;
+        var measured = columnProbe.children[1].getBoundingClientRect().left -
+            columnProbe.children[0].getBoundingClientRect().left;
+        _pageStride = isFinite(measured) && measured > 0 ? measured : _vw;
     }
     function recountPages() {
         var extent = frame.scrollWidth + margins.left + margins.right;
@@ -252,6 +280,7 @@ var _didFinishInitialPagination = false;
             frame.removeEventListener('error', scheduleReflow, true);
         }
         if (document.fonts) document.fonts.removeEventListener('loadingdone', scheduleReflow);
+        if (columnProbe) columnProbe.remove();
     }, { once: true });
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initialize, { once: true });
     else initialize();

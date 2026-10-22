@@ -73,8 +73,10 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import me.ash.reader.infrastructure.preference.LocalReaderFormatting
 import me.ash.reader.infrastructure.preference.LocalReaderFormattingLoadError
 import me.ash.reader.infrastructure.preference.LocalRetryReaderFormatting
@@ -331,7 +333,11 @@ fun EInkPaginatedContent(
             }
         }
     }
-    BackHandler(enabled = editingFormatting) { cancelFormatting() }
+    // Dismiss the innermost reader surface first. The toolbar's explicit Back
+    // action still navigates out; Android Back first restores an unobscured page.
+    BackHandler(enabled = editingFormatting || bottomBarVisible) {
+        if (editingFormatting) cancelFormatting() else bottomBarVisible = false
+    }
 
     fun nextPage() {
         if (currentEditingFormatting) return
@@ -585,25 +591,22 @@ fun EInkPaginatedContent(
                     )
                 }
 
-                if (!editingFormatting && isInitialPaginationReady) {
-                    Box(
-                        modifier = Modifier.align(Alignment.TopEnd).size(48.dp)
-                            .testTag("reader_formatting_open")
-                            .semantics { contentDescription = "Reading format" }
-                            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { openFormatting() },
-                        contentAlignment = Alignment.Center,
-                    ) { Text("Aa", color = Color.Black, fontSize = 18.sp) }
-                }
-
                 // Tap detector on bottom 15% of content area to toggle bottom bar
                 if (!editingFormatting) Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .fillMaxHeight(0.15f)
                         .align(Alignment.BottomCenter)
+                        .testTag("reader_controls_toggle")
+                        .semantics {
+                            contentDescription = "Reading controls"
+                            stateDescription = if (bottomBarVisible) "Shown" else "Hidden"
+                        }
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
+                            role = Role.Button,
+                            onClickLabel = if (bottomBarVisible) "Hide reading controls" else "Show reading controls",
                         ) {
                             bottomBarVisible = !bottomBarVisible
                         },
@@ -658,6 +661,7 @@ fun EInkPaginatedContent(
                     currentArticleIndex = currentArticleIndex,
                     totalArticleCount = totalArticleCount,
                     onBack = onBack,
+                    onFormattingClick = if (isInitialPaginationReady) ::openFormatting else null,
                 )
             }
             formattingDraft?.let { draft ->

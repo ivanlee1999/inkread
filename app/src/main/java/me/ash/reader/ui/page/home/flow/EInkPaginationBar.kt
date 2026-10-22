@@ -3,8 +3,13 @@
 package me.ash.reader.ui.page.home.flow
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -21,11 +26,16 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.res.stringResource
@@ -34,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import me.ash.reader.R
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 fun EInkPaginationBar(
     currentPage: Int,
     totalPages: Int,
@@ -52,6 +63,7 @@ fun EInkPaginationBar(
     currentArticleIndex: Int? = null,
     totalArticleCount: Int? = null,
     onBack: (() -> Unit)? = null,
+    onFormattingClick: (() -> Unit)? = null,
 ) {
     // Bottom bar: page controls, font size, article nav, progress
     Column(
@@ -102,11 +114,13 @@ fun EInkPaginationBar(
                 Icon(Icons.AutoMirrored.Rounded.ArrowForward, stringResource(R.string.next_page), tint = Color.Black)
             }
         }
-        if (onBack != null || onPrevArticle != null || onNextArticle != null || canDecreaseFontSize || canIncreaseFontSize) {
-            Row(
-                modifier = Modifier.fillMaxWidth().height(48.dp),
+        if (onBack != null || onPrevArticle != null || onNextArticle != null || canDecreaseFontSize || canIncreaseFontSize || onFormattingClick != null) {
+            // Keep all 48dp targets intact in narrow split-screen windows.
+            // Only this on-demand action row grows; reading space is never
+            // reserved when controls are hidden.
+            FlowRow(
+                modifier = Modifier.fillMaxWidth().testTag("reader_secondary_controls"),
                 horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
             ) {
                 if (onBack != null) {
                     IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
@@ -121,6 +135,20 @@ fun EInkPaginationBar(
                 }
                 IconButton(onClick = onIncreaseFontSize, enabled = canIncreaseFontSize, modifier = Modifier.size(48.dp)) {
                     Text("A↑", color = Color.Black)
+                }
+                if (onFormattingClick != null) {
+                    Box(
+                        modifier = Modifier.size(48.dp)
+                            .testTag("reader_formatting_open")
+                            .semantics { contentDescription = "Reading format" }
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                role = Role.Button,
+                                onClick = onFormattingClick,
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) { Text("Aa", color = Color.Black, fontSize = 18.sp) }
                 }
                 IconButton(onClick = { onNextArticle?.invoke() }, enabled = onNextArticle != null, modifier = Modifier.size(48.dp)) {
                     Text("⏭", color = Color.Black)
