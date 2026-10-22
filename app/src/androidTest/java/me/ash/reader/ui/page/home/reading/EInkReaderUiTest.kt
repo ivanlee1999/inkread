@@ -8,7 +8,8 @@ import androidx.test.runner.lifecycle.Stage
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import me.ash.reader.infrastructure.preference.LocalEInkEnglishFont
+import me.ash.reader.infrastructure.preference.LocalReaderFormatting
+import me.ash.reader.infrastructure.preference.ReaderFormatting
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.geometry.Offset
@@ -43,7 +44,7 @@ class EInkReaderUiTest {
             val page = AtomicInteger()
             val count = AtomicInteger()
             compose.setContent {
-                CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON, LocalEInkEnglishFont provides 1) {
+                CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON, LocalReaderFormatting provides ReaderFormatting.Default.copy(englishFont = 1)) {
                     AppTheme(useDarkTheme = false) {
                         EInkPaginatedContent(content = article.value, title = title.value,
                             feedName = "Regression fixture", author = "Fixture Reporter", publishedDate = Date(0),
@@ -56,7 +57,17 @@ class EInkReaderUiTest {
             instrumentation.runOnMainSync {
                 val activity = ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED).first()
                 val webView = findWebView(activity.window.decorView)!!
-                webView.evaluateJavascript("document.fonts.size > 0 && document.fonts.check('20px SourceSerif4')") { fontsReady.set(it) }
+                webView.evaluateJavascript("""
+                    (function() {
+                        var frame = document.getElementById('eink-content');
+                        var css = document.getElementById('eink-font-faces');
+                        return !!frame && !!css && css.textContent.includes('SourceSerif4-Regular.ttf') &&
+                            getComputedStyle(frame).fontFamily.replace(/["']/g, '').indexOf('InkReadLatin') === 0 &&
+                            Array.from(document.fonts).some(function(f) {
+                                return f.family.replace(/["']/g, '') === 'InkReadLatin' && f.status === 'loaded';
+                            }) && document.fonts.check('20px InkReadLatin', 'Readable Latin text');
+                    })()
+                """.trimIndent()) { fontsReady.set(it) }
             }
             compose.waitUntil(5_000) { fontsReady.get() == "true" }
             val metadata = AtomicReference<String>()
@@ -94,7 +105,8 @@ class EInkReaderUiTest {
         val navigations = AtomicInteger()
         val count = AtomicInteger()
         compose.setContent {
-            CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON) {
+            CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON,
+                LocalReaderFormatting provides ReaderFormatting.Default) {
                 AppTheme(useDarkTheme = false) {
                     EInkPaginatedContent(articleId = identity.value, content = "<p>Identical content</p>",
                         title = "Identical title", feedName = "Identical feed", publishedDate = Date(0),

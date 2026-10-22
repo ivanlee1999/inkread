@@ -85,8 +85,8 @@ jobs:
           cat > release-notes.md <<EOF_NOTES
           Built by GitHub Actions from commit ${{ github.sha }}.
 
-          InkRead $VERSION fixes cumulative horizontal page drift in the E-Ink article reader on fractional-density displays. Page translation now uses the actual fractional layout width instead of a rounded CSS viewport width, keeping left and right content margins aligned through repeated forward and backward turns. Existing newspaper layouts, reading controls, synchronization and saved preferences are unchanged. This bug-fix release does not include the separately evaluated performance optimizations.
+          InkRead $VERSION adds an in-article formatting panel to the E-Ink paginated reader. Preview English and Chinese font choices, font size, line height, four independent margins, paragraph spacing and indentation, text alignment, text darkness and weight, and separate image contrast/grayscale on the actual article. Apply saves the draft; Cancel restores the previous appearance, and Reset previews defaults before saving. Existing downloaded fonts work offline; additional catalog fonts require an explicit download. The scrolling reader keeps its existing controls and does not yet have this live-preview panel. This release retains the fractional-width page-centering correction and does not include the separately evaluated performance optimizations.
 
-          Uses the existing application ID and repository signing identity. No database migration is required. Native Android emulator tests cover narrow and tablet reading flows; physical BOOX refresh behavior still needs device verification.
+          Uses the existing application ID and repository signing identity. No database migration is required. The formatting controls adjust app-rendered content, not BOOX hardware gamma or refresh modes. Native Android emulator validation is required before publication; physical BOOX behavior remains unverified.
           EOF_NOTES
           gh release create "$TAG" --target "${{ github.sha }}" --title "InkRead $VERSION ($COMMIT)" --notes-file release-notes.md ./apk/*.apk ./apk/*.sha256

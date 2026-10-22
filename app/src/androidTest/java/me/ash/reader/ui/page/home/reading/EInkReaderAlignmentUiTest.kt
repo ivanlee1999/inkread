@@ -34,7 +34,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import me.ash.reader.infrastructure.android.dispatchEInkVolumeKey
 import me.ash.reader.infrastructure.preference.EInkModePreference
-import me.ash.reader.infrastructure.preference.LocalEInkFontSize
+import me.ash.reader.infrastructure.preference.LocalReaderFormatting
+import me.ash.reader.infrastructure.preference.ReaderFormatting
 import me.ash.reader.infrastructure.preference.LocalEInkMode
 import me.ash.reader.ui.page.home.NativePageDensityCapture
 import me.ash.reader.ui.theme.AppTheme
@@ -72,7 +73,7 @@ class EInkReaderAlignmentUiTest {
     @Test fun cjkPagesStayCenteredThroughRepeatedTurnsImagesAndReflow() {
         compose.setContent {
             CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON,
-                LocalEInkFontSize provides fontSize.value) {
+                LocalReaderFormatting provides ReaderFormatting.Default.copy(fontSize = fontSize.value)) {
                 AppTheme(useDarkTheme = false) {
                     Box(Modifier.fillMaxSize()) {
                         EInkPaginatedContent(
@@ -118,8 +119,8 @@ class EInkReaderAlignmentUiTest {
             repeat(12) { turn(forward = false, volume = true); record("image-back-$it") }
             traverse("volume-after-image", volume = true)
 
-            // Font preference reloads the actual production document; resizing reflows the same
-            // WebView. Both must keep the full page frame centered, not center-align paragraphs.
+            // Font preference and resizing reflow the same production document. Both must
+            // keep the full page frame centered, not center-align paragraphs.
             compose.runOnIdle { page.set(0); count.set(0); fontSize.value = 32 }
             awaitFirstPage()
             traverse("large-font", volume = true)
@@ -298,8 +299,8 @@ class EInkReaderAlignmentUiTest {
         instrumentation.runOnMainSync {
             webView().evaluateJavascript("""
                 (function() {
-                    if (!document.body || !document.querySelector('h1') || typeof _pageStride === 'undefined') return null;
-                    var body = document.body, css = getComputedStyle(body);
+                    if (!document.body || !document.querySelector('h1') || !document.getElementById('eink-content') || typeof _pageStride === 'undefined') return null;
+                    var body = document.body, frame = document.getElementById('eink-content'), css = getComputedStyle(frame);
                     var width = document.documentElement.getBoundingClientRect().width;
                     function visible(r) { return r.width > 0 && r.height > 0 && r.right > 1 && r.left < width - 1; }
                     function rect(r) { return {left:r.left, right:r.right, top:r.top, bottom:r.bottom, width:r.width}; }
@@ -316,7 +317,8 @@ class EInkReaderAlignmentUiTest {
                     var ordinary = document.getElementById('ordinary-image');
                     return JSON.stringify({viewportWidth:width, innerWidth:innerWidth, devicePixelRatio:devicePixelRatio,
                         bodyWidth:body.getBoundingClientRect().width, columnWidth:css.columnWidth, columnGap:css.columnGap,
-                        paddingLeft:parseFloat(css.paddingLeft), paddingRight:parseFloat(css.paddingRight),
+                        paddingLeft:parseFloat(css.left), paddingRight:width-parseFloat(css.left)-parseFloat(css.width),
+                        contentFrameWidth:parseFloat(css.width), contentFrameHeight:parseFloat(css.height),
                         scrollX:scrollX, scrollY:scrollY, scrollWidth:body.scrollWidth, stride:_pageStride,
                         currentPage:_currentPage, totalPages:_totalPages, ready:_didFinishInitialPagination, transform:css.transform,
                         fontSize:css.fontSize, title:document.querySelector('h1').textContent,

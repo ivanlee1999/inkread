@@ -335,6 +335,7 @@ class ReaderBackNavigationUiTest {
         CompositionLocalProvider(
             LocalEInkMode provides EInkModePreference.ON,
             LocalEInkEnglishFont provides 0,
+            LocalReaderFormatting provides ReaderFormatting.Default,
             LocalFlowArticleListImage provides FlowArticleListImagePreference.OFF,
             LocalReadingColumns provides ReadingColumnsPreference.Auto,
             LocalReadingLayoutPreset provides ReadingLayoutPresetPreference.Auto,
