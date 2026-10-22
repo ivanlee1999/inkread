@@ -3,6 +3,9 @@ package me.ash.reader.infrastructure.library
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancelAndJoin
@@ -303,6 +306,165 @@ class SavedLibraryRepositoryRegressionTest {
         assertEquals("A missing body and failed fetch must not be labelled offline-ready", SavedContentState.FAILED, repository.observeItem(id).first()!!.contentState)
     }
 
+    @Test fun alreadyCancelledExtractionCannotStartANewFileCommitThroughAnUncontendedLock() = runRepositoryTest {
+        val fixture = Fixture()
+        val repository = fixture.repository(Dispatchers.Unconfined)
+        val id = repository.saveUrl(URL, "Original title")
+        lateinit var operation: Job
+        fixture.downloader.extract = { _, _ ->
+            operation.cancel()
+            // A download may finish at the same time its caller is cancelled, and
+            // return without another suspension before the publication lock.
+            article(HTML)
+        }
+        operation = launch(Dispatchers.Unconfined, start = CoroutineStart.LAZY) {
+            repository.download(id, fixture.scheduler.latest(id).token)
+        }
+        operation.start()
+        operation.join()
+        val row = fixture.dao.get(id)!!
+        assertTrue(operation.isCancelled)
+        assertEquals(SavedContentState.QUEUED.name, row.contentState)
+        assertEquals("Original title", row.title)
+        assertNull(row.contentRevision)
+        assertNull(row.fileRevision)
+        assertTrue(fixture.root.walkTopDown().none { it.isFile })
+    }
+
+    @Test fun cancellationAfterSnapshotInsertCannotDeleteItsCommittedBodyOrSkipImageScheduling() = runRepositoryTest {
+        val fixture = Fixture()
+        val repository = fixture.repository(Dispatchers.Unconfined)
+        lateinit var operation: Job
+        var returned = false
+        fixture.dao.afterInsert = { operation.cancel() }
+        operation = launch(Dispatchers.Unconfined, start = CoroutineStart.LAZY) {
+            repository.saveRssSnapshot(URL, "Snapshot", null, null, "$HTML<img src=\"https://example.test/photo.png\">")
+            returned = true
+        }
+        operation.start()
+        operation.join()
+        val row = fixture.dao.all().single()
+        assertTrue(operation.isCancelled)
+        assertFalse("A completed critical section must still propagate caller cancellation", returned)
+        assertTrue(java.io.File(fixture.root, "${row.id}/${row.fileRevision}/content.html").isFile)
+        assertEquals(row.downloadToken, fixture.scheduler.latest(row.id).token)
+        assertNotNull(repository.loadDocument(row.id))
+    }
+
+    @Test fun cancellationAfterUrlInsertCannotStrandTheCommittedDownloadToken() = runRepositoryTest {
+        val fixture = Fixture()
+        val repository = fixture.repository(Dispatchers.Unconfined)
+        lateinit var operation: Job
+        fixture.dao.afterInsert = { operation.cancel() }
+        operation = launch(Dispatchers.Unconfined, start = CoroutineStart.LAZY) { repository.saveUrl(URL) }
+        operation.start()
+        operation.join()
+        val row = fixture.dao.all().single()
+        assertTrue(operation.isCancelled)
+        assertEquals(row.downloadToken, fixture.scheduler.latest(row.id).token)
+    }
+
+    @Test fun cancellationAfterRetryUpdateStillSchedulesTheNewGeneration() = runRepositoryTest {
+        val fixture = Fixture()
+        val repository = fixture.repository(Dispatchers.Unconfined)
+        val id = repository.saveUrl(URL)
+        val previous = fixture.scheduler.latest(id).token
+        lateinit var operation: Job
+        fixture.dao.afterUpdate = { if (it.downloadToken != previous) operation.cancel() }
+        operation = launch(Dispatchers.Unconfined, start = CoroutineStart.LAZY) { repository.retry(id) }
+        operation.start()
+        operation.join()
+        val row = fixture.dao.get(id)!!
+        assertTrue(operation.isCancelled)
+        assertNotEquals(previous, row.downloadToken)
+        assertEquals(row.downloadToken, fixture.scheduler.latest(id).token)
+        assertTrue(fixture.scheduler.latest(id).replace)
+    }
+
+    @Test fun cancellationAfterDownloadedTextUpdateCannotDiscardThePublishedRevision() = runRepositoryTest {
+        val fixture = Fixture()
+        val repository = fixture.repository(Dispatchers.Unconfined)
+        val id = repository.saveUrl(URL)
+        lateinit var operation: Job
+        fixture.dao.afterUpdate = { if (it.fileRevision != null) operation.cancel() }
+        operation = launch(Dispatchers.Unconfined, start = CoroutineStart.LAZY) {
+            repository.download(id, fixture.scheduler.latest(id).token)
+        }
+        operation.start()
+        operation.join()
+        val row = fixture.dao.get(id)!!
+        assertTrue(operation.isCancelled)
+        assertTrue(java.io.File(fixture.root, "$id/${row.fileRevision}/content.html").isFile)
+        assertNotNull(repository.loadDocument(id))
+    }
+
+    @Test fun cancellationAfterImageRevisionUpdateCannotDiscardPublishedTextOrImages() = runRepositoryTest {
+        val fixture = Fixture()
+        val repository = fixture.repository(Dispatchers.Unconfined)
+        fixture.downloader.image = { java.util.Base64.getDecoder().decode(TINY_PNG) }
+        val id = repository.saveRssSnapshot(URL, "Snapshot", null, null, "$HTML<img src=\"https://example.test/photo.png\">")
+        val before = repository.loadDocument(id)!!
+        lateinit var operation: Job
+        fixture.dao.afterUpdate = { if (it.thumbnailPath != null && it.downloadToken == null) operation.cancel() }
+        operation = launch(Dispatchers.Unconfined, start = CoroutineStart.LAZY) {
+            repository.download(id, fixture.scheduler.latest(id).token)
+        }
+        operation.start()
+        operation.join()
+        val row = fixture.dao.get(id)!!
+        assertTrue(operation.isCancelled)
+        assertTrue(java.io.File(fixture.root, "$id/${row.fileRevision}/content.html").isFile)
+        assertTrue(java.io.File(row.thumbnailPath!!).isFile)
+        val after = repository.loadDocument(id)!!
+        assertEquals(before.contentRevision, after.contentRevision)
+        assertEquals(SavedImageState.READY, after.item.imageState)
+    }
+
+    @Test fun cancellationAfterDeleteStillCancelsWorkAndRemovesOwnedFiles() = runRepositoryTest {
+        val fixture = Fixture()
+        val repository = fixture.repository(Dispatchers.Unconfined)
+        val id = repository.saveRssSnapshot(URL, "Snapshot", null, null, HTML)
+        lateinit var operation: Job
+        fixture.dao.afterDelete = { operation.cancel() }
+        operation = launch(Dispatchers.Unconfined, start = CoroutineStart.LAZY) { repository.remove(id) }
+        operation.start()
+        operation.join()
+        assertTrue(operation.isCancelled)
+        assertNull(fixture.dao.get(id))
+        assertFalse(java.io.File(fixture.root, id).exists())
+        assertTrue(id in fixture.scheduler.cancelled)
+    }
+
+    @Test fun failedSnapshotInsertStillRollsBackItsUnpublishedFiles() = runRepositoryTest {
+        val fixture = Fixture()
+        val repository = fixture.repository(Dispatchers.Unconfined)
+        fixture.dao.beforeInsert = { throw IOException("Insert failed before commit") }
+        val result = runCatching { repository.saveRssSnapshot(URL, "Snapshot", null, null, HTML) }
+        assertTrue(result.exceptionOrNull() is IOException)
+        assertTrue(fixture.dao.all().isEmpty())
+        assertTrue(fixture.root.listFiles().isNullOrEmpty())
+        assertTrue(fixture.scheduler.requests.isEmpty())
+    }
+
+    @Test fun failedImageRevisionUpdateRetainsThePreviousBodyAndDiscardsUnpublishedFiles() = runRepositoryTest {
+        val fixture = Fixture()
+        val repository = fixture.repository(Dispatchers.Unconfined)
+        fixture.downloader.image = { java.util.Base64.getDecoder().decode(TINY_PNG) }
+        val id = repository.saveRssSnapshot(URL, "Snapshot", null, null, "$HTML<img src=\"https://example.test/photo.png\">")
+        val before = repository.loadDocument(id)!!
+        val previousRevision = fixture.dao.get(id)!!.fileRevision
+        fixture.dao.beforeUpdate = {
+            if (it.thumbnailPath != null && it.downloadToken == null) throw IOException("Update failed before commit")
+        }
+        repository.download(id, fixture.scheduler.latest(id).token)
+        val after = repository.loadDocument(id)!!
+        assertEquals(before.html, after.html)
+        assertEquals(before.contentRevision, after.contentRevision)
+        assertEquals(previousRevision, fixture.dao.get(id)!!.fileRevision)
+        assertEquals(SavedImageState.FAILED, after.item.imageState)
+        assertEquals(listOf("content.html"), java.io.File(fixture.root, id).walkTopDown().filter { it.isFile }.map { it.name }.toList())
+    }
+
     private fun runRepositoryTest(block: suspend CoroutineScope.() -> Unit) = runBlocking {
         withTimeout(10_000) { block() }
     }
@@ -337,6 +499,11 @@ class SavedLibraryRepositoryRegressionTest {
     /** Mirrors Room IGNORE/UPDATE-only semantics; never an upsert that masks resurrection bugs. */
     private class MemoryDao : SavedLibraryDao {
         private val rows = MutableStateFlow<List<SavedLibraryEntity>>(emptyList())
+        var beforeInsert: (() -> Unit)? = null
+        var beforeUpdate: ((SavedLibraryEntity) -> Unit)? = null
+        var afterInsert: (() -> Unit)? = null
+        var afterUpdate: ((SavedLibraryEntity) -> Unit)? = null
+        var afterDelete: (() -> Unit)? = null
         override fun observeItems(location: String?): Flow<List<SavedLibraryEntity>> = rows.map { items ->
             items.filter { location == null || it.location == location }
                 .sortedWith(compareByDescending<SavedLibraryEntity> { it.savedAt }.thenByDescending { it.id })
@@ -345,20 +512,35 @@ class SavedLibraryRepositoryRegressionTest {
         override suspend fun get(id: String) = rows.value.find { it.id == id }
         override suspend fun findUrl(url: String) = rows.value.find { it.normalizedUrl == url }
         override suspend fun all() = rows.value.toList()
-        override suspend fun insert(item: SavedLibraryEntity): Long = synchronized(this) {
-            if (rows.value.any { it.id == item.id || it.normalizedUrl == item.normalizedUrl }) -1L
-            else { rows.value = rows.value + item; 1L }
+        override suspend fun insert(item: SavedLibraryEntity): Long {
+            beforeInsert?.invoke()
+            val result = synchronized(this) {
+                if (rows.value.any { it.id == item.id || it.normalizedUrl == item.normalizedUrl }) -1L
+                else { rows.value = rows.value + item; 1L }
+            }
+            // Model Room's commit followed by suspended-result dispatch. Cancellation
+            // at this point cannot be treated as evidence that the write rolled back.
+            afterInsert?.let { callback -> withContext(Dispatchers.Default) { callback() } }
+            return result
         }
-        override suspend fun update(item: SavedLibraryEntity): Int = synchronized(this) {
-            if (rows.value.none { it.id == item.id }) 0
-            else { rows.value = rows.value.map { if (it.id == item.id) item else it }; 1 }
+        override suspend fun update(item: SavedLibraryEntity): Int {
+            beforeUpdate?.invoke(item)
+            val result = synchronized(this) {
+                if (rows.value.none { it.id == item.id }) 0
+                else { rows.value = rows.value.map { if (it.id == item.id) item else it }; 1 }
+            }
+            afterUpdate?.let { callback -> withContext(Dispatchers.Default) { callback(item) } }
+            return result
         }
         override suspend fun move(id: String, location: String) = mutate(id) { it.copy(location = location) }
         override suspend fun setRead(id: String, value: Boolean) = mutate(id) { it.copy(isRead = value) }
         override suspend fun saveAnchor(id: String, revision: String, anchor: String) = mutate(id) {
             if (it.contentRevision == revision) it.copy(readingAnchor = anchor) else it
         }
-        override suspend fun delete(id: String) { synchronized(this) { rows.value = rows.value.filterNot { it.id == id } } }
+        override suspend fun delete(id: String) {
+            synchronized(this) { rows.value = rows.value.filterNot { it.id == id } }
+            afterDelete?.let { callback -> withContext(Dispatchers.Default) { callback() } }
+        }
         private fun mutate(id: String, transform: (SavedLibraryEntity) -> SavedLibraryEntity) {
             synchronized(this) { rows.value = rows.value.map { if (it.id == id) transform(it) else it } }
         }

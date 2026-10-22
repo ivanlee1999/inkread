@@ -6,10 +6,16 @@ import java.io.File
 import java.io.IOException
 import java.util.Date
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -155,8 +161,160 @@ class SavedLibraryRoomPersistenceTest {
         }
     }
 
+    @Test fun cancellationAfterRealSnapshotInsertKeepsCommittedBodyReadableAcrossReopen() = runBlocking {
+        withTimeout(20_000) {
+            val dao = CancelAfterCommitDao(database.savedLibraryDao(), cancelAfterInsert = true)
+            val original = repository(dao)
+            assertCallerCancelledAtCommit(dao) {
+                original.saveRssSnapshot(URL, "Durable article", "Ada", "Test publication", HTML)
+            }
+
+            val committed = database.savedLibraryDao().all().single()
+            assertEquals(SavedContentState.READY.name, committed.contentState)
+            assertEquals(SavedImageState.NONE.name, committed.imageState)
+            val revision = requireNotNull(committed.fileRevision)
+            val expected = SavedDocumentImages.rewrite(HTML, URL, emptyMap())
+            // Read files directly first: loadDocument must not repair or hide a dangling Room row.
+            assertEquals(expected, SavedLibraryFiles(root).read(committed.id, revision))
+            assertEquals(expected, requireNotNull(original.loadDocument(committed.id)).html)
+
+            database.close()
+            database = openDatabase()
+            val reopened = requireNotNull(repository().loadDocument(committed.id))
+            assertEquals(expected, reopened.html)
+            assertEquals(committed.contentRevision, reopened.contentRevision)
+            assertEquals(SavedContentState.READY, reopened.item.contentState)
+        }
+    }
+
+    @Test fun cancellationAfterRealUrlInsertStillEnqueuesCommittedTokenBeforeRecovery() = runBlocking {
+        withTimeout(20_000) {
+            val dao = CancelAfterCommitDao(database.savedLibraryDao(), cancelAfterInsert = true)
+            val original = repository(dao)
+            assertCallerCancelledAtCommit(dao) { original.saveUrl(URL, "Queued article") }
+
+            val committed = database.savedLibraryDao().all().single()
+            assertEquals(SavedContentState.QUEUED.name, committed.contentState)
+            val token = requireNotNull(committed.downloadToken)
+            // No observe/reopen recovery may mask an interrupted insert-to-enqueue boundary.
+            assertEquals(listOf(committed.id to token), scheduler.requests.toList())
+            assertNull(committed.contentRevision)
+
+            database.close()
+            database = openDatabase()
+            assertEquals(committed, database.savedLibraryDao().all().single())
+            assertEquals(listOf(committed.id to token), scheduler.requests.toList())
+        }
+    }
+
+    @Test fun cancellationAfterRealTextRevisionUpdateKeepsPublishedBodyAcrossReopen() = runBlocking {
+        withTimeout(20_000) {
+            val dao = CancelAfterCommitDao(database.savedLibraryDao(), cancelAfterUpdate = { it.contentRevision != null })
+            val original = repository(dao)
+            val id = original.saveUrl(URL)
+            val token = scheduler.requests.single().second
+            assertCallerCancelledAtCommit(dao) { original.download(id, token) }
+
+            val committed = requireNotNull(database.savedLibraryDao().get(id))
+            assertEquals(SavedContentState.READY.name, committed.contentState)
+            val revision = requireNotNull(committed.fileRevision)
+            val expected = SavedDocumentImages.rewrite(HTML, URL, emptyMap())
+            assertEquals(expected, SavedLibraryFiles(root).read(id, revision))
+            assertEquals(expected, requireNotNull(original.loadDocument(id)).html)
+
+            database.close()
+            database = openDatabase()
+            val reopened = requireNotNull(repository().loadDocument(id))
+            assertEquals(expected, reopened.html)
+            assertEquals(committed.contentRevision, reopened.contentRevision)
+            assertEquals(SavedContentState.READY, reopened.item.contentState)
+        }
+    }
+
+    @Test fun cancellationAfterRealImageRevisionUpdateKeepsPublishedBodyAndImageAcrossReopen() = runBlocking {
+        withTimeout(20_000) {
+            val imageBytes = InstrumentationRegistry.getInstrumentation().context.assets.open("nasa-earthrise.jpg").use { it.readBytes() }
+            downloader.imageBytes = imageBytes
+            val seed = repository()
+            val id = seed.saveRssSnapshot(URL, "Durable article", "Ada", "Test publication",
+                HTML + "<img src=\"https://example.test/nasa-earthrise.jpg\">")
+            val before = requireNotNull(database.savedLibraryDao().get(id))
+            val dao = CancelAfterCommitDao(database.savedLibraryDao(), cancelAfterUpdate = { it.fileRevision != before.fileRevision })
+            val original = repository(dao)
+            assertCallerCancelledAtCommit(dao) { original.download(id, requireNotNull(before.downloadToken)) }
+
+            val committed = requireNotNull(database.savedLibraryDao().get(id))
+            assertEquals(SavedContentState.READY.name, committed.contentState)
+            assertEquals(SavedImageState.READY.name, committed.imageState)
+            assertEquals(before.contentRevision, committed.contentRevision)
+            assertNotEquals(before.fileRevision, committed.fileRevision)
+            assertNull(committed.downloadToken)
+            val revision = requireNotNull(committed.fileRevision)
+            val photo = File(requireNotNull(committed.thumbnailPath))
+            assertTrue(photo.canonicalPath.startsWith(root.canonicalPath + File.separator))
+            assertArrayEquals(imageBytes, photo.readBytes())
+            val html = requireNotNull(SavedLibraryFiles(root).read(id, revision))
+            assertTrue(html.contains(photo.toURI().toString()))
+            assertEquals(html, requireNotNull(original.loadDocument(id)).html)
+
+            database.close()
+            database = openDatabase()
+            downloader.imageBytes = null
+            val reopened = requireNotNull(repository().loadDocument(id))
+            assertEquals(html, reopened.html)
+            assertEquals(before.contentRevision, reopened.contentRevision)
+            assertEquals(SavedImageState.READY, reopened.item.imageState)
+            assertEquals(photo.absolutePath, reopened.item.thumbnailPath)
+            assertArrayEquals(imageBytes, photo.readBytes())
+        }
+    }
+
     private fun openDatabase() = Room.databaseBuilder(context, SavedLibraryDatabase::class.java, name).build()
-    private fun repository() = DefaultSavedLibraryRepository(database.savedLibraryDao(), SavedLibraryFiles(root), downloader, scheduler)
+    private fun repository(dao: SavedLibraryDao = database.savedLibraryDao()) =
+        DefaultSavedLibraryRepository(dao, SavedLibraryFiles(root), downloader, scheduler)
+
+    private suspend fun assertCallerCancelledAtCommit(dao: CancelAfterCommitDao, action: suspend () -> Unit) = coroutineScope {
+        val caller = launch(Dispatchers.Default, start = CoroutineStart.LAZY) {
+            action()
+            fail("Repository must not return success to a cancelled caller")
+        }
+        dao.caller = caller
+        caller.start()
+        caller.join()
+        assertEquals("The real Room commit must reach the cancellation boundary", 1, dao.cancellationCount)
+        assertTrue("The caller must still observe cancellation", caller.isCancelled)
+    }
+
+    /** Cancel only after Room has committed, before delivering the suspending DAO result. */
+    private class CancelAfterCommitDao(
+        private val delegate: SavedLibraryDao,
+        private val cancelAfterInsert: Boolean = false,
+        private val cancelAfterUpdate: (SavedLibraryEntity) -> Boolean = { false },
+    ) : SavedLibraryDao by delegate {
+        lateinit var caller: Job
+        var cancellationCount = 0
+            private set
+
+        override suspend fun insert(item: SavedLibraryEntity): Long {
+            val result = delegate.insert(item)
+            if (result != -1L && cancelAfterInsert) cancelCaller()
+            return result
+        }
+
+        override suspend fun update(item: SavedLibraryEntity): Int {
+            val result = delegate.update(item)
+            if (result > 0 && cancelAfterUpdate(item)) cancelCaller()
+            return result
+        }
+
+        private suspend fun cancelCaller() {
+            if (cancellationCount != 0) return
+            cancellationCount++
+            caller.cancel(CancellationException("Test cancellation after a committed Room write"))
+            // A protected commit may finish, but a cancellable DAO delivery throws here.
+            currentCoroutineContext().ensureActive()
+        }
+    }
 
     private class ControlledDownloader : SavedArticleDownloader {
         var extract: suspend (String, String?) -> SavedExtractedArticle = { _, _ -> article() }

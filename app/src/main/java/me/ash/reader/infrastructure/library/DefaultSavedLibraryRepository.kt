@@ -74,15 +74,15 @@ internal class DefaultSavedLibraryRepository(
     override suspend fun saveUrl(url: String, titleHint: String?): String = withContext(ioDispatcher) {
         val normalized = normalizedSavedUrl(url)
         require(publicArticleUrl(normalized) != null) { "Use a public HTTP or HTTPS article URL" }
-        mutations.withLock {
+        commitMutation {
             recoverLocked()
-            dao.findUrl(normalized)?.let { return@withLock it.id }
+            dao.findUrl(normalized)?.let { return@commitMutation it.id }
             val item = SavedLibraryEntity(
                 id = newId(), normalizedUrl = normalized, url = normalized,
                 title = titleHint?.trim()?.takeIf { it.isNotBlank() }?.take(512) ?: URI(normalized).host,
                 sourceName = URI(normalized).host, savedAt = now(), downloadToken = newId(),
             )
-            if (dao.insert(item) == -1L) return@withLock requireNotNull(dao.findUrl(normalized)).id
+            if (dao.insert(item) == -1L) return@commitMutation requireNotNull(dao.findUrl(normalized)).id
             scheduleLocked(item)
             item.id
         }
@@ -93,9 +93,9 @@ internal class DefaultSavedLibraryRepository(
         return withContext(ioDispatcher) {
             val normalized = normalizedSavedUrl(url)
             require(html.toByteArray(Charsets.UTF_8).size.toLong() <= files.limits.maxHtmlBytes) { "Article text exceeds the saved-content limit" }
-            mutations.withLock {
+            commitMutation {
                 recoverLocked()
-                dao.findUrl(normalized)?.let { return@withLock it.id }
+                dao.findUrl(normalized)?.let { return@commitMutation it.id }
                 val id = newId()
                 val prepared = SavedDocumentImages.rewrite(html, normalized, emptyMap())
                 val hasImages = SavedDocumentImages.sources(prepared, normalized).isNotEmpty()
@@ -112,7 +112,7 @@ internal class DefaultSavedLibraryRepository(
                 try {
                     if (dao.insert(item) == -1L) {
                         files.remove(id)
-                        return@withLock requireNotNull(dao.findUrl(normalized)).id
+                        return@commitMutation requireNotNull(dao.findUrl(normalized)).id
                     }
                 } catch (error: Exception) { files.remove(id); throw error }
                 scheduleLocked(item)
@@ -157,12 +157,12 @@ internal class DefaultSavedLibraryRepository(
         mutations.withLock { dao.saveAnchor(id, contentRevision, anchorJson) }
     }
     override suspend fun retry(id: String) = withContext(ioDispatcher) {
-        mutations.withLock {
+        commitMutation {
             recoverLocked()
-            val current = dao.get(id) ?: return@withLock
+            val current = dao.get(id) ?: return@commitMutation
             // A successful complete download needs no new request or revision.
             if (current.contentState == SavedContentState.READY.name &&
-                current.imageState in setOf(SavedImageState.NONE.name, SavedImageState.READY.name)) return@withLock
+                current.imageState in setOf(SavedImageState.NONE.name, SavedImageState.READY.name)) return@commitMutation
             val next = current.copy(downloadToken = newId(), lastError = null,
                 contentState = if (current.contentRevision == null) SavedContentState.QUEUED.name else SavedContentState.READY.name,
                 imageState = SavedImageState.PENDING.name)
@@ -171,8 +171,8 @@ internal class DefaultSavedLibraryRepository(
         }
     }
     override suspend fun remove(id: String) = withContext(ioDispatcher) {
-        mutations.withLock {
-            if (dao.get(id) == null) return@withLock
+        commitMutation {
+            if (dao.get(id) == null) return@commitMutation
             // Invalidate first. A late worker can only update an existing matching token, never insert.
             dao.delete(id)
             try { scheduler.cancel(id) } catch (_: Exception) { /* Token is already invalidated. */ }
@@ -205,8 +205,8 @@ internal class DefaultSavedLibraryRepository(
                     }
                     if (!stillCurrent) return@withPermit
                     val extracted = downloader.extract(initial.url, initial.title)
-                    html = mutations.withLock {
-                        val current = matching(id, token) ?: return@withLock null
+                    html = commitMutation {
+                        val current = matching(id, token) ?: return@commitMutation null
                         val prepared = SavedDocumentImages.rewrite(extracted.html, current.url, emptyMap())
                         val revision = files.commit(id) { prepared }
                         try {
@@ -215,7 +215,7 @@ internal class DefaultSavedLibraryRepository(
                                 contentRevision = revision.revision, fileRevision = revision.revision, readingAnchor = null,
                                 contentState = SavedContentState.READY.name, imageState = SavedImageState.PENDING.name,
                                 thumbnailPath = null, lastError = null)
-                            if (dao.update(updated) == 0) { files.discard(id, revision.revision); return@withLock null }
+                            if (dao.update(updated) == 0) { files.discard(id, revision.revision); return@commitMutation null }
                         } catch (error: Exception) { files.discard(id, revision.revision); throw error }
                         files.pruneOldHtml(id, revision.revision)
                         prepared
@@ -244,8 +244,8 @@ internal class DefaultSavedLibraryRepository(
                     } catch (cancelled: CancellationException) { throw cancelled }
                     catch (_: Exception) { /* Durable text survives missing images. */ }
                 }
-                mutations.withLock {
-                    val current = matching(id, token) ?: return@withLock
+                commitMutation {
+                    val current = matching(id, token) ?: return@commitMutation
                     var paths = retained
                     var revision = current.fileRevision
                     var storageError: String? = null
@@ -305,6 +305,23 @@ internal class DefaultSavedLibraryRepository(
             }
         }
     }
+    /**
+     * A suspended Room call can commit before cancellation reaches its caller. Once a
+     * mutation holds the lock, finish file publication/rollback and work scheduling
+     * together so cancellation cannot delete a committed revision or strand its token.
+     * Waiting for this lock and every network request remain cancellable.
+     */
+    private suspend fun <T> commitMutation(block: suspend () -> T): T {
+        val result = mutations.withLock {
+            // An uncontended Mutex can acquire without checking cancellation.
+            currentCoroutineContext().ensureActive()
+            withContext(NonCancellable) { block() }
+        }
+        // Preserve cancellation even when no dispatcher hop is needed on return.
+        currentCoroutineContext().ensureActive()
+        return result
+    }
+
     private suspend fun matching(id: String, token: String) = dao.get(id)?.takeIf { it.downloadToken == token }
     private fun newId() = UUID.randomUUID().toString()
 }

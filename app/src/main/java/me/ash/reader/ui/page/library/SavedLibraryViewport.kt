@@ -98,7 +98,7 @@ internal fun SavedLibraryViewport(
             customActions = listOf(CustomAccessibilityAction("Previous page") { turn(false) },
                 CustomAccessibilityAction("Next page") { turn(true) })
         }.eInkVerticalPageGesture(gestureKey = gestureKey,
-            currentGestureKey = { listOf(source, state.currentPage, columns, density.fontScale) }, onTurn = turn)) { constraints ->
+            currentGestureKey = { listOf(source, state.currentPage, columns, density.fontScale) }, onTurn = { forward -> turn(forward) })) { constraints ->
         val width = constraints.maxWidth.coerceAtLeast(0)
         val height = constraints.maxHeight.coerceAtLeast(0)
         val geometry = geometryInputs + listOf(width, height)
