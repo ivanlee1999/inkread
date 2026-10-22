@@ -1,5 +1,6 @@
 package me.ash.reader.ui.page.home.reading
 
+import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.PointF
@@ -19,7 +20,9 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.isDisplayed as isComposeDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
@@ -131,12 +134,24 @@ class EInkReaderAnnotationUiTest {
 
     private fun openSelection() {
         compose.onNodeWithTag("reader_controls_toggle").performClick()
+        awaitDisplayedControl("reader_select_text")
         compose.onNodeWithTag("reader_select_text").assertIsDisplayed().performClick()
+        awaitDisplayedControl("reader_selection_done")
         compose.onNodeWithTag("reader_selection_done").assertIsDisplayed()
         compose.onNodeWithTag("reader_controls_toggle").assertDoesNotExist()
         compose.waitUntil(5_000) { selecting.value && js("window.innerHeight > 0") == true }
         // Wait for the fallback selection UI to reach a committed native frame.
         awaitVisualFrame()
+    }
+
+    private fun awaitDisplayedControl(tag: String) {
+        // Semantics actions schedule Compose state changes. Wait for the actual
+        // displayed node, not mere existence, without repeating either click.
+        try {
+            compose.waitUntil(5_000) { compose.onNodeWithTag(tag).isComposeDisplayed() }
+        } catch (timeout: ComposeTimeoutException) {
+            throw AssertionError("Reader control '$tag' was not displayed within 5000 ms", timeout)
+        }
     }
 
     private data class NativeTouchTrace(val downAt: Long, val heldFor: Long, val events: String) {
@@ -190,6 +205,7 @@ class EInkReaderAnnotationUiTest {
     /** Kept source-compatible with the released reader for the old-fails/new-passes gate. */
     @Test fun defaultLongPressShowsNativeAnnotationToolbar() {
         startReader()
+        prepareNativeCopyClipboard("Fixture before default-mode Copy")
         val before = page.get()
         val viewportBefore = js("JSON.stringify([innerWidth,innerHeight])")
         // Do not assert selectionEnabled/focus/DOWN first: the released overlay
@@ -214,11 +230,7 @@ class EInkReaderAnnotationUiTest {
         assertEquals("Selection", exact)
         clickNativeAction("Copy")
         compose.waitUntil(5_000) { !selecting.value }
-        instrumentation.runOnMainSync {
-            val clipboard = instrumentation.targetContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            assertEquals("Copy must remain the real system action", exact,
-                clipboard.primaryClip?.getItemAt(0)?.coerceToText(instrumentation.targetContext)?.toString())
-        }
+        assertNativeCopyResult(exact)
         assertEquals(true, js("window.getSelection().isCollapsed"))
         assertNull("Copy must not create an annotation", created.get())
         assertEquals(0, exits.get())
@@ -226,6 +238,7 @@ class EInkReaderAnnotationUiTest {
 
     @Test fun defaultSelectionKeepsCopyButHidesUnavailableAnnotationActions() {
         startReader(annotationsAvailable = false)
+        prepareNativeCopyClipboard("Fixture before Copy without annotation actions")
         val before = page.get()
         longPressFirstWord()
         assertTrue(nativeActionAvailable("Copy"))
@@ -240,10 +253,7 @@ class EInkReaderAnnotationUiTest {
         val exact = js("window.getSelection().toString()") as String
         clickNativeAction("Copy")
         compose.waitUntil(5_000) { !selecting.value }
-        instrumentation.runOnMainSync {
-            val clipboard = instrumentation.targetContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            assertEquals(exact, clipboard.primaryClip?.getItemAt(0)?.coerceToText(instrumentation.targetContext)?.toString())
-        }
+        assertNativeCopyResult(exact)
         assertEquals("Copy without annotation storage must not turn pages", before, page.get())
         assertEquals(true, js("window.getSelection().isCollapsed"))
         assertEquals(0, exits.get())
@@ -372,12 +382,18 @@ class EInkReaderAnnotationUiTest {
         assertEquals("A handle drag must not turn pages", before, page.get())
         assertEquals("A handle drag must not trigger the article swipe", 0, nextArticles.get())
         assertEquals(0, previousArticles.get())
+        // Chromium may rebuild ActionMode after classifying the expanded range.
+        // Check after a committed frame, before volume input, so a transient
+        // true host flag cannot hide selection lost during that replacement.
+        assertNativeSelectionRetained("Selection preserves", "after handle release, before volume")
         volume(KeyEvent.KEYCODE_VOLUME_DOWN)
         settle()
         assertEquals(before, page.get())
+        assertNativeSelectionRetained("Selection preserves", "after volume down")
         volume(KeyEvent.KEYCODE_VOLUME_UP)
         settle()
         assertEquals(before, page.get())
+        assertNativeSelectionRetained("Selection preserves", "after volume up")
         me.ash.reader.ui.page.home.NativePageDensityCapture.capture(compose,
             "annotation-native-adjusted-selection", "annotation-reader", recordDensity = false,
             beforeCaptureFrame = ::awaitVisualFrame)
@@ -714,6 +730,40 @@ class EInkReaderAnnotationUiTest {
     private fun volume(code: Int) = instrumentation.runOnMainSync {
         assertTrue(dispatchEInkVolumeKey(true, code, KeyEvent.ACTION_DOWN, 0))
         assertTrue(dispatchEInkVolumeKey(true, code, KeyEvent.ACTION_UP, 0))
+    }
+    private fun prepareNativeCopyClipboard(sentinel: String) {
+        instrumentation.runOnMainSync {
+            val clipboard = instrumentation.targetContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newPlainText("Annotation test fixture", sentinel))
+        }
+        assertEquals(sentinel, clipboardText())
+    }
+    private fun clipboardText(): String? {
+        val result = AtomicReference<String?>()
+        instrumentation.runOnMainSync {
+            val clipboard = instrumentation.targetContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            result.set(clipboard.primaryClip?.getItemAt(0)?.coerceToText(instrumentation.targetContext)?.toString())
+        }
+        return result.get()
+    }
+    private fun assertNativeCopyResult(expected: String) {
+        // The native clipboard write can complete after ActionMode is destroyed.
+        // Wait for that result, never repeat the gesture or accept old clipboard text.
+        compose.waitUntil(5_000) { clipboardText() == expected }
+        assertEquals("Copy must remain the real system action", expected, clipboardText())
+    }
+    private fun assertNativeSelectionRetained(expected: String, phase: String) {
+        settle()
+        val quote = js("window.getSelection().toString()")
+        val collapsed = js("window.getSelection().isCollapsed")
+        Log.i("InkReadAnnotationTest", "Selection retention $phase: selecting=${selecting.value} collapsed=$collapsed quote=$quote")
+        assertTrue("Native selection must retain host ownership $phase", selecting.value)
+        assertEquals("Native selection must remain noncollapsed $phase", false, collapsed)
+        assertEquals("Native selection must retain its exact adjusted quote $phase", expected, quote)
+        nativeHandleAt(textPoint("select-target", 0, expected.length, edge = "start"))
+            .check(matches(isDisplayed()))
+        nativeHandleAt(textPoint("select-target", 0, expected.length, edge = "end"))
+            .check(matches(isDisplayed()))
     }
     private fun settle() { compose.waitForIdle(); awaitVisualFrame() }
     private fun awaitVisualFrame() {

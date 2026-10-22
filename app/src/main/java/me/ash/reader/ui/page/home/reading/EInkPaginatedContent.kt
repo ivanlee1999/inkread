@@ -293,6 +293,7 @@ fun EInkPaginatedContent(
         onDispose {
             persistLatestReadingAnchor()
             webViewRef.value?.let { wv ->
+                (wv as? EInkAnnotationWebView)?.finishSelection()
                 wv.removeJavascriptInterface("Android")
                 wv.stopLoading()
                 wv.loadUrl("about:blank")
@@ -575,6 +576,7 @@ fun EInkPaginatedContent(
                             navigationEnabled = { isInitialPaginationReadyState.value && !currentEditingFormatting &&
                                 !selectionOwnsInput() && !currentAnnotationEditing && !annotationCapturePending }
                             readerGestureKey = { Triple(currentGeneration.value, navController.currentPage, navController.lastIssuedCommandId) }
+                            selectionDocumentKey = { currentGeneration.value }
                             onReaderAction = { action ->
                                 when (action) {
                                     EInkReaderTouchArbitrator.Action.DISMISS_SELECTION -> finishReaderSelection()
@@ -596,13 +598,15 @@ fun EInkPaginatedContent(
                                 // enables and reads its range atomically in one JS evaluation.
                                 evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.setSelectionMode(true, ${EInkReaderFormatting.quote(currentGeneration.value)})", null)
                             }
+                            onSelectionInvalidated = {
+                                // Even a menu replacement revokes any pending capture,
+                                // but must not clear Chromium's preserved DOM range.
+                                annotationCaptureToken.incrementAndGet()
+                                annotationCapturePending = false
+                            }
                             onSelectionFinished = {
                                 nativeSelectionActive = false
                                 evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.setSelectionMode(false, ${EInkReaderFormatting.quote(currentGeneration.value)})", null)
-                                // Native Back/action-mode dismissal can precede an asynchronous
-                                // JS result. Revoke it just like the explicit Done action.
-                                annotationCaptureToken.incrementAndGet()
-                                annotationCapturePending = false
                                 currentOnSelectionModeChange?.invoke(false)
                             }
                             onAnnotationAction = annotation@{ addNote, _ ->
@@ -941,13 +945,15 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
     var isSelectionActive: () -> Boolean = { false }
     var navigationEnabled: () -> Boolean = { false }
     var readerGestureKey: () -> Any = { Unit }
+    var selectionDocumentKey: () -> Any = { Unit }
     var onReaderAction: (EInkReaderTouchArbitrator.Action) -> Unit = {}
     var onAnnotationAction: (Boolean, ActionMode) -> Unit = { _, _ -> }
     var onSelectionStarted: () -> Unit = {}
+    var onSelectionInvalidated: () -> Unit = {}
     var onSelectionFinished: () -> Unit = {}
-    private var selectionActionMode: ActionMode? = null
-    val hasActiveSelection: Boolean get() = selectionActionMode != null
-    private var finishingInternally = false
+    private val selectionLifecycle = EInkSelectionActionModeLifecycle<ActionMode>()
+    private val selectionActionMode: ActionMode? get() = selectionLifecycle.activeMode
+    val hasActiveSelection: Boolean get() = selectionLifecycle.ownsSelection
     private val touch = EInkReaderTouchArbitrator(
         ViewConfiguration.get(context).scaledTouchSlop.toFloat(),
         56f * resources.displayMetrics.density,
@@ -957,7 +963,6 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
     private var gestureKey: Any? = null
     private var activePointer = -1
     private var nativeStreamOpen = false
-    private var interactiveTarget = false
 
     fun invalidateReaderGesture() {
         gestureSerial++
@@ -969,13 +974,22 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
         if (w != oldw || h != oldh) invalidateReaderGesture()
     }
 
+    override fun onDetachedFromWindow() {
+        val ownedSelection = hasActiveSelection
+        finishSelection()
+        if (ownedSelection) {
+            onSelectionInvalidated()
+            onSelectionFinished()
+        }
+        super.onDetachedFromWindow()
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val action = event.actionMasked
         val decision = if (action == MotionEvent.ACTION_DOWN) {
             gestureSerial++
             gestureKey = readerGestureKey()
             activePointer = event.getPointerId(0)
-            interactiveTarget = false
             nativeStreamOpen = true
             val edges = ViewCompat.getRootWindowInsets(this)?.getInsets(WindowInsetsCompat.Type.systemGestures())
             touch.down(event.x, event.y, event.eventTime, width.toFloat(), height.toFloat(),
@@ -1008,17 +1022,12 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
                 }
             }
         }
-        // Read the current native stream's hit only after WebView processes UP,
-        // never the previous link's stale target at a new DOWN.
-        if (action == MotionEvent.ACTION_UP) {
-            interactiveTarget = hitTestResult?.type?.let { it != HitTestResult.UNKNOWN_TYPE } == true
-        }
         decision.action?.let { recognized ->
             when (recognized) {
                 EInkReaderTouchArbitrator.Action.DISMISS_SELECTION -> onReaderAction(recognized)
                 EInkReaderTouchArbitrator.Action.PREVIOUS_ARTICLE, EInkReaderTouchArbitrator.Action.NEXT_ARTICLE ->
                     if (navigationEnabled() && !hasActiveSelection) onReaderAction(recognized)
-                else -> if (!interactiveTarget && navigationEnabled() && !hasActiveSelection) dispatchPlainTap(event.x, event.y, recognized)
+                else -> if (navigationEnabled() && !hasActiveSelection) dispatchPlainTap(event.x, event.y, recognized)
             }
         }
         return true
@@ -1028,8 +1037,11 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
         if (width <= 0 || height <= 0) return
         val serial = gestureSerial
         val key = readerGestureKey()
-        // Read only. In particular, link taps retain the existing blocked external
-        // navigation policy; they must not fall through to a page or control tap.
+        // Chromium updates native hitTestResult asynchronously, so it may still
+        // describe the previous touch (including a previous page's image). Use
+        // this coordinate-specific DOM result, not that stale native hit, as the
+        // authority. Standalone images retain page taps; linked images do not.
+        // Link taps keep the existing blocked external-navigation policy.
         evaluateJavascript("""
             (function(){
                 var s=window.getSelection(); if(s && !s.isCollapsed) return false;
@@ -1052,13 +1064,11 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
     fun finishSelection() {
         gestureSerial++
         touch.claimSelection()
-        // Successful capture and explicit Done already own their token/state
-        // changes. Only externally destroyed ActionModes need the cancel callback.
-        finishingInternally = true
-        try { selectionActionMode?.finish() } finally {
-            selectionActionMode = null
-            finishingInternally = false
-        }
+        // Explicit dismissal owns its token/state changes and immediately
+        // cancels any deferred completion from an earlier native menu.
+        val mode = selectionActionMode
+        selectionLifecycle.finish()
+        mode?.finish()
     }
 
     private fun annotationCallback(original: ActionMode.Callback): ActionMode.Callback =
@@ -1079,7 +1089,7 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
         }
         override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
             if (!selectionEnabled() || !touch.permitsNativeSelection || !original.onCreateActionMode(mode, menu)) return false
-            selectionActionMode = mode
+            selectionLifecycle.start(mode)
             gestureSerial++
             touch.claimSelection()
             onSelectionStarted()
@@ -1096,10 +1106,18 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
         }
         override fun onDestroyActionMode(mode: ActionMode) {
             original.onDestroyActionMode(mode)
-            if (selectionActionMode === mode) {
-                selectionActionMode = null
-                gestureSerial++
-                if (!finishingInternally) onSelectionFinished()
+            val token = selectionLifecycle.destroyed(mode) ?: return
+            gestureSerial++
+            val document = selectionDocumentKey()
+            onSelectionInvalidated()
+            // Chromium can destroy the old floating menu and start its
+            // replacement in the same call stack after a handle adjustment.
+            // Do not clear its preserved selection in the middle of that swap.
+            post {
+                if (selectionLifecycle.completeDismissal(token,
+                        sameReader = document == selectionDocumentKey(), attached = isAttachedToWindow)) {
+                    onSelectionFinished()
+                }
             }
         }
         override fun onGetContentRect(mode: ActionMode, view: View, outRect: android.graphics.Rect) {

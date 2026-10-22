@@ -139,6 +139,9 @@ class EInkReaderResumeUiTest {
         awaitReady()
         compose.onNodeWithTag("reader_save_article").assertDoesNotExist()
         compose.onNodeWithTag("reader_controls_toggle").performClick()
+        compose.waitUntil(5_000) {
+            runCatching { compose.onNodeWithTag("reader_save_article").assertIsDisplayed() }.isSuccess
+        }
         compose.onNodeWithTag("reader_save_article").assertIsDisplayed().assertHeightIsAtLeast(48.dp)
         compose.onNodeWithTag("reader_save_article").performClick()
         assertEquals(1, saves.get())
