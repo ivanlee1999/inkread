@@ -23,6 +23,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.core.view.ViewCompat
@@ -101,6 +103,7 @@ class EInkReaderFormattingUiTest {
     private var activeSection = "text"
     private var original = ReaderFormatting.Default
     private var reportName = "reader-formatting"
+    private var capturedInitialPanel = false
     private val fontBackups = mutableMapOf<File, ByteArray?>()
 
     @Before fun prepare() {
@@ -110,6 +113,9 @@ class EInkReaderFormattingUiTest {
     }
 
     @After fun cleanup() {
+        // Keep genuine native evidence even if a control assertion fails before the normal
+        // capture points. These diagnostic frames deliberately make no claim that a test passed.
+        runCatching { writeFinalDiagnostics() }
         releaseLate.countDown()
         releaseFont.countDown()
         writeReport()
@@ -232,7 +238,8 @@ class EInkReaderFormattingUiTest {
         val externalSize = EInkFontSizePreference.values.first { it > persisted.fontSize }
         runBlocking { EInkFontSizePreference.put(context, this, externalSize) }
         val external = awaitPersisted { it.fontSize == externalSize }
-        compose.waitUntil(10_000) { snapshot().optDouble("fontSize") == externalSize.toDouble() }
+        advanceComposeDraftClock()
+        compose.waitUntil(10_000) { snapshot().optDouble("specifiedFontSize") == externalSize.toDouble() }
         assertStyleMatches(external, settled("external-shared-setting"))
         assertAnchor("external-shared-setting-anchor")
         openPanel()
@@ -255,6 +262,7 @@ class EInkReaderFormattingUiTest {
         panelClosed()
         assertStyleMatches(external, settled("cancel-after-retry"))
         assertEquals(external, readPersisted())
+        verifyMaximumFormattingInShortViewport(external)
         assertEquals("No Apply, Cancel, Reset, retry or resize may recreate the article", 1, htmlRequests.get())
         assertTrue("No ordinary formatting interaction downloads remote resources", synchronized(remoteRequests) { remoteRequests.isEmpty() })
         capture("applied-article")
@@ -459,6 +467,10 @@ class EInkReaderFormattingUiTest {
         compose.onNodeWithTag("reader_formatting_panel").assertIsDisplayed()
         activeSection = "text"
         settled("panel-visible")
+        if (!capturedInitialPanel) {
+            capture("initial-panel-fixture")
+            capturedInitialPanel = true
+        }
     }
 
     private fun section(name: String) { clickTag("reader_formatting_section_$name"); activeSection = name }
@@ -473,7 +485,18 @@ class EInkReaderFormattingUiTest {
         }
         return compose.onNodeWithTag(tag).assertIsDisplayed()
     }
-    private fun clickTag(tag: String) { scrollToTag(tag).performClick(); compose.waitForIdle() }
+    private fun clickTag(tag: String) {
+        scrollToTag(tag).performClick()
+        advanceComposeDraftClock()
+    }
+
+    private fun advanceComposeDraftClock() {
+        compose.waitForIdle()
+        // Reader drafts are debounced for 70 ms in LaunchedEffect. Wall-clock WebView waits
+        // cannot advance Compose's test scheduler; otherwise each probe can read the old draft.
+        compose.mainClock.advanceTimeBy(120)
+        compose.waitForIdle()
+    }
     private fun assertFullyInside(tag: String, container: String) {
         val bounds = compose.onNodeWithTag(tag).getUnclippedBoundsInRoot()
         val viewport = compose.onNodeWithTag(container).getUnclippedBoundsInRoot()
@@ -491,6 +514,65 @@ class EInkReaderFormattingUiTest {
     private fun step(name: String, increase: Boolean, times: Int = 1) {
         repeat(times) { clickTag("reader_formatting_${name}_${if (increase) "increase" else "decrease"}") }
         settled("control-$name")
+    }
+
+    private fun setMaximum(name: String, expectedMaximum: Float) {
+        val control = scrollToTag("reader_formatting_${name}_value")
+        assertEquals("The advertised formatting endpoint remains available", expectedMaximum,
+            control.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].range.endInclusive, .001f)
+        control.performSemanticsAction(SemanticsActions.SetProgress) { setProgress ->
+            assertTrue("The real accessible control must accept its maximum", setProgress(expectedMaximum))
+        }
+        advanceComposeDraftClock()
+        assertEquals(expectedMaximum,
+            control.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current, .001f)
+    }
+
+    private fun verifyMaximumFormattingInShortViewport(persisted: ReaderFormatting) {
+        openPanel()
+        section("text")
+        setMaximum("font_size", 48f)
+        setMaximum("line_height", 2.5f)
+        section("layout")
+        for (edge in listOf("left", "right", "top", "bottom")) setMaximum("margin_$edge", 96f)
+        val fullWidth = snapshot().getDouble("viewportWidth")
+        compose.runOnIdle { viewportFraction.value = .55f }
+        compose.waitUntil(10_000) { snapshot().getDouble("viewportWidth") < fullWidth * .6 }
+        val extreme = settled("maximum-formatting-short-viewport")
+        assertEquals(48.0, extreme.getDouble("specifiedFontSize"), .1)
+        assertEquals(48.0 * context.resources.configuration.fontScale, extreme.getDouble("fontSize"), .1)
+        assertEquals(2.5, extreme.getDouble("lineHeight") / extreme.getDouble("fontSize"), .02)
+        assertTrue("Legitimate large-format articles must not be truncated at 500 columns", extreme.getInt("totalPages") > 500)
+        // Use actual WebView font metrics, not the requested CSS size. Android fontScale=1.6
+        // makes the 48 px setting render at 76.8 px; requested-only minimums clip a full line.
+        val requiredLine = maxOf(extreme.getDouble("lineHeight"), extreme.getDouble("fontSize") * 1.4) + 8
+        assertTrue("The fixture must have room for one actual requested line", extreme.getDouble("viewportHeight") >= requiredLine)
+        assertTrue("Effective top/bottom margins must leave an entire scaled line plus leading",
+            extreme.getDouble("frameHeight") >= requiredLine - .5)
+        assertTrue("Effective side margins must leave at least one full scaled CJK glyph plus spacing",
+            extreme.getDouble("frameWidth") >= extreme.getDouble("fontSize") * 1.5 - .5)
+        for (edge in listOf("Left", "Right", "Top", "Bottom")) {
+            assertTrue("Effective margin cannot exceed the 96 px requested maximum",
+                extreme.getDouble("margin$edge") in 0.0..96.1)
+        }
+        assertAnchor("maximum-formatting-anchor")
+        val glyph = extreme.getJSONObject("anchorGlyph")
+        assertTrue("The original anchored glyph must fit wholly after the left inset",
+            glyph.getDouble("left") >= extreme.getDouble("marginLeft") - 1.25)
+        assertTrue("The original anchored glyph must fit wholly before the right inset",
+            glyph.getDouble("right") <= extreme.getDouble("viewportWidth") - extreme.getDouble("marginRight") + 1.25)
+        assertTrue("The original anchored glyph must fit wholly below the top inset",
+            glyph.getDouble("top") >= extreme.getDouble("marginTop") - 1.25)
+        assertTrue("The original anchored glyph must fit wholly above the bottom inset",
+            glyph.getDouble("bottom") <= extreme.getDouble("viewportHeight") - extreme.getDouble("marginBottom") + 1.25)
+        assertEquals("Maximum previews cannot persist temporary effective insets", persisted, readPersisted())
+        capture("maximum-formatting-fixture")
+        compose.runOnIdle { viewportFraction.value = 1f }
+        compose.waitUntil(10_000) { abs(snapshot().getDouble("viewportWidth") - fullWidth) < 1 }
+        clickTag("reader_formatting_cancel")
+        panelClosed()
+        assertStyleMatches(persisted, settled("cancel-maximum-formatting"))
+        assertAnchor("cancel-maximum-formatting-anchor")
     }
     private fun panelClosed() { compose.waitUntil(10_000) { compose.onAllNodesWithTag("reader_formatting_panel").fetchSemanticsNodes().isEmpty() }; settleBarrier() }
     private fun dispatchVolume(code: Int) = compose.runOnIdle {
@@ -522,6 +604,7 @@ class EInkReaderFormattingUiTest {
     }
 
     private fun settleBarrier() {
+        advanceComposeDraftClock()
         // A visual callback alone precedes a delayed repagination. Two actual timer/rAF turns
         // also let a mistakenly forwarded native volume event become observable.
         val done = CountDownLatch(1)
@@ -580,7 +663,10 @@ class EInkReaderFormattingUiTest {
     }
 
     private fun assertStyleMatches(expected: ReaderFormatting, actual: JSONObject) {
-        assertEquals(expected.fontSize.toDouble(), actual.getDouble("fontSize"), .1)
+        assertEquals("Stored font size is applied as the exact CSS setting", expected.fontSize.toDouble(),
+            actual.getDouble("specifiedFontSize"), .1)
+        assertEquals("Android accessibility font scaling remains effective", expected.fontSize.toDouble() *
+            context.resources.configuration.fontScale, actual.getDouble("fontSize"), .1)
         assertEquals(expected.lineHeight.toDouble(), actual.getDouble("lineHeight") / actual.getDouble("fontSize"), .02)
         assertEquals(expected.textWeight, actual.getInt("fontWeight"))
         assertEquals(expected.marginLeft.toDouble(), actual.getDouble("marginLeft"), .1)
@@ -699,6 +785,25 @@ class EInkReaderFormattingUiTest {
         ?.takeIf { it.isNotBlank() }?.let(::File) ?: File(context.getExternalFilesDir(null), "reader-formatting"))
         .apply { check(isDirectory || mkdirs()) }
 
+    private fun writeFinalDiagnostics() {
+        val directory = outputDirectory()
+        runCatching { snapshot("diagnostic-final-state") }
+        runCatching {
+            File(directory, "$reportName-final-semantics.txt").writeText(
+                compose.onRoot(useUnmergedTree = true).printToString())
+        }
+        runCatching {
+            File(directory, "$reportName-final-preferences.txt").writeText(readPersisted().toString())
+        }
+        instrumentation.uiAutomation.takeScreenshot()?.let { bitmap ->
+            try {
+                File(directory, "$reportName-diagnostic-final-state.png").outputStream().use {
+                    check(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it))
+                }
+            } finally { bitmap.recycle() }
+        }
+    }
+
     private fun writeReport() {
         File(outputDirectory(), "$reportName.json").writeText(JSONObject().put("schema", 1)
             .put("densityDpi", context.resources.displayMetrics.densityDpi)
@@ -734,11 +839,12 @@ class EInkReaderFormattingUiTest {
                 var anchor=InkReadFormatting.currentAnchor(), expected=window.__formattingExpectedAnchor;
                 var nodes=[], walker=document.createTreeWalker(frame,NodeFilter.SHOW_TEXT), n;
                 while(n=walker.nextNode()) if(n.textContent.trim()&&!/^(STYLE|SCRIPT|NOSCRIPT)$/.test(n.parentElement.tagName)) nodes.push(n);
-                var anchorVisible=false, anchorText='';
+                var anchorVisible=false, anchorText='', anchorGlyph=null;
                 if(expected&&nodes[expected.node]){
                     n=nodes[expected.node]; var r=document.createRange(), offset=Math.min(expected.offset,n.length-1);
                     r.setStart(n,offset);r.setEnd(n,offset+1);anchorText=n.textContent.slice(Math.max(0,offset-10),offset+30);
-                    anchorVisible=Array.from(r.getClientRects()).some(visible);
+                    var glyphs=Array.from(r.getClientRects()).filter(visible);anchorVisible=glyphs.length>0;
+                    anchorGlyph=glyphs.length?rect(glyphs[0]):null;
                 }
                 var p=frame.querySelector('p.format-text'), pc=getComputedStyle(p||frame), code=frame.querySelector('code'), image=document.getElementById('ordinary-image'), late=document.getElementById('late-image');
                 var faces=Array.from(document.fonts).map(function(f){return {family:f.family,status:f.status,range:f.unicodeRange};});
@@ -749,10 +855,11 @@ class EInkReaderFormattingUiTest {
                 return JSON.stringify({ready:_didFinishInitialPagination,currentPage:_currentPage,totalPages:_totalPages,stride:_pageStride,
                     viewportWidth:w,viewportHeight:h,frameWidth:parseFloat(c.width),frameHeight:parseFloat(c.height),
                     marginLeft:parseFloat(c.left),marginRight:w-parseFloat(c.left)-parseFloat(c.width),marginTop:parseFloat(c.top),marginBottom:h-parseFloat(c.top)-parseFloat(c.height),
-                    fontSize:parseFloat(pc.fontSize),lineHeight:parseFloat(pc.lineHeight),fontWeight:parseInt(pc.fontWeight),color:pc.color,fontFamily:pc.fontFamily,
+                    fontSize:parseFloat(pc.fontSize),specifiedFontSize:parseFloat(document.documentElement.style.getPropertyValue('--reader-font-size')),
+                    lineHeight:parseFloat(pc.lineHeight),fontWeight:parseInt(pc.fontWeight),color:pc.color,fontFamily:pc.fontFamily,
                     textFilter:pc.filter,frameFilter:c.filter,bodyFilter:b.filter,imageFilter:image?getComputedStyle(image).filter:'',scrollX:scrollX,scrollY:scrollY,
                     documentSentinel:!!window.__formattingDocumentSentinel,sameDocument:!window.__formattingExpectedDocument||window.__formattingExpectedDocument===InkReadFormatting.documentId,
-                    sameAnchor:!expected||(anchor&&anchor.node===expected.node&&anchor.offset===expected.offset),anchorVisible:anchorVisible,anchor:anchor,expectedAnchor:expected||null,anchorText:anchorText,
+                    sameAnchor:!expected||(anchor&&anchor.node===expected.node&&anchor.offset===expected.offset),anchorVisible:anchorVisible,anchorGlyph:anchorGlyph,anchor:anchor,expectedAnchor:expected||null,anchorText:anchorText,
                     fragments:Array.from(frame.querySelectorAll('p.format-text')).flatMap(function(p){return Array.from(p.getClientRects()).filter(visible).map(rect);}),
                     images:Array.from(document.images).filter(function(i){return i.naturalWidth>0&&visible(i.getBoundingClientRect());}).map(function(i){return rect(i.getBoundingClientRect());}),
                     lateImage:{complete:late?late.complete:false,naturalWidth:late?late.naturalWidth:0},faces:faces,fontCss:document.getElementById('eink-font-faces').textContent,latinFaceLoaded:latinLoaded,cjkFaceLoaded:cjkLoaded,

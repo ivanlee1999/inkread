@@ -127,7 +127,9 @@ jobs:
                   required = {"before-panel", "four-independent-margins", "image-only-contrast", "late-image-during-draft",
                               "panel-resized", "apply", "reset-preview", "cancel-reset", "cancel-edit", "stepper-no-ime", "external-shared-setting", "external-shared-setting-anchor",
                               "late-preference-error-keeps-draft", "late-preference-error-keeps-anchor",
-                              "retry-keeps-draft", "retry-keeps-anchor", "cancel-after-retry"}
+                              "retry-keeps-draft", "retry-keeps-anchor", "cancel-after-retry",
+                              "maximum-formatting-short-viewport", "maximum-formatting-anchor",
+                              "cancel-maximum-formatting", "cancel-maximum-formatting-anchor"}
                   assert required <= labels, f"Missing live assertions: {required-labels}"
                   assert report["htmlRequests"] == 1, "Live draft unexpectedly reloaded its article HTML"
                   for label in ("apply", "reset-preview", "cancel-reset", "cancel-edit", "panel-resized", "late-image-during-draft"):

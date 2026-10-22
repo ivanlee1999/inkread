@@ -12,7 +12,7 @@ const defaults = {fontSize:18,lineHeight:1,marginLeft:24,marginRight:24,marginTo
 function fixture() {
     const listeners = new Map(), frameListeners = new Map(), fontListeners = new Map();
     const variables = {}, queue = new Map(), calls = [], timers = new Map();
-    let serial=0, prefix=0, glyphScale=1;
+    let serial=0, prefix=0, glyphScale=1, fontScale=1;
     const context = {console, Math, Object, Array, isFinite, innerWidth:411.42, innerHeight:760,
         _inkreadInitialFormatting:{...defaults}, _inkreadGeneration:'unchanged-document',
         NodeFilter:{SHOW_TEXT:4,FILTER_ACCEPT:1,FILTER_REJECT:2},
@@ -27,8 +27,8 @@ function fixture() {
         get length(){return this.data.length;}, parentElement:{tagName:'P'}}));
     function geometry(node, offset) {
         const width = parseFloat(style.width), height = parseFloat(style.height);
-        const charWidth = parseFloat(variables['--reader-font-size'])*.5*glyphScale;
-        const line = parseFloat(variables['--reader-font-size'])*Number(variables['--reader-line-height']);
+        const charWidth = parseFloat(variables['--reader-font-size'])*fontScale*.5*glyphScale;
+        const line = parseFloat(variables['--reader-font-size'])*fontScale*Number(variables['--reader-line-height']);
         const chars = Math.max(1,Math.floor(width/charWidth)), rows = Math.max(1,Math.floor(height/line));
         let absolute = prefix + offset;
         for(let i=0;i<nodes.indexOf(node);i++) absolute+=nodes[i].length;
@@ -60,12 +60,15 @@ function fixture() {
                 if(previous)result.push(previous);return result;
             }};}
     };
-    Object.assign(context,{document,window:context});
+    Object.assign(context,{document,window:context,getComputedStyle:()=>({
+        fontSize:(parseFloat(variables['--reader-font-size'])*fontScale)+'px',
+        lineHeight:(parseFloat(variables['--reader-font-size'])*fontScale*Number(variables['--reader-line-height']))+'px'
+    })});
     vm.createContext(context);vm.runInContext(runtime,context);
     async function flush() {await Promise.resolve();while(queue.size){const work=[...queue.values()];queue.clear();work.forEach(cb=>cb());await Promise.resolve();}}
     function fireResize(width,height){context.innerWidth=width;context.innerHeight=height;listeners.get('resize')();for(const cb of timers.values())cb();timers.clear();}
     return {context,frame,nodes,calls,listeners,frameListeners,fontListeners,variables,flush,fireResize,
-        setPrefix:n=>prefix=n,setGlyphScale:n=>glyphScale=n,
+        setPrefix:n=>prefix=n,setGlyphScale:n=>glyphScale=n,setFontScale:n=>fontScale=n,
         anchor:()=>JSON.parse(JSON.stringify(context.InkReadFormatting.currentAnchor())),
         anchorRect:()=>{const a=context.InkReadFormatting.currentAnchor();return geometry(nodes[a.node],a.offset);}};
 }
@@ -113,6 +116,20 @@ test('extreme insets are temporary effective values and retain one complete requ
     assert.ok(f.context._totalPages>500);assert.deepEqual(f.anchor(),anchor);assertAnchorVisible(f);
     assert.equal(requested.marginTop,96);assert.equal(requested.marginLeft,96);
     f.fireResize(800,1000);await f.flush();
+    assert.deepEqual(JSON.parse(JSON.stringify(f.context.InkReadFormatting.effectiveMargins())),{left:96,right:96,top:96,bottom:96});
+    assert.deepEqual(f.anchor(),anchor);assertAnchorVisible(f);
+});
+
+test('minimum preview dimensions use Android-scaled computed font metrics',async()=>{
+    const f=fixture();await f.flush();f.context.goToPage(12);const anchor=f.anchor();
+    f.setFontScale(1.6);f.fireResize(300,300);await f.flush();
+    const requested={...defaults,fontSize:48,lineHeight:2.5,marginLeft:96,marginRight:96,marginTop:96,marginBottom:96};
+    f.context.InkReadFormatting.apply(requested);await f.flush();
+    assert.ok(parseFloat(f.frame.style.height)>=48*1.6*2.5+8-1e-6);
+    assert.ok(parseFloat(f.frame.style.width)>=48*1.6*1.5-1e-6);
+    assert.deepEqual(f.anchor(),anchor);assertAnchorVisible(f);
+    assert.equal(requested.marginTop,96);assert.equal(requested.marginLeft,96);
+    f.fireResize(1000,1200);await f.flush();
     assert.deepEqual(JSON.parse(JSON.stringify(f.context.InkReadFormatting.effectiveMargins())),{left:96,right:96,top:96,bottom:96});
     assert.deepEqual(f.anchor(),anchor);assertAnchorVisible(f);
 });

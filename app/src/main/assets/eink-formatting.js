@@ -97,9 +97,15 @@ var _didFinishInitialPagination = false;
         var vh = window.innerHeight || document.documentElement.clientHeight || 640;
         _pageStride = _vw;
         // Retain a usable line/column on tiny split views or while an IME is open.
-        var minimumWidth = Math.max(32, settings.fontSize * 1.5);
+        // Android WebView text zoom can make computed type larger than the
+        // requested CSS value (e.g. 18px becomes 28.8px at system scale 1.6).
+        // Reserve space for the actual rendered line/glyph, not its raw setting.
+        var typography = window.getComputedStyle(frame);
+        var effectiveFontSize = parseFloat(typography.fontSize) || settings.fontSize;
+        var effectiveLineHeight = parseFloat(typography.lineHeight) || effectiveFontSize * settings.lineHeight;
+        var minimumWidth = Math.max(32, effectiveFontSize * 1.5);
         var horizontalScale = Math.min(1, Math.max(0, _vw - minimumWidth) / Math.max(1, settings.marginLeft + settings.marginRight));
-        var minimumLine = Math.max(32, settings.fontSize * Math.max(settings.lineHeight, 1.4) + 8);
+        var minimumLine = Math.max(32, Math.max(effectiveLineHeight, effectiveFontSize * 1.4) + 8);
         var verticalScale = Math.min(1, Math.max(0, vh - minimumLine) / Math.max(1, settings.marginTop + settings.marginBottom));
         margins = {
             left: settings.marginLeft * horizontalScale, right: settings.marginRight * horizontalScale,
