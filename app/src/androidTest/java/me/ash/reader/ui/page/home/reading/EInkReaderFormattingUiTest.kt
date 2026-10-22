@@ -15,8 +15,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -37,7 +38,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import me.ash.reader.infrastructure.android.VolumeKeyEventBus
 import me.ash.reader.infrastructure.android.dispatchEInkVolumeKey
@@ -47,6 +49,8 @@ import me.ash.reader.infrastructure.preference.EInkModePreference
 import me.ash.reader.infrastructure.preference.EInkFontSizePreference
 import me.ash.reader.infrastructure.preference.LocalEInkMode
 import me.ash.reader.infrastructure.preference.LocalReaderFormatting
+import me.ash.reader.infrastructure.preference.LocalReaderFormattingLoadError
+import me.ash.reader.infrastructure.preference.LocalRetryReaderFormatting
 import me.ash.reader.infrastructure.preference.ReaderFormatting
 import me.ash.reader.infrastructure.preference.ReaderFormattingPreference
 import me.ash.reader.infrastructure.preference.saveReaderFormatting
@@ -86,6 +90,9 @@ class EInkReaderFormattingUiTest {
     private val content = mutableStateOf("<p>Preparing an ordinary reading article.</p>")
     private val visible = mutableStateOf(true)
     private val viewportFraction = mutableStateOf(1f)
+    private val preferenceError = mutableStateOf<Throwable?>(null)
+    private val preferenceRetries = AtomicInteger()
+    private val successfulRetrySnapshots = AtomicInteger()
     private val lateRequested = CountDownLatch(1)
     private val releaseLate = CountDownLatch(1)
     private val fontRequested = CountDownLatch(1)
@@ -228,7 +235,27 @@ class EInkReaderFormattingUiTest {
         compose.waitUntil(10_000) { snapshot().optDouble("fontSize") == externalSize.toDouble() }
         assertStyleMatches(external, settled("external-shared-setting"))
         assertAnchor("external-shared-setting-anchor")
-        assertEquals("No Apply, Cancel, Reset or resize may recreate the article", 1, htmlRequests.get())
+        openPanel()
+        section("text")
+        step("font_size", increase = true)
+        val interruptedDraft = external.copy(fontSize = external.fontSize + 1)
+        // The real provider retains its last successful snapshot on a later read failure.
+        // Inject only that error state here; the article, draft controls and retry action are real.
+        compose.runOnIdle { preferenceError.value = java.io.IOException("Native fixture late preference read failure") }
+        compose.onNodeWithTag("reader_formatting_panel").assertIsDisplayed()
+        compose.onNodeWithTag("reader_formatting_retry").assertIsDisplayed()
+        assertStyleMatches(interruptedDraft, settled("late-preference-error-keeps-draft"))
+        assertAnchor("late-preference-error-keeps-anchor")
+        clickTag("reader_formatting_retry")
+        compose.waitUntil(5_000) { preferenceRetries.get() == 1 && successfulRetrySnapshots.get() == 1 && preferenceError.value == null }
+        compose.onNodeWithTag("reader_formatting_retry").assertDoesNotExist()
+        assertStyleMatches(interruptedDraft, settled("retry-keeps-draft"))
+        assertAnchor("retry-keeps-anchor")
+        clickTag("reader_formatting_cancel")
+        panelClosed()
+        assertStyleMatches(external, settled("cancel-after-retry"))
+        assertEquals(external, readPersisted())
+        assertEquals("No Apply, Cancel, Reset, retry or resize may recreate the article", 1, htmlRequests.get())
         assertTrue("No ordinary formatting interaction downloads remote resources", synchronized(remoteRequests) { remoteRequests.isEmpty() })
         capture("applied-article")
     }
@@ -362,9 +389,27 @@ class EInkReaderFormattingUiTest {
 
     private fun startReader() {
         compose.setContent {
-            val formatting by context.dataStore.data.map { ReaderFormattingPreference.fromPreferences(it) as ReaderFormatting? }
-                .collectAsState(initial = null)
-            CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON, LocalReaderFormatting provides formatting) {
+            val formatting = remember { mutableStateOf<ReaderFormatting?>(null) }
+            val retryScope = rememberCoroutineScope()
+            LaunchedEffect(Unit) {
+                context.dataStore.data.collect { formatting.value = ReaderFormattingPreference.fromPreferences(it) }
+            }
+            CompositionLocalProvider(
+                LocalEInkMode provides EInkModePreference.ON,
+                LocalReaderFormatting provides formatting.value,
+                LocalReaderFormattingLoadError provides preferenceError.value,
+                LocalRetryReaderFormatting provides {
+                    preferenceRetries.incrementAndGet()
+                    retryScope.launch {
+                        // A genuine new subscription must yield a successful DataStore snapshot
+                        // before the test provider can clear its injected late-read error.
+                        val snapshot = ReaderFormattingPreference.fromPreferences(context.dataStore.data.first())
+                        formatting.value = snapshot
+                        successfulRetrySnapshots.incrementAndGet()
+                        preferenceError.value = null
+                    }
+                },
+            ) {
                 AppTheme(useDarkTheme = false) {
                     if (visible.value) {
                         BackHandler { readerBacks.incrementAndGet(); visible.value = false }
@@ -433,7 +478,7 @@ class EInkReaderFormattingUiTest {
         val bounds = compose.onNodeWithTag(tag).getUnclippedBoundsInRoot()
         val viewport = compose.onNodeWithTag(container).getUnclippedBoundsInRoot()
         assertTrue("$tag must remain fully reachable inside $container: $bounds / $viewport",
-            bounds.width.value > 0 && bounds.height.value > 0 && bounds.left.value >= viewport.left.value - 1f && bounds.right.value <= viewport.right.value + 1f &&
+            bounds.right.value > bounds.left.value && bounds.bottom.value > bounds.top.value && bounds.left.value >= viewport.left.value - 1f && bounds.right.value <= viewport.right.value + 1f &&
                 bounds.top.value >= viewport.top.value - 1f && bounds.bottom.value <= viewport.bottom.value + 1f)
     }
     private fun imeVisible(): Boolean {
@@ -660,6 +705,7 @@ class EInkReaderFormattingUiTest {
             .put("systemFontScale", context.resources.configuration.fontScale)
             .put("nativeWidth", context.resources.displayMetrics.widthPixels)
             .put("pid", android.os.Process.myPid()).put("htmlRequests", htmlRequests.get())
+            .put("successfulRetrySnapshots", successfulRetrySnapshots.get())
             .put("remoteRequests", JSONArray(synchronized(remoteRequests) { remoteRequests.toList() }))
             .put("fontFixture", "Test-only cached Android NotoSerif and standalone NotoSansCJK face extracted from platform TTC, not production catalog binaries")
             .put("samples", samples).toString(2))
