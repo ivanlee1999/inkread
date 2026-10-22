@@ -1,26 +1,30 @@
 package me.ash.reader.ui.page.home.reading
 
+import android.util.Log
+import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performTouchInput
 import androidx.test.espresso.Espresso.onView
 import androidx.test.espresso.Espresso.openContextualActionModeOverflowMenu
 import androidx.test.espresso.Espresso.pressBack
 import androidx.test.espresso.NoMatchingViewException
+import androidx.test.espresso.action.GeneralClickAction
+import androidx.test.espresso.action.Press
+import androidx.test.espresso.action.Tap
 import androidx.test.espresso.action.ViewActions.click
 import androidx.test.espresso.assertion.ViewAssertions.matches
+import androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom
 import androidx.test.espresso.matcher.ViewMatchers.isDisplayed
 import androidx.test.espresso.matcher.ViewMatchers.withText
 import androidx.test.platform.app.InstrumentationRegistry
@@ -30,6 +34,7 @@ import java.util.Date
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import me.ash.reader.infrastructure.android.VolumeKeyEventBus
 import me.ash.reader.infrastructure.android.dispatchEInkVolumeKey
@@ -100,21 +105,66 @@ class EInkReaderAnnotationUiTest {
     }
 
     private fun longPressFirstWord() {
+        // Range geometry is read-only: native touch must create the Selection and
+        // ActionMode. Never call addRange(), performLongClick() or the menu callback.
         val point = js("""
-            (function(){var t=document.getElementById('select-target').firstChild,r=document.createRange();
-            r.setStart(t,0);r.setEnd(t,9);var b=r.getBoundingClientRect();
-            return JSON.stringify({x:(b.left+b.right)/2,y:(b.top+b.bottom)/2,width:innerWidth});})()
+            (function(){var target=document.getElementById('select-target'),t=target.firstChild;
+            var r=document.createRange();r.setStart(t,0);r.setEnd(t,9);var b=r.getClientRects()[0];
+            var x=(b.left+b.right)/2,y=(b.top+b.bottom)/2;
+            return JSON.stringify({x:x,y:y,width:document.documentElement.getBoundingClientRect().width,
+                height:innerHeight,word:r.toString(),hit:target.contains(document.elementFromPoint(x,y)),
+                ready:document.readyState==='complete' && window._didFinishInitialPagination &&
+                    InkReadAnnotations.documentId===window._inkreadGeneration,
+                selectable:getComputedStyle(target).webkitUserSelect!=='none'});})()
         """.trimIndent()) as String
         val p = JSONObject(point)
-        var width = 0
-        instrumentation.runOnMainSync { width = reader().width }
-        val scale = width / p.getDouble("width").toFloat()
-        // The WebView starts at the top-left of this tagged reader. Dispatch
-        // through Compose's actual hit testing so a stray overlay fails here.
-        compose.onNodeWithTag("annotation-reader").performTouchInput {
-            longClick(Offset(p.getDouble("x").toFloat() * scale, p.getDouble("y").toFloat() * scale), 900)
+        assertEquals("Selection", p.getString("word"))
+        assertTrue("The live article fixture must be paginated: $point", p.getBoolean("ready"))
+        assertTrue("The gesture must hit visible article text: $point", p.getBoolean("hit"))
+        assertTrue("Article text must permit native selection: $point", p.getBoolean("selectable"))
+        val downAt = AtomicLong(-1)
+        val heldFor = AtomicLong(-1)
+        val touchEvents = StringBuffer()
+        instrumentation.runOnMainSync {
+            reader().setOnTouchListener { _, event ->
+                if (event.actionMasked == MotionEvent.ACTION_DOWN) downAt.set(event.eventTime)
+                if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+                    heldFor.set(event.eventTime - downAt.get())
+                }
+                touchEvents.append("${MotionEvent.actionToString(event.actionMasked)}@${event.eventTime}[${event.x},${event.y}] ")
+                false // Observe only; normal WebView hit testing and native handling own the gesture.
+            }
         }
-        compose.waitUntil(5_000) { js("window.getSelection().toString().length > 0") == true }
+        try {
+            // Compose longClick batches DOWN/UP while advancing only its test clock.
+            // WebView's native long-press timer needs real elapsed time with DOWN held.
+            // Espresso injects through Android's window dispatch, so a Compose overlay
+            // still intercepts (and fails) this gesture rather than being bypassed.
+            onView(isAssignableFrom(EInkAnnotationWebView::class.java)).perform(GeneralClickAction(
+                Tap.LONG,
+                { view ->
+                    val webView = view as EInkAnnotationWebView
+                    assertTrue("Selection mode must reach the native WebView", webView.selectionEnabled())
+                    assertTrue("The native reader must own focus", webView.hasFocus() && webView.hasWindowFocus())
+                    val origin = IntArray(2)
+                    webView.getLocationOnScreen(origin)
+                    val scale = webView.width / p.getDouble("width").toFloat()
+                    assertEquals("The DOM viewport must match the resized native reader",
+                        webView.height.toDouble(), p.getDouble("height") * scale, scale.toDouble() + 1)
+                    val x = p.getDouble("x").toFloat() * scale
+                    val y = p.getDouble("y").toFloat() * scale
+                    assertTrue("Long-press must remain inside the reader", x > 0 && x < webView.width && y > 0 && y < webView.height)
+                    Log.i("InkReadAnnotationTest", "Native long-press: dom=$point origin=${origin.toList()} scale=$scale local=[$x,$y]")
+                    floatArrayOf(origin[0] + x, origin[1] + y)
+                },
+                Press.FINGER, InputDevice.SOURCE_TOUCHSCREEN, 0,
+            ))
+            assertTrue("The real WebView must receive DOWN, not an overlay: $touchEvents", downAt.get() >= 0)
+            compose.waitUntil(5_000) { js("window.getSelection().toString().length > 0") == true }
+        } finally {
+            instrumentation.runOnMainSync { reader().setOnTouchListener(null) }
+            Log.i("InkReadAnnotationTest", "Native long-press delivered: heldMs=${heldFor.get()} events=$touchEvents selecting=${selecting.value}")
+        }
     }
 
     @Test fun realLongPressRetainsCopyAndBackLeavesSelectionBeforeReader() {
