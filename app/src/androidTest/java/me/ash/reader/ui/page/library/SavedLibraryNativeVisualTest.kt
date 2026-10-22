@@ -222,33 +222,62 @@ class SavedLibraryNativeVisualTest(private val fontScale: Float) {
         compose.waitUntil(15_000) { compose.runOnUiThread { findWebView(compose.activity.window.decorView) != null } }
         compose.waitUntil(20_000) { js("typeof _didFinishInitialPagination !== 'undefined' && _didFinishInitialPagination") == true }
         compose.waitUntil(5_000) { VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.HIGH) }
+        // Observe actual native commands without replacing the production navigator.
+        js("""(function() {
+            var navigate = window.goToPage;
+            window.savedTestNativeCommands = 0;
+            window.goToPage = function() {
+                if (arguments[1] !== undefined) window.savedTestNativeCommands++;
+                return navigate.apply(this, arguments);
+            };
+            return true;
+        })()""")
         val readerPage = (js("_currentPage") as Number).toInt()
         emitVolume()
-        compose.waitUntil(5_000) { (js("_currentPage") as Number).toInt() > readerPage }
+        compose.waitUntil(5_000) {
+            val state = readerState()
+            state.getInt("commands") == 1 && state.getInt("page") > readerPage
+        }
         assertEquals("Reader keys cannot turn the hidden Saved list", page, fixture.edition.currentPage)
         NativePageDensityCapture.capture(compose, "saved-reader-font-${fontLabel}", "saved_library_reader",
             recordDensity = false, contentBoundsOnScreen = ::readerBodyBounds, beforeCaptureFrame = ::awaitWebViewFrame)
         // The Activity capture host can overlay a live reader. Both choice and success are
         // actual dialogs, and neither may leak a hardware-page event to its covered WebView.
-        val coveredPage = (js("_currentPage") as Number).toInt()
+        val coveredState = readerState()
         compose.runOnIdle { fixture.capture.enqueue("https://example.test/reader-share") }
         compose.onNodeWithTag("saved-capture-dialog").assertIsDisplayed()
         emitVolume()
-        assertEquals(coveredPage, (js("_currentPage") as Number).toInt())
+        assertSameReaderPosition(coveredState, readerState())
         compose.onNodeWithTag("saved-capture-save").performScrollTo().performClick()
         compose.onNodeWithTag("saved-capture-success").assertIsDisplayed()
         emitVolume()
-        assertEquals(coveredPage, (js("_currentPage") as Number).toInt())
+        assertSameReaderPosition(coveredState, readerState())
         compose.onNodeWithText("Done").performScrollTo().performClick()
         compose.waitForIdle()
         emitVolume()
-        compose.waitUntil(5_000) { (js("_currentPage") as Number).toInt() > coveredPage }
+        compose.waitUntil(5_000) {
+            val state = readerState()
+            state.getInt("commands") == 2 && state.getInt("page") > coveredState.getInt("page")
+        }
+        val beforeActions = readerState()
         compose.onNodeWithTag("reader_controls_toggle").performClick()
         compose.onNodeWithTag("reader_library_actions").assertIsDisplayed().performClick()
         compose.onNodeWithTag("saved_reader_actions").assertIsDisplayed()
-        val actionsPage = (js("_currentPage") as Number).toInt()
         emitVolume()
-        assertEquals("The actions panel absorbs page keys", actionsPage, (js("_currentPage") as Number).toInt())
+        assertSameReaderPosition(beforeActions, readerState())
+        // These actions are inline, so their real layout shrinks the WebView.
+        // Compose idle does not flush JS's debounced resize/rAF. Observe that
+        // actual reflow, rather than mistaking its new CSS page for a leaked key.
+        compose.waitUntil(5_000) {
+            val state = readerState()
+            state.getInt("webViewHeightPx") < beforeActions.getInt("webViewHeightPx") &&
+                state.getDouble("viewportHeight") < beforeActions.getDouble("viewportHeight") &&
+                state.getDouble("columnHeight") < beforeActions.getDouble("columnHeight") &&
+                state.getBoolean("layoutMatchesViewport")
+        }
+        emitVolume()
+        assertSameReaderPosition(beforeActions, readerState())
+        assertEquals("Actions keys cannot turn the hidden Saved list", page, fixture.edition.currentPage)
         pressSystemBack()
         compose.onNodeWithTag("saved_reader_actions").assertDoesNotExist()
         compose.onNodeWithTag("saved_library_reader").assertIsDisplayed()
@@ -467,6 +496,26 @@ class SavedLibraryNativeVisualTest(private val fontScale: Float) {
         instrumentation.runOnMainSync { requireNotNull(findWebView(compose.activity.window.decorView)).evaluateJavascript(script) { result.set(it); latch.countDown() } }
         assertTrue("Production Saved reader WebView must answer", latch.await(10, TimeUnit.SECONDS))
         return JSONTokener(result.get()).nextValue()
+    }
+    private fun readerState(): JSONObject {
+        val state = js("""(function() {
+            var height = parseFloat(document.getElementById('eink-content').style.height);
+            var margins = InkReadFormatting.effectiveMargins();
+            return { generation: InkReadFormatting.documentId, anchor: InkReadFormatting.currentAnchor(),
+                commands: window.savedTestNativeCommands, page: _currentPage,
+                viewportHeight: innerHeight, columnHeight: height,
+                layoutMatchesViewport: Math.abs(height - (innerHeight - margins.top - margins.bottom)) < .1 };
+        })()""") as JSONObject
+        instrumentation.runOnMainSync {
+            state.put("webViewHeightPx", requireNotNull(findWebView(compose.activity.window.decorView)).height)
+        }
+        return state
+    }
+    private fun assertSameReaderPosition(expected: JSONObject, actual: JSONObject) {
+        assertEquals("The covered reader retains the same document", expected.getString("generation"), actual.getString("generation"))
+        assertEquals("The covering UI never delivers a native page command", expected.getInt("commands"), actual.getInt("commands"))
+        assertEquals("The covered reader retains the exact logical text/media anchor across reflow",
+            expected.getJSONObject("anchor").toString(), actual.getJSONObject("anchor").toString())
     }
     private fun awaitWebViewFrame() {
         val latch = CountDownLatch(1)
