@@ -151,5 +151,5 @@ jobs:
           name: article-annotations-${{ matrix.name }}-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             article-annotations-evidence/**
-            app/schemas/me.ash.reader.infrastructure.annotation.AnnotationDatabase/**
+            app/schemas/me.ash.reader.infrastructure.annotation.AnnotationsDatabase/**
           if-no-files-found: error
