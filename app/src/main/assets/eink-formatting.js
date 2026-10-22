@@ -119,9 +119,9 @@ var _didFinishInitialPagination = false;
         frame.style.columnWidth = width + 'px';
         frame.style.columnGap = (margins.left + margins.right) + 'px';
         document.documentElement.style.setProperty('--reader-column-height', height + 'px');
-        measurePageStride();
+        measurePageStride(width, margins.left + margins.right);
     }
-    function measurePageStride() {
+    function measurePageStride(width, gap) {
         // Blink quantizes column width and gap independently to layout units.
         // Their actual sum can differ from the fractional viewport by a fraction
         // of a pixel, accumulating into an entire wrong column in long articles.
@@ -142,9 +142,12 @@ var _didFinishInitialPagination = false;
             }
             document.body.appendChild(columnProbe);
         }
-        columnProbe.style.width = frame.style.width;
-        columnProbe.style.columnWidth = frame.style.columnWidth;
-        columnProbe.style.columnGap = frame.style.columnGap;
+        // CSSOM getters shorten decimal declarations (364.1904907 -> 364.19).
+        // Re-parsing them can lose another layout unit at fractional densities.
+        // Feed the probe the same original numbers assigned to the article.
+        columnProbe.style.width = width + 'px';
+        columnProbe.style.columnWidth = width + 'px';
+        columnProbe.style.columnGap = gap + 'px';
         var measured = columnProbe.children[1].getBoundingClientRect().left -
             columnProbe.children[0].getBoundingClientRect().left;
         _pageStride = isFinite(measured) && measured > 0 ? measured : _vw;

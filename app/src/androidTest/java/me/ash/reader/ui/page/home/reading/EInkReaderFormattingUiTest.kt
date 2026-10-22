@@ -245,10 +245,7 @@ class EInkReaderFormattingUiTest {
                 val zeroMargins = settled("zero-margin-controls-hidden")
                 assertStyleMatches(expected, zeroMargins)
                 assertAnchor("zero-margin-controls-hidden-anchor")
-                val glyph = zeroMargins.getJSONObject("anchorGlyph")
-                assertTrue("At zero margins the full anchored glyph must fit inside the actual WebView, not just the CSS line box",
-                    glyph.getDouble("left") >= -1.25 && glyph.getDouble("right") <= zeroMargins.getDouble("viewportWidth") + 1.25 &&
-                        glyph.getDouble("top") >= -1.25 && glyph.getDouble("bottom") <= zeroMargins.getDouble("viewportHeight") + 1.25)
+                assertFullAnchorInk(zeroMargins)
                 capture("zero-margin-article-fixture")
                 revealReaderControls()
                 assertAnchor("zero-margin-controls-revealed-anchor")
@@ -346,6 +343,7 @@ class EInkReaderFormattingUiTest {
         assertTrue("Emoji and code fallback remain measurable", fonts.getDouble("emojiWidth") > 0 && fonts.getDouble("codeWidth") > 0)
         assertFalse("Code must not use the article's selected font stack", fonts.getString("codeFont").contains("InkReadLatin"))
         assertScriptRanges(fonts.getJSONArray("faces"))
+        capture("selected-fonts-tab-platform-fixture")
         val filesBefore = fontFileNames()
         // Available selection is not an implicit request to download any unavailable face.
         clickTag("reader_formatting_font_language_english")
@@ -581,6 +579,141 @@ class EInkReaderFormattingUiTest {
         }
     }
 
+    /**
+     * A Range includes font ascent/descent whitespace, which can overhang a zero-margin line.
+     * Keep the normal box assertion. The only fallback is this fixture's leading 第, proven
+     * complete against another real, fully visible 第 in the same native screenshot. No canvas
+     * font substitution, guessed baseline, translation search or approximate mask matching.
+     */
+    @Suppress("DEPRECATION") // WebView.scale is its actual CSS-to-native scale, not rounded viewport width.
+    private fun assertFullAnchorInk(value: JSONObject) {
+        val glyph = value.getJSONObject("anchorGlyph")
+        if (glyph.getDouble("left") >= -1.25 && glyph.getDouble("right") <= value.getDouble("viewportWidth") + 1.25 &&
+            glyph.getDouble("top") >= -1.25 && glyph.getDouble("bottom") <= value.getDouble("viewportHeight") + 1.25) return
+        settleBarrier()
+        val evidence = JSONObject(js(INK_REFERENCE_PROBE) as String)
+        evidence.put("label", "zero-margin-native-ink-proof")
+        samples.put(evidence)
+        writeReport()
+        assertEquals("Only the fixture's known complete Han glyph can use the native ink oracle", "第", evidence.getString("character"))
+        assertTrue("Canonical source must be the first character of an ordinary fixture paragraph", evidence.getBoolean("sourceValid"))
+        assertTrue("Reference selection must use the live, settled fallback fonts", evidence.getBoolean("fontsReady"))
+        val references = evidence.getJSONArray("references")
+        assertTrue("A fully visible, identically styled source glyph is required, never skipped", references.length() > 0)
+        val source = evidence.getJSONObject("source")
+        val cssStyle = evidence.getJSONObject("style")
+        var scale = 0.0
+        val origin = IntArray(2)
+        val clip = android.graphics.Rect()
+        instrumentation.runOnMainSync {
+            val view = webView()
+            view.getLocationOnScreen(origin)
+            scale = view.scale.toDouble()
+            assertTrue("The actual WebView must have a visible native clip", view.getLocalVisibleRect(clip))
+            clip.offset(origin[0], origin[1])
+            assertTrue(clip.intersect(origin[0], origin[1], origin[0] + view.width, origin[1] + view.height))
+        }
+        assertTrue("CSS/native scale must be finite and positive", scale.isFinite() && scale > 0)
+        val bitmap = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
+        try {
+            assertTrue("Intersect the actual screenshot/window, not only layout bounds", clip.intersect(0, 0, bitmap.width, bitmap.height))
+            File(outputDirectory(), "$reportName-zero-margin-native-ink-proof.png").outputStream().use {
+                check(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it))
+            }
+            fun pixelFloor(number: Double) = kotlin.math.floor(number + .0001).toInt() // Float serialization noise only.
+            fun mapped(rect: JSONObject): android.graphics.Rect {
+                val left = pixelFloor(origin[0] + rect.getDouble("left") * scale)
+                val top = pixelFloor(origin[1] + rect.getDouble("top") * scale)
+                // A fixed size is shared by source/reference; the extra pixel covers fractional edges.
+                val width = kotlin.math.ceil((source.getDouble("right") - source.getDouble("left")) * scale).toInt() + 1
+                val height = kotlin.math.ceil((source.getDouble("bottom") - source.getDouble("top")) * scale).toInt() + 1
+                return android.graphics.Rect(left, top, left + width, top + height)
+            }
+            fun rectJson(rect: android.graphics.Rect) = JSONObject().put("left", rect.left).put("top", rect.top)
+                .put("right", rect.right).put("bottom", rect.bottom)
+            fun ink(x: Int, y: Int, threshold: Int, bounds: android.graphics.Rect): Boolean {
+                if (!bounds.contains(x, y)) return false // System bars/out-of-window pixels cannot supply missing ink.
+                val color = bitmap.getPixel(x, y)
+                return maxOf(android.graphics.Color.red(color), android.graphics.Color.green(color), android.graphics.Color.blue(color)) < threshold
+            }
+            val sourcePixels = mapped(source)
+            evidence.put("nativeScale", scale).put("nativeClip", rectJson(clip)).put("sourcePixels", rectJson(sourcePixels))
+            val attempts = JSONArray()
+            evidence.put("pixelComparisons", attempts)
+            var matched = false
+            for (index in 0 until references.length()) {
+                val reference = references.getJSONObject(index)
+                val referencePixels = mapped(reference)
+                if (!clip.contains(referencePixels)) continue
+                val width = referencePixels.width()
+                val height = referencePixels.height()
+                // Compare the ENTIRE Range-sized native rectangle, including any neighboring
+                // line ink at low leading. Never segment a CJK glyph at a blank row: that could
+                // silently discard a disconnected stroke. Different neighboring ink fails closed.
+                val sourceCrop = sourcePixels
+                val referenceCrop = referencePixels
+                val em = cssStyle.getString("fontSize").removeSuffix("px").toDouble() * scale
+                assertTrue("A complete native glyph rectangle must have substantial dimensions",
+                    width >= em * .75 && height >= em * .8)
+                val thresholds = listOf(64, 128, 224)
+                val masks = thresholds.map { threshold -> BooleanArray(width * height) { offset ->
+                    ink(referenceCrop.left + offset % width, referenceCrop.top + offset / width, threshold, clip)
+                } }
+                fun compare(bounds: android.graphics.Rect): JSONArray = JSONArray().also { comparisons ->
+                    thresholds.forEachIndexed { maskIndex, threshold ->
+                        val expected = masks[maskIndex]
+                        var missing = 0; var extra = 0
+                        expected.indices.forEach { offset ->
+                            val actual = ink(sourceCrop.left + offset % width, sourceCrop.top + offset / width, threshold, bounds)
+                            if (expected[offset] && !actual) missing++
+                            if (!expected[offset] && actual) extra++
+                        }
+                        comparisons.put(JSONObject().put("threshold", threshold).put("referenceInk", expected.count { it })
+                            .put("missingInk", missing).put("extraInk", extra).put("equal", missing == 0 && extra == 0))
+                    }
+                }
+                val comparisons = compare(clip)
+                val attempt = JSONObject().put("reference", reference).put("referenceCrop", rectJson(referenceCrop))
+                    .put("sourceCrop", rectJson(sourceCrop)).put("comparisons", comparisons)
+                attempts.put(attempt)
+                writeReport()
+                if ((0 until comparisons.length()).any { !comparisons.getJSONObject(it).getBoolean("equal") ||
+                        comparisons.getJSONObject(it).getInt("referenceInk") < 100 }) continue
+                // Crop genuine painted rows/columns out of the captured source pixels. These are
+                // oracle negative controls, not claims that the app physically changed its clip.
+                val negatives = JSONArray()
+                attempt.put("croppedNativePixelNegatives", negatives)
+                for (edge in listOf("top", "bottom", "left", "right")) {
+                    val cropped = android.graphics.Rect(clip)
+                    // Cut through a quarter of the darkest painted extent, not blank font-box
+                    // padding or just a few adjacent-line pixels. Every threshold must lose ink.
+                    val dark = masks.first().indices.filter { masks.first()[it] }
+                    val left = dark.minOf { it % width }; val right = dark.maxOf { it % width } + 1
+                    val top = dark.minOf { it / width }; val bottom = dark.maxOf { it / width } + 1
+                    when (edge) {
+                        "top" -> cropped.top = sourceCrop.top + top + (bottom - top) / 4
+                        "bottom" -> cropped.bottom = sourceCrop.top + bottom - (bottom - top) / 4
+                        "left" -> cropped.left = sourceCrop.left + left + (right - left) / 4
+                        "right" -> cropped.right = sourceCrop.left + right - (right - left) / 4
+                    }
+                    val rejected = compare(cropped)
+                    negatives.put(JSONObject().put("edge", edge).put("croppedClip", rectJson(cropped)).put("comparisons", rejected))
+                    writeReport()
+                    for (j in 0 until rejected.length()) {
+                        val result = rejected.getJSONObject(j)
+                        assertTrue("Cropping $edge must remove genuine painted pixels at every threshold", result.getInt("missingInk") > 0)
+                        assertFalse("The same native mask comparator must reject $edge clipping", result.getBoolean("equal"))
+                    }
+                }
+                matched = true
+                break
+            }
+            writeReport()
+            assertTrue("The full canonical glyph must exactly match a wholly visible native reference, not just contain some ink: $evidence", matched)
+        } finally { bitmap.recycle() }
+        assertAnchor("zero-margin-native-ink-anchor")
+    }
+
     private fun verifyNarrowToolbar() {
         rememberAnchor()
         revealReaderControls()
@@ -635,6 +768,7 @@ class EInkReaderFormattingUiTest {
             "layout" to listOf("margin_left", "margin_right", "margin_top", "margin_bottom", "paragraph_gap", "paragraph_indent"))
         sections.forEach { (name, controls) ->
             section(name)
+            if (name == "layout") capture("default-layout-tab-fixture")
             controls.forEach { control ->
                 scrollToTag("reader_formatting_${control}_value").assert(!hasSetTextAction())
                 for (direction in listOf("decrease", "increase")) {
@@ -1055,6 +1189,35 @@ class EInkReaderFormattingUiTest {
     companion object {
         private const val IMAGE_ORIGIN = "https://formatting-fixture.invalid"
         private const val PERSISTENCE_MARKER = "reader-formatting-test-process.json"
+        private val INK_REFERENCE_PROBE = """
+            (function(){
+                var frame=document.getElementById('eink-content'), expected=window.__formattingExpectedAnchor;
+                var nodes=[], walker=document.createTreeWalker(frame,NodeFilter.SHOW_TEXT), n;
+                while(n=walker.nextNode()) if(n.textContent.trim()&&!/^(STYLE|SCRIPT|NOSCRIPT)$/.test(n.parentElement.tagName)) nodes.push(n);
+                n=nodes[expected.node];
+                var character=n.textContent.slice(expected.offset,expected.offset+1);
+                function style(node){var c=getComputedStyle(node.parentElement), result={};
+                    ['fontFamily','fontSize','fontWeight','fontStyle','fontStretch','fontVariant','fontFeatureSettings',
+                     'fontVariationSettings','fontKerning','fontSynthesis','textRendering','lineHeight','letterSpacing','wordSpacing','color','opacity','filter',
+                     'textShadow','textTransform','textIndent','whiteSpace','writingMode','direction'].forEach(function(key){result[key]=c[key];});
+                    return result;}
+                function glyph(node,offset){var r=document.createRange();r.setStart(node,offset);r.setEnd(node,offset+1);
+                    var rects=Array.from(r.getClientRects());if(rects.length!==1)return null;
+                    var r=rects[0];return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height};}
+                var source=glyph(n,expected.offset), selectedStyle=style(n), references=[], width=innerWidth,height=innerHeight;
+                nodes.forEach(function(candidate,index){
+                    if(candidate===n||!candidate.parentElement.matches('p.format-text')||!/^第 [0-9]+ 段/.test(candidate.textContent))return;
+                    if(JSON.stringify(style(candidate))!==JSON.stringify(selectedStyle))return;
+                    var r=glyph(candidate,0);
+                    if(r&&r.left>=0&&r.top>=0&&r.right<=width&&r.bottom<=height&&
+                        Math.abs(r.width-source.width)<.001&&Math.abs(r.height-source.height)<.001){
+                        r.node=index;r.text=candidate.textContent.slice(0,32);references.push(r);}
+                });
+                return JSON.stringify({character:character,sourceValid:expected.offset===0&&n.parentElement.matches('p.format-text')&&/^第 [0-9]+ 段/.test(n.textContent),
+                    source:source,sourceText:n.textContent.slice(0,64),expectedAnchor:expected,style:selectedStyle,references:references,
+                    fontsReady:document.fonts.status==='loaded',faces:Array.from(document.fonts).map(function(f){return {family:f.family,status:f.status,range:f.unicodeRange};})});
+            })()
+        """.trimIndent()
         private val PROBE = """
             (function() {
                 var frame=document.getElementById('eink-content');
