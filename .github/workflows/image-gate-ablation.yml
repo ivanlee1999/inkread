@@ -1,0 +1,187 @@
+name: Causal image-gate ablation (not release baseline)
+
+on:
+  # One bounded causal comparison for PR #23, not the 0.16.13 release comparison.
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.github/workflows/image-gate-ablation.yml'
+      - 'app/src/main/java/me/ash/reader/ui/page/home/flow/ArticleItem.kt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-gate-ablation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  causal-comparison:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.number == 23
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - width: 400
+            size: 400x1000
+          - width: 1000
+            size: 1000x1200
+    env:
+      WIDTH: ${{ matrix.width }}
+      SIZE: ${{ matrix.size }}
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Check out exact unchanged measurement harness
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          path: harness
+      - name: Check out fixed optimized control (NOT 0.16.13)
+        uses: actions/checkout@v4
+        with:
+          ref: 8e0ee21205165604c62d0927ab130bbd48332dff
+          persist-credentials: false
+          path: baseline
+      - name: Check out exact candidate
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          path: candidate
+      - name: Verify fixed source identities and the single-file causal delta
+        run: |
+          set -euo pipefail
+          test "$(git -C harness rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git -C candidate rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git -C baseline rev-parse HEAD)" = 8e0ee21205165604c62d0927ab130bbd48332dff
+          mkdir -p ablation-artifacts
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          production_path = 'app/src/main/java/me/ash/reader/ui/page/home/flow/ArticleItem.kt'
+          workflow_path = '.github/workflows/image-gate-ablation.yml'
+          def tracked(side):
+              names = subprocess.check_output(['git', '-C', side, 'ls-files', '-z']).decode().split('\0')
+              return {name: hashlib.sha256((pathlib.Path(side) / name).read_bytes()).hexdigest()
+                      for name in names if name}
+          control, variant = tracked('baseline'), tracked('candidate')
+          changed = sorted(name for name in control.keys() | variant.keys() if control.get(name) != variant.get(name))
+          assert set(changed) == {production_path, workflow_path}, ('Unexpected causal comparison delta', changed)
+          revisions = {side: subprocess.check_output(['git', '-C', side, 'rev-parse', 'HEAD'], text=True).strip()
+                       for side in ('harness', 'baseline', 'candidate')}
+          revisions.update(
+              workflow_sha=os.environ['GITHUB_SHA'], run_id=os.environ['GITHUB_RUN_ID'],
+              purpose='Causal image-producer gate ablation; NOT a 0.16.13 release comparison',
+              roles={'baseline': 'optimized 8e0ee212 control', 'candidate': 'same production with only ArticleItem image-producer gating reverted'},
+              changed_tracked_paths=changed,
+              production_file_sha256={'baseline': control[production_path], 'candidate': variant[production_path]},
+              scales=['small', 'stress'], timing_order=['baseline', 'candidate', 'candidate', 'baseline', 'baseline', 'candidate'])
+          pathlib.Path('ablation-artifacts/run-provenance.json').write_text(json.dumps(revisions, indent=2) + '\n')
+          PY
+          cp harness/.github/workflows/image-gate-ablation.yml ablation-artifacts/
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - name: Prepare reviewed Android compile packages
+        run: sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
+      - name: Overlay identical unchanged measurement inputs and build optimized APKs
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s harness/scripts/performance -p 'test_*.py'
+          for side in baseline candidate; do
+            python3 harness/scripts/performance/overlay.py harness "$side"
+            (cd "$side" && ./gradlew --no-daemon --max-workers=2 -PenablePerformanceHarness=true assembleGithubPerformance)
+            mkdir -p "ablation-artifacts/$side"
+            mapfile -t apks < <(find "$side/app/build/outputs/apk/github/performance" -name '*.apk' -type f)
+            test "${#apks[@]}" -eq 1
+            cp "${apks[0]}" "ablation-artifacts/$side/performance.apk"
+            cp "$side/performance-provenance.json" "ablation-artifacts/$side/"
+            cp -r "$side/app/build/outputs/mapping/githubPerformance" "ablation-artifacts/$side/mapping"
+          done
+          python3 - <<'PY'
+          import json
+          a = json.load(open('ablation-artifacts/baseline/performance-provenance.json'))
+          b = json.load(open('ablation-artifacts/candidate/performance-provenance.json'))
+          assert a['harness_sha256'] == b['harness_sha256'], 'Both sides require the identical measurement harness'
+          assert a['harness_inputs'] == b['harness_inputs'], 'Measurement inputs differ'
+          PY
+          sha256sum ablation-artifacts/*/performance.apk > ablation-artifacts/apk-sha256.txt
+      - name: Enable reviewed emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Write separate causal driver with the unchanged normal measurement protocol
+        run: |
+          cat > run-image-gate-ablation.sh <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          adb shell wm size "$SIZE"
+          adb shell wm density 160
+          adb shell settings put system font_scale 1.0
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
+          adb shell svc wifi disable
+          adb shell svc data disable
+          if adb shell pm path com.google.android.apps.nexuslauncher | grep -q '^package:'; then
+            adb shell pm disable-user --user 0 com.google.android.apps.nexuslauncher
+            adb shell am force-stop com.google.android.apps.nexuslauncher
+          fi
+          BASELINE_SHA=$(git -C baseline rev-parse HEAD)
+          CANDIDATE_SHA=$(git -C candidate rev-parse HEAD)
+          HARNESS_SHA=$(python3 -c 'import json; print(json.load(open("ablation-artifacts/baseline/performance-provenance.json"))["harness_sha256"])')
+          # The normal driver still calls its two inputs baseline/candidate. Here baseline
+          # means optimized control 8e0ee212, NOT the published 0.16.13 release baseline.
+          python3 harness/scripts/performance/run.py \
+            --baseline ablation-artifacts/baseline/performance.apk --baseline-sha "$BASELINE_SHA" \
+            --candidate ablation-artifacts/candidate/performance.apk --candidate-sha "$CANDIDATE_SHA" \
+            --harness-sha "$HARNESS_SHA" --output ablation-results --width "$WIDTH" --scales small,stress
+          python3 harness/scripts/performance/summarize.py ablation-results
+          SH
+          chmod +x run-image-gate-ablation.sh
+      - name: Run matched causal pairs on one native AVD
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          cores: 2
+          ram-size: 4096M
+          disk-size: 6000M
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          script: ./run-image-gate-ablation.sh
+      - name: Label causal findings separately from release scores
+        if: always()
+        run: |
+          {
+            echo '## Causal image-gate ablation, NOT release-baseline evidence'
+            echo 'Baseline labels mean optimized control 8e0ee212. Candidate differs only in ArticleItem image-producer gating.'
+            echo 'Normal driver, three matched process pairs per scale; no additional diagnostic observers.'
+            test ! -f ablation-results/summary.md || cat ablation-results/summary.md
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve separate causal evidence and exact APK provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-gate-ablation-${{ matrix.width }}dp-${{ github.run_id }}
+          path: |
+            ablation-results/**
+            ablation-artifacts/**
+            baseline/app/build/outputs/logs/**
+            candidate/app/build/outputs/logs/**
+          if-no-files-found: warn
+          retention-days: 30

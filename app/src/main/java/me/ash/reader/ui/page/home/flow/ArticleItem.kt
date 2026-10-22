@@ -116,16 +116,18 @@ fun ArticleItem(
     val feed = articleWithFeed.feed
     val article = articleWithFeed.article
     val imagesEnabled = LocalFlowArticleListImage.current.value
-    // Text-only previews and measurement slots never consume a photo request. Leaving this
-    // branch also cancels its producer, so hiding images cannot publish stale candidates.
-    // Saved feed HTML/JSON can be substantial; keep its parsing away from the UI thread.
-    val image = if (!shouldPrepareArticleImage(imagesEnabled, preview, measurementOnly)) null else key(article.img, article.rawDescription, article.link) {
+    // Saved feed HTML/JSON can be substantial. Parse it away from the UI thread, and scope the
+    // work to this exact visible article and image preference. A changed key cancels the old
+    // producer, so disabling images cannot publish stale candidates or start a late lookup.
+    val image = if (measurementOnly) null else key(imagesEnabled, article.img, article.rawDescription, article.link) {
         val request by produceState<Any?>(initialValue = null) {
-            value = withContext(Dispatchers.Default) {
-                articleImageRequest(article.img, article.rawDescription, article.link)
+            if (imagesEnabled) {
+                value = withContext(Dispatchers.Default) {
+                    articleImageRequest(article.img, article.rawDescription, article.link)
+                }
             }
         }
-        request
+        if (imagesEnabled) request else null
     }
 
     ArticleItem(
