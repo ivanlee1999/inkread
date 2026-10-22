@@ -46,4 +46,19 @@ class EInkPaginationMathTest {
 
         assertEquals(1800.0, translation, 0.0)
     }
+
+    @Test
+    fun `fractional layout width retains equal margins without accumulated rounding`() {
+        // Native 1080px/density420 fixture: integer innerWidth=412, actual column
+        // frame=412.19049072265625. Do not round the actual frame before paging.
+        val stride = 412.19049072265625
+        val padding = 24.0
+        for (page in 0 until EInkPaginationMath.MAX_REASONABLE_PAGES) {
+            val translation = EInkPaginationMath.translationForPage(page, 500, stride)
+            val left = padding + page * stride - translation
+            val rightMargin = stride - (padding + page * stride + stride - padding * 2 - translation)
+            assertEquals("Left margin at page $page", padding, left, 0.000001)
+            assertEquals("Right margin at page $page", padding, rightMargin, 0.000001)
+        }
+    }
 }
