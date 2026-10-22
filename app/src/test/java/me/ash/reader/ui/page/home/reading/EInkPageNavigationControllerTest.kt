@@ -10,6 +10,7 @@ import org.junit.Test
 class EInkPageNavigationControllerTest {
 
     private val pagesApplied = mutableListOf<Int>()
+    private val commandIds = mutableListOf<Long>()
     private val pageChanges = mutableListOf<Pair<Int, Int>>()
     private val boundaries = mutableListOf<String>()
     private val feedbackDirections = mutableListOf<VolumeKeyEvent>()
@@ -23,6 +24,7 @@ class EInkPageNavigationControllerTest {
     @Before
     fun setUp() {
         pagesApplied.clear()
+        commandIds.clear()
         pageChanges.clear()
         boundaries.clear()
         feedbackDirections.clear()
@@ -33,7 +35,10 @@ class EInkPageNavigationControllerTest {
 
         controller = EInkPageNavigationController(
             onPageChanged = { page, total -> pageChanges.add(page to total) },
-            onApplyPageToWebView = { page -> pagesApplied.add(page) },
+            onApplyPageToWebView = { page, commandId ->
+                pagesApplied.add(page)
+                commandIds.add(commandId)
+            },
             onNextArticle = { nextArticleCalled = true },
             onPrevArticle = { prevArticleCalled = true },
             onBoundary = { msg -> boundaries.add(msg) },
@@ -197,7 +202,7 @@ class EInkPageNavigationControllerTest {
         assertEquals(8, controller.currentPage)
 
         // Now total shrinks to 5
-        controller.onTotalPagesUpdated(5)
+        controller.onTotalPagesUpdated(5, controller.lastIssuedCommandId)
 
         assertEquals(4, controller.currentPage) // clamped to last page
         assertTrue(pagesApplied.contains(4)) // WebView updated
@@ -210,7 +215,7 @@ class EInkPageNavigationControllerTest {
         assertEquals(1, controller.currentPage)
 
         pagesApplied.clear()
-        controller.onTotalPagesUpdated(8)
+        controller.onTotalPagesUpdated(8, controller.lastIssuedCommandId)
 
         assertEquals(1, controller.currentPage) // unchanged
         assertTrue(pagesApplied.isEmpty()) // no WebView update needed for clamping
@@ -304,9 +309,104 @@ class EInkPageNavigationControllerTest {
         controller.onRepaginated(20, 8)
         assertEquals(8, controller.currentPage)
         assertEquals(20, controller.totalPages)
-        assertEquals(8, pagesApplied.last())
+        assertTrue("JS reflow must not be echoed as a new command", pagesApplied.isEmpty())
         controller.onRepaginated(2, 99)
         assertEquals(1, controller.currentPage)
+    }
+
+    @Test fun `delayed reflow cannot roll back a newer accepted native turn`() {
+        controller.onPaginationReady(20)
+        // The bridge reports page zero before NEXT, but its main-thread callback arrives later.
+        controller.handleNavigation(VolumeKeyEvent.NEXT)
+        assertFalse(controller.onRepaginated(20, 0, appliedCommandId = 0))
+        assertEquals(1, controller.currentPage)
+        controller.handleNavigation(VolumeKeyEvent.NEXT)
+        assertEquals(listOf(1, 2), pagesApplied)
+        assertEquals(listOf(1L, 2L), commandIds)
+    }
+
+    @Test fun `rapid accepted turns retain FIFO and ignore intermediate acknowledgements`() {
+        controller.onPaginationReady(30)
+        repeat(8) { controller.handleNavigation(VolumeKeyEvent.NEXT) }
+        assertEquals((1..8).toList(), pagesApplied)
+        assertEquals((1L..8L).toList(), commandIds)
+        (1L..7L).forEach { id ->
+            assertFalse(controller.onRepaginated(30, id.toInt(), id))
+            assertEquals(8, controller.currentPage)
+        }
+        assertTrue(controller.onRepaginated(30, 8, 8))
+        assertEquals(8, pagesApplied.size)
+        controller.handleNavigation(VolumeKeyEvent.PREV)
+        assertEquals(7, pagesApplied.last())
+        assertEquals(9L, commandIds.last())
+    }
+
+    @Test fun `latest acknowledged reflow adopts logical position without echoing a command`() {
+        controller.onPaginationReady(20)
+        controller.handleNavigation(VolumeKeyEvent.NEXT)
+        assertTrue(controller.onRepaginated(40, 12, appliedCommandId = 1))
+        assertEquals(12, controller.currentPage)
+        assertEquals(40, controller.totalPages)
+        assertEquals(listOf(1), pagesApplied)
+        assertEquals(1L, controller.lastIssuedCommandId)
+        controller.handleNavigation(VolumeKeyEvent.NEXT)
+        assertEquals(listOf(1, 13), pagesApplied)
+    }
+
+    @Test fun `same or clamped command acknowledgement synchronizes count without a second command`() {
+        controller.onPaginationReady(20)
+        controller.handleNavigation(VolumeKeyEvent.NEXT)
+        assertTrue(controller.onRepaginated(1, 0, appliedCommandId = 1))
+        assertEquals(0, controller.currentPage)
+        assertEquals(1, controller.totalPages)
+        assertEquals(listOf(1), pagesApplied)
+        controller.handleNavigation(VolumeKeyEvent.NEXT)
+        assertEquals(listOf("No more articles"), boundaries)
+        assertEquals(1L, controller.lastIssuedCommandId)
+    }
+
+    @Test fun `queued initial turns receive command identities after restored readiness`() {
+        controller.handleNavigation(VolumeKeyEvent.NEXT)
+        controller.handleNavigation(VolumeKeyEvent.PREV)
+        assertTrue(controller.onPaginationReady(20, restoredPage = 12, appliedCommandId = 0))
+        assertEquals(listOf(13, 12), pagesApplied)
+        assertEquals(listOf(1L, 2L), commandIds)
+        assertFalse(controller.onPaginationReady(20, restoredPage = 0, appliedCommandId = 0))
+        assertEquals(12, controller.currentPage)
+    }
+
+    @Test fun `content reset restarts identity and refuses unknown command state`() {
+        controller.onPaginationReady(20)
+        controller.handleNavigation(VolumeKeyEvent.NEXT)
+        controller.onContentReset()
+        assertEquals(0L, controller.lastIssuedCommandId)
+        assertFalse(controller.onRepaginated(20, 9, appliedCommandId = 1))
+        assertEquals(0, controller.currentPage)
+        assertTrue(controller.onPaginationReady(20, restoredPage = 5, appliedCommandId = 0))
+        controller.handleNavigation(VolumeKeyEvent.NEXT)
+        assertEquals(1L, controller.lastIssuedCommandId)
+        assertEquals(6, controller.currentPage)
+        // Cross-document callbacks with coincident IDs are rejected by the bridge generation check.
+    }
+
+    @Test fun `stale count update cannot clamp a newer native page`() {
+        controller.onPaginationReady(20)
+        controller.handleNavigation(VolumeKeyEvent.NEXT)
+        assertFalse(controller.onTotalPagesUpdated(1, appliedCommandId = 0))
+        assertEquals(1, controller.currentPage)
+        assertEquals(20, controller.totalPages)
+        assertEquals(listOf(1), pagesApplied)
+    }
+
+    @Test fun `callback cannot claim a command identity native has not issued`() {
+        controller.onPaginationReady(20)
+        controller.handleNavigation(VolumeKeyEvent.NEXT)
+        assertFalse(controller.onRepaginated(21, 11, appliedCommandId = 2))
+        assertFalse(controller.onPaginationReady(22, restoredPage = 12, appliedCommandId = 2))
+        assertFalse(controller.onTotalPagesUpdated(23, appliedCommandId = 2))
+        assertEquals(1, controller.currentPage)
+        assertEquals(20, controller.totalPages)
+        assertEquals(1L, controller.lastIssuedCommandId)
     }
 
 }

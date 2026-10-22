@@ -186,9 +186,11 @@ fun EInkPaginatedContent(
     var currentPage by rememberSaveable { mutableIntStateOf(0) }
     var totalPages by rememberSaveable { mutableIntStateOf(0) }
 
-    // JS has already placed the anchor during reflow. Never echo its notification
-    // as an asynchronous goToPage: a stale echo could overwrite a newer anchor.
-    val applyingRepagination = remember { AtomicBoolean(false) }
+    // Formatting is deliberately not part of document identity: only article changes reload HTML.
+    val documentGeneration = remember(articleId, link, contentIdentity, title, feedName, author, publishedDate, dateLabel) {
+        UUID.randomUUID().toString()
+    }
+    val currentGeneration = rememberUpdatedState(documentGeneration)
     // Extracted navigation controller — keeps page-state decisions testable
     // and queues volume key events received while pagination is resetting.
     val navController = remember {
@@ -196,10 +198,9 @@ fun EInkPaginatedContent(
             onPageChanged = { page, total ->
                 currentOnPageChanged?.invoke(page, total)
             },
-            onApplyPageToWebView = { page ->
-                if (!applyingRepagination.get()) {
-                    webViewRef.value?.evaluateJavascript("goToPage($page)", null)
-                }
+            onApplyPageToWebView = { page, commandId ->
+                val generation = EInkReaderFormatting.quote(currentGeneration.value)
+                webViewRef.value?.evaluateJavascript("goToPage($page,$commandId,$generation)", null)
             },
             onNextArticle = {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -236,11 +237,6 @@ fun EInkPaginatedContent(
             if (reserveVolumeKeys) VolumeKeyEventBus.unregister(VolumeKeyPriority.HIGH, owner)
         }
     }
-    // Formatting is deliberately not part of document identity: only article changes reload HTML.
-    val documentGeneration = remember(articleId, link, contentIdentity, title, feedName, author, publishedDate, dateLabel) {
-        UUID.randomUUID().toString()
-    }
-    val currentGeneration = rememberUpdatedState(documentGeneration)
     // A successful accepted turn is published immediately by JS. Keep that exact
     // canonical position available for disposal even if the WebView cannot run JS.
     fun persistLatestReadingAnchor() {
@@ -548,31 +544,26 @@ fun EInkPaginatedContent(
                             }
                             addJavascriptInterface(
                                 EInkJsInterface(
-                                    onTotalPages = { generation, pages ->
+                                    onTotalPages = { generation, pages, commandId ->
                                         Handler(Looper.getMainLooper()).post {
                                             if (generation != currentGeneration.value || webViewRef.value == null) return@post
-                                            navController.onTotalPagesUpdated(pages)
+                                            navController.onTotalPagesUpdated(pages, commandId)
                                             totalPages = navController.totalPages
                                             currentPage = navController.currentPage
                                         }
                                     },
-                                    onRepaginated = { generation, pages, page ->
+                                    onRepaginated = { generation, pages, page, commandId ->
                                         Handler(Looper.getMainLooper()).post {
                                             if (generation != currentGeneration.value || webViewRef.value == null) return@post
-                                            applyingRepagination.set(true)
-                                            try {
-                                                navController.onRepaginated(pages, page)
-                                            } finally {
-                                                applyingRepagination.set(false)
-                                            }
+                                            navController.onRepaginated(pages, page, commandId)
                                             totalPages = navController.totalPages
                                             currentPage = navController.currentPage
                                         }
                                     },
-                                    onInitialPaginationReady = { generation, pages, restoredPage ->
+                                    onInitialPaginationReady = { generation, pages, restoredPage, commandId ->
                                         Handler(Looper.getMainLooper()).post {
                                             if (generation != currentGeneration.value || webViewRef.value == null) return@post
-                                            navController.onPaginationReady(pages, restoredPage)
+                                            if (!navController.onPaginationReady(pages, restoredPage, commandId)) return@post
                                             isInitialPaginationReady = true
                                             totalPages = navController.totalPages
                                             currentPage = navController.currentPage
@@ -799,20 +790,20 @@ private data class EInkReadingAnchorSnapshot(
 )
 
 private class EInkJsInterface(
-    private val onTotalPages: (String, Int) -> Unit,
-    private val onInitialPaginationReady: (String, Int, Int) -> Unit,
-    private val onRepaginated: (String, Int, Int) -> Unit,
+    private val onTotalPages: (String, Int, Long) -> Unit,
+    private val onInitialPaginationReady: (String, Int, Int, Long) -> Unit,
+    private val onRepaginated: (String, Int, Int, Long) -> Unit,
     private val onReadingAnchor: (String, String, String, String) -> Unit,
     private val onReadingAnchorRestore: (String, String) -> Unit,
 ) {
     @JavascriptInterface
-    fun onTotalPages(generation: String, pages: Int) = onTotalPages.invoke(generation, pages)
+    fun onTotalPages(generation: String, pages: Int, commandId: Long) = onTotalPages.invoke(generation, pages, commandId)
 
     @JavascriptInterface
-    fun onRepaginated(generation: String, pages: Int, page: Int) = onRepaginated.invoke(generation, pages, page)
+    fun onRepaginated(generation: String, pages: Int, page: Int, commandId: Long) = onRepaginated.invoke(generation, pages, page, commandId)
 
     @JavascriptInterface
-    fun onInitialPaginationReady(generation: String, pages: Int, page: Int) = onInitialPaginationReady.invoke(generation, pages, page)
+    fun onInitialPaginationReady(generation: String, pages: Int, page: Int, commandId: Long) = onInitialPaginationReady.invoke(generation, pages, page, commandId)
 
     @JavascriptInterface
     fun onReadingAnchor(generation: String, itemId: String, revision: String, json: String) =

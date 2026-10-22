@@ -9,11 +9,12 @@ var _didFinishInitialPagination = false;
     var margins = { left: 0, right: 0, top: 0, bottom: 0 };
     var fontCss = '', pendingAnchor = null, columnProbe = null;
     var readingIdentity = window._inkreadReadingIdentity || null;
+    var lastAppliedCommandId = 0;
 
     function notify(name) {
         try {
-            if (name === 'ready') Android.onInitialPaginationReady(window._inkreadGeneration, _totalPages, _currentPage);
-            else Android.onRepaginated(window._inkreadGeneration, _totalPages, _currentPage);
+            if (name === 'ready') Android.onInitialPaginationReady(window._inkreadGeneration, _totalPages, _currentPage, lastAppliedCommandId);
+            else Android.onRepaginated(window._inkreadGeneration, _totalPages, _currentPage, lastAppliedCommandId);
         } catch (ignored) {}
     }
     // Persist immutable DOM positions, never CSS page numbers. The identity includes
@@ -124,16 +125,35 @@ var _didFinishInitialPagination = false;
         _currentPage = Math.min(_totalPages - 1, Math.max(0, Math.round(n) || 0));
         frame.style.transform = 'translateX(-' + (_currentPage * _pageStride) + 'px)';
     }
-    window.goToPage = function (n) {
+    window.goToPage = function (n, commandId, expectedGeneration) {
         if (!frame || sessionOpen) return;
+        if (expectedGeneration !== undefined && expectedGeneration !== window._inkreadGeneration) return;
+        var hasCommandId = commandId !== undefined;
+        if (hasCommandId && (typeof commandId !== 'number' || !isFinite(commandId) ||
+            commandId % 1 || commandId < lastAppliedCommandId)) return;
+        // A retried command may arrive after a valid reflow moved its anchor to
+        // another page. Acknowledge current geometry, never replay its old target.
+        if (hasCommandId && commandId === lastAppliedCommandId) {
+            notify('reflow');
+            return;
+        }
         var previous = _currentPage;
         placePage(n);
-        // Native onRepaginated echoes the same page. It must not replace the
-        // canonical anchor with a different first word on that reflowed page.
+        if (hasCommandId) lastAppliedCommandId = commandId;
+        // A same-page command must not replace the canonical anchor with a
+        // different first word on that reflowed page.
         if (previous !== _currentPage || !anchor) {
             anchor = captureAnchor();
+            // A font/image/resize event may already have queued a reflow with
+            // the previous page's anchor. An accepted turn supersedes it; that
+            // later animation frame must not undo this newer reading position.
+            pendingAnchor = anchor;
             publishReadingAnchor();
         }
+        // Even a same-page or clamped command acknowledges its handled ID and
+        // latest page count. Native can then discard an older queued reflow
+        // without losing the authoritative result of its newest page command.
+        if (hasCommandId) notify('reflow');
     };
     function layoutViewport() {
         // Never round the CSS viewport: integer innerWidth drifts at 420dpi.

@@ -13,7 +13,7 @@ import me.ash.reader.infrastructure.android.VolumeKeyEvent
  */
 class EInkPageNavigationController(
     private val onPageChanged: (currentPage: Int, totalPages: Int) -> Unit = { _, _ -> },
-    private val onApplyPageToWebView: (page: Int) -> Unit = {},
+    private val onApplyPageToWebView: (page: Int, commandId: Long) -> Unit = { _, _ -> },
     private val onNextArticle: () -> Unit = {},
     private val onPrevArticle: () -> Unit = {},
     private val onBoundary: (message: String) -> Unit = {},
@@ -26,6 +26,10 @@ class EInkPageNavigationController(
     var totalPages: Int = 0
         private set
     var isReady: Boolean = false
+        private set
+
+    /** Per-document transport identity, not a timing-based debounce. */
+    var lastIssuedCommandId: Long = 0
         private set
 
     private var articleNavigationPending = false
@@ -51,33 +55,41 @@ class EInkPageNavigationController(
      * Sets page count and the JS-restored page, marks ready, and flushes any
      * queued navigation events.
      */
-    fun onPaginationReady(pages: Int, restoredPage: Int = 0) {
+    fun onPaginationReady(pages: Int, restoredPage: Int = 0, appliedCommandId: Long = 0): Boolean {
+        if (appliedCommandId != lastIssuedCommandId) return false
         totalPages = maxOf(1, pages)
         currentPage = restoredPage.coerceIn(0, totalPages - 1)
         isReady = true
         onPageChanged(currentPage + 1, totalPages)
         flushPending()
+        return true
     }
 
     /**
      * Called when JS bridge reports an updated total page count (e.g. after
      * image reflow). Clamps currentPage if it exceeds the new total.
      */
-    fun onTotalPagesUpdated(pages: Int) {
+    fun onTotalPagesUpdated(pages: Int, appliedCommandId: Long = 0): Boolean {
+        if (appliedCommandId != lastIssuedCommandId) return false
         totalPages = maxOf(1, pages)
         if (currentPage >= totalPages) {
             currentPage = totalPages - 1
-            onApplyPageToWebView(currentPage)
+            applyPageToWebView(currentPage)
         }
         onPageChanged(currentPage + 1, totalPages)
+        return true
     }
 
-    /** Restore the logical position after a viewport resize changes the columns. */
-    fun onRepaginated(pages: Int, page: Int) {
+    /**
+     * Adopt JS reflow/command acknowledgement only if it observed our newest command.
+     * JS has already placed this page. Echoing it would create another stale command.
+     */
+    fun onRepaginated(pages: Int, page: Int, appliedCommandId: Long = 0): Boolean {
+        if (appliedCommandId != lastIssuedCommandId) return false
         totalPages = maxOf(1, pages)
         currentPage = page.coerceIn(0, totalPages - 1)
-        onApplyPageToWebView(currentPage)
         onPageChanged(currentPage + 1, totalPages)
+        return true
     }
 
     /**
@@ -91,6 +103,7 @@ class EInkPageNavigationController(
         totalPages = 0
         pendingQueue.clear()
         articleNavigationPending = false
+        lastIssuedCommandId = 0
     }
 
     /**
@@ -112,6 +125,11 @@ class EInkPageNavigationController(
         currentPage = page.coerceIn(0, maxOf(0, totalPages - 1))
     }
 
+    private fun applyPageToWebView(page: Int) {
+        lastIssuedCommandId++
+        onApplyPageToWebView(page, lastIssuedCommandId)
+    }
+
     private fun executeNavigation(event: VolumeKeyEvent) {
         when (event) {
             VolumeKeyEvent.NEXT -> performNextPage()
@@ -122,7 +140,7 @@ class EInkPageNavigationController(
     private fun performNextPage() {
         if (currentPage < totalPages - 1) {
             currentPage++
-            onApplyPageToWebView(currentPage)
+            applyPageToWebView(currentPage)
             onPageChanged(currentPage + 1, totalPages)
             onPageTurnFeedback(VolumeKeyEvent.NEXT)
         } else if (hasNextArticle()) {
@@ -137,7 +155,7 @@ class EInkPageNavigationController(
     private fun performPrevPage() {
         if (currentPage > 0) {
             currentPage--
-            onApplyPageToWebView(currentPage)
+            applyPageToWebView(currentPage)
             onPageChanged(currentPage + 1, totalPages)
             onPageTurnFeedback(VolumeKeyEvent.PREV)
         } else if (hasPrevArticle()) {

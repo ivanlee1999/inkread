@@ -145,6 +145,114 @@ test('late ordinary images and font readiness reflow using the pre-event anchor'
     assert.deepEqual(f.anchor(),anchor);assertAnchorVisible(f);
 });
 
+for (const event of ['font', 'image', 'resize']) {
+    test(`queued ${event} reflow retains newer rapid forward and backward turns`,async()=>{
+        const f=fixture();await f.flush();f.context.goToPage(6);
+        if(event==='font')f.fontListeners.get('loadingdone')();
+        else if(event==='image')f.frameListeners.get('load')();
+        else f.fireResize(f.context.innerWidth,f.context.innerHeight);
+        // All these turns arrive after the event but before its animation frame.
+        for(const page of [7,8,7,8,9])f.context.goToPage(page);
+        const accepted=f.anchor();
+        assert.equal(f.context._currentPage,9);
+        await f.flush();
+        assert.equal(f.context._currentPage,9,'A queued reflow must not roll an accepted turn back');
+        assert.deepEqual(f.anchor(),accepted);assertAnchorVisible(f);
+        assert.equal(f.calls.filter(c=>c[0]==='reflow').at(-1)[3],9,'Native receives the latest page, not the event-time page');
+    });
+}
+
+test('initial formatting font-ready reflow cannot undo the first accepted turn',async()=>{
+    const f=fixture();await f.flush();
+    f.context.InkReadFormatting.apply({...defaults});
+    await Promise.resolve(); // fonts.ready has queued its rAF, but it has not run.
+    f.context.goToPage(1);const accepted=f.anchor();
+    await f.flush();
+    assert.equal(f.context._currentPage,1);
+    assert.deepEqual(f.anchor(),accepted);assertAnchorVisible(f);
+});
+
+test('correlated ready, reflow and rapid command acknowledgements carry the applied ID',async()=>{
+    const f=fixture();await f.flush();
+    assert.deepEqual(f.calls.find(c=>c[0]==='ready'),['ready','unchanged-document',f.context._totalPages,0,0]);
+    const initialPages=f.context._totalPages;
+    f.context.InkReadFormatting.apply({...defaults,fontSize:22});
+    assert.notEqual(f.context._totalPages,initialPages,'Exercise acknowledgements carrying a changed page count');
+    const oldReport=f.calls.filter(c=>c[0]==='reflow').at(-1).slice();
+    assert.equal(oldReport[4],0);
+    await Promise.resolve(); // Queue font-ready reflow before the newer commands.
+    for(const [page,id] of [[1,1],[2,2],[1,3]]) {
+        f.context.goToPage(page,id,'unchanged-document');
+        assert.deepEqual(f.calls.at(-1),['reflow','unchanged-document',f.context._totalPages,page,id]);
+    }
+    const accepted=f.anchor();await f.flush();
+    assert.deepEqual(f.anchor(),accepted);assertAnchorVisible(f);
+    assert.deepEqual(f.calls.at(-1),['reflow','unchanged-document',f.context._totalPages,1,3]);
+    assert.equal(oldReport[3],0);assert.equal(oldReport[4],0,'An older posted report remains distinguishable');
+});
+
+test('correlated same-page and clamped commands acknowledge without replacing the canonical anchor',async()=>{
+    const expected={node:17,offset:333};
+    const f=fixture({identity:readingIdentity,savedAnchor:envelope(expected)});await f.flush();
+    const restoredPage=f.context._currentPage;
+    assert.deepEqual(f.calls.find(c=>c[0]==='ready'),['ready','unchanged-document',f.context._totalPages,restoredPage,0]);
+    f.context.goToPage(restoredPage,1,'unchanged-document');
+    assert.deepEqual(f.anchor(),expected);assert.equal(f.calls.filter(c=>c[0]==='anchor').length,0);
+    assert.deepEqual(f.calls.at(-1),['reflow','unchanged-document',f.context._totalPages,restoredPage,1]);
+    f.context.goToPage(f.context._totalPages+10,2,'unchanged-document');const lastAnchor=f.anchor();
+    f.context.goToPage(f.context._totalPages+20,3,'unchanged-document');
+    assert.deepEqual(f.anchor(),lastAnchor);
+    assert.deepEqual(f.calls.at(-1),['reflow','unchanged-document',f.context._totalPages,f.context._totalPages-1,3]);
+    f.context.goToPage(-10,4,'unchanged-document');
+    assert.deepEqual(f.calls.at(-1),['reflow','unchanged-document',f.context._totalPages,0,4]);
+    assert.deepEqual(f.calls.filter(c=>c[0]==='reflow').map(c=>c[4]),[1,2,3,4]);
+});
+
+test('correlated commands reject an old document generation or an older command ID',async()=>{
+    const f=fixture();await f.flush();f.context.goToPage(4,2,'unchanged-document');
+    const accepted=f.anchor(),count=f.calls.length;
+    f.context.goToPage(8,3,'old-document');
+    f.context.goToPage(10,1,'unchanged-document');
+    assert.equal(f.context._currentPage,4);assert.deepEqual(f.anchor(),accepted);
+    assert.equal(f.calls.length,count,'Rejected commands do not acknowledge or publish an anchor');
+    f.fontListeners.get('loadingdone')();await f.flush();
+    assert.deepEqual(f.calls.at(-1),['reflow','unchanged-document',f.context._totalPages,4,2]);
+});
+
+test('correlated duplicate command acknowledges current geometry without replaying its old target',async()=>{
+    const f=fixture();await f.flush();f.context.goToPage(10,1,'unchanged-document');
+    const accepted=f.anchor();
+    f.context.InkReadFormatting.apply({...defaults,fontSize:30});await f.flush();
+    const reflowedPage=f.context._currentPage;
+    assert.notEqual(reflowedPage,10,'Exercise a real reflow after the command was handled');
+    assert.deepEqual(f.anchor(),accepted);assertAnchorVisible(f);
+    const count=f.calls.length;f.context.goToPage(10,1,'unchanged-document');
+    assert.equal(f.context._currentPage,reflowedPage,'A duplicate ID must not replay the old absolute target');
+    assert.deepEqual(f.anchor(),accepted);assert.equal(f.calls.length,count+1);
+    assert.deepEqual(f.calls.at(-1),['reflow','unchanged-document',f.context._totalPages,reflowedPage,1]);
+});
+
+test('correlated formatting sessions block commands without advancing their applied ID',async()=>{
+    const f=fixture();await f.flush();f.context.goToPage(4,1,'unchanged-document');
+    const accepted=f.anchor(),count=f.calls.length;
+    f.context.InkReadFormatting.beginSession();f.context.goToPage(5,2,'unchanged-document');
+    assert.equal(f.calls.length,count);assert.deepEqual(f.anchor(),accepted);
+    f.context.InkReadFormatting.apply({...defaults,fontSize:28});await f.flush();
+    assert.equal(f.calls.at(-1)[4],1);assert.deepEqual(f.anchor(),accepted);
+    f.context.InkReadFormatting.endSession(true,defaults);await f.flush();
+    assert.equal(f.calls.at(-1)[4],1);assert.deepEqual(f.anchor(),accepted);
+    f.context.goToPage(5,3,'unchanged-document');
+    assert.deepEqual(f.calls.at(-1),['reflow','unchanged-document',f.context._totalPages,5,3]);
+});
+
+test('correlated legacy one-argument navigation keeps its behavior and the last native command ID',async()=>{
+    const f=fixture();await f.flush();f.context.goToPage(2,7,'unchanged-document');
+    const count=f.calls.length;f.context.goToPage(3);
+    assert.equal(f.context._currentPage,3);assert.equal(f.calls.length,count,'Legacy calls do not force a native acknowledgement');
+    f.frameListeners.get('load')();await f.flush();
+    assert.deepEqual(f.calls.at(-1),['reflow','unchanged-document',f.context._totalPages,3,7]);
+});
+
 test('extreme insets are temporary effective values and retain one complete requested line',async()=>{
     const f=fixture();await f.flush();f.context.goToPage(12);const anchor=f.anchor();f.fireResize(160,210);await f.flush();
     const requested={...defaults,fontSize:48,lineHeight:2.5,marginLeft:96,marginRight:96,marginTop:96,marginBottom:96};
