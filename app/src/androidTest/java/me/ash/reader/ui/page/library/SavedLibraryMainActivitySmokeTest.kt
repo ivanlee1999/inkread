@@ -17,7 +17,6 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
-import androidx.test.rule.GrantPermissionRule
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -48,7 +47,6 @@ import org.junit.Test
  */
 class SavedLibraryMainActivitySmokeTest {
     @get:Rule val compose = createEmptyComposeRule()
-    @get:Rule val notifications = GrantPermissionRule.grant(Manifest.permission.POST_NOTIFICATIONS)
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
     private val context get() = instrumentation.targetContext
     private lateinit var database: SavedLibraryDatabase
@@ -63,6 +61,9 @@ class SavedLibraryMainActivitySmokeTest {
             "MainActivity smoke requires the explicit disposable, offline Saved workflow fixture"
         }
         check(context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0)
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            instrumentation.uiAutomation.grantRuntimePermission(context.packageName, Manifest.permission.POST_NOTIFICATIONS)
+        }
         val app = context.applicationContext as AndroidApp
         withTimeout(15_000) {
             val account = requireNotNull(app.accountService.currentAccountFlow.first { it != null })

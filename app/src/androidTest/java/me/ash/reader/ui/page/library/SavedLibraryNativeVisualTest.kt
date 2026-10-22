@@ -290,7 +290,7 @@ class SavedLibraryNativeVisualTest(private val fontScale: Float) {
             val card = compose.onNodeWithTag(itemTag, useUnmergedTree = true).assertIsDisplayed().getUnclippedBoundsInRoot()
             assertTrue("The complete $id block, including offline status, fits the printed page: $card / $viewport",
                 card.top >= viewport.top && card.bottom <= viewport.bottom && card.left >= viewport.left && card.right <= viewport.right)
-            assertTrue(card.height > 0.dp)
+            assertTrue(card.bottom > card.top)
             val texts = compose.onAllNodes(hasAnyAncestor(hasTestTag(itemTag)) and
                 SemanticsMatcher.keyIsDefined(SemanticsActions.GetTextLayoutResult), useUnmergedTree = true)
             texts.fetchSemanticsNodes().indices.forEach { index ->

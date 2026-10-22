@@ -125,6 +125,10 @@ class SavedLibraryRoomPersistenceTest {
             assertEquals(1, ids.toSet().size)
             assertEquals(1, database.savedLibraryDao().all().size)
             val id = ids.first()
+            // Bypass the repository mutex to exercise SQLite's unique normalized-URL index.
+            val existing = requireNotNull(database.savedLibraryDao().get(id))
+            assertEquals(-1L, database.savedLibraryDao().insert(existing.copy(id = "duplicate-id")))
+            assertEquals(1, database.savedLibraryDao().all().size)
             original.move(id, SavedLocation.LATER)
             original.setRead(id, true)
             val savedAt = database.savedLibraryDao().get(id)!!.savedAt

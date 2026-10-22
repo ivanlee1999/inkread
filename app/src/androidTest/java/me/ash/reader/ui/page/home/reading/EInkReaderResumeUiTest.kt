@@ -58,6 +58,7 @@ class EInkReaderResumeUiTest {
     private val pages = AtomicInteger()
     private val saves = AtomicInteger()
     private val exits = AtomicInteger()
+    private val anchorAtExit = AtomicReference<String?>(null)
     private val anchors = CopyOnWriteArrayList<String>()
     private val pageEvents = CopyOnWriteArrayList<Int>()
     private val restoreResults = CopyOnWriteArrayList<String>()
@@ -127,9 +128,12 @@ class EInkReaderResumeUiTest {
         assertEquals(0, exits.get())
         js("goToPage(Math.min(5, _totalPages - 1))")
         val expected = snapshot().getJSONObject("anchor").toString()
+        compose.waitUntil(5_000) { anchors.any { JSONObject(it).getJSONObject("anchor").toString() == expected } }
+        compose.runOnIdle { anchors.clear(); anchorAtExit.set(null) }
         pressBack()
         compose.waitUntil(5_000) { exits.get() == 1 }
-        assertEquals(expected, JSONObject(anchors.last()).getJSONObject("anchor").toString())
+        // A page-turn callback or a later disposal export cannot satisfy the exit ordering.
+        assertEquals(expected, JSONObject(requireNotNull(anchorAtExit.get())).getJSONObject("anchor").toString())
     }
 
     @Test fun savedReaderZeroMarginsStayInsideSystemBarsWithoutDoubleToolbarInsets() {
@@ -235,7 +239,7 @@ class EInkReaderResumeUiTest {
                         onReadingAnchorChanged = { _, _, json -> anchors += json },
                         onReadingAnchorRestore = { restoreResults += it },
                         onSaveArticle = { saves.incrementAndGet() },
-                        onBack = { exits.incrementAndGet(); visible.value = false },
+                        onBack = { anchorAtExit.set(anchors.lastOrNull()); exits.incrementAndGet(); visible.value = false },
                     )
                 }
             }
