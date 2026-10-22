@@ -211,6 +211,10 @@ class EInkReaderAnnotationUiTest {
         assertEquals(true, note.get())
         assertEquals(1, saved.getInt("textMapVersion"))
         assertEquals(true, js("window.getSelection().isCollapsed"))
+        compose.runOnIdle {
+            assertTrue("Add note must transfer ownership to editing", editing.value)
+            assertFalse("Capture must leave native selection mode", selecting.value)
+        }
         val before = page.get()
         volume(KeyEvent.KEYCODE_VOLUME_DOWN)
         settle()
@@ -220,6 +224,10 @@ class EInkReaderAnnotationUiTest {
         assertEquals(before, page.get())
         assertEquals(0, exits.get())
         compose.runOnIdle { editing.value = false }
+        // runOnIdle waits before its action, not for the recomposition it schedules.
+        // Wait for the actual reader controls to return before injecting a raw key;
+        // otherwise the still-active editing guard correctly consumes that press.
+        compose.onNodeWithTag("reader_controls_toggle").assertIsDisplayed()
         volume(KeyEvent.KEYCODE_VOLUME_DOWN)
         compose.waitUntil(5_000) { page.get() == before + 1 }
     }
