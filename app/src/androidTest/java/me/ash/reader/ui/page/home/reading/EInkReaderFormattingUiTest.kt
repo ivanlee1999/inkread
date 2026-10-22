@@ -137,6 +137,7 @@ class EInkReaderFormattingUiTest {
         rememberAnchor()
         openPanel()
         assertAnchor("panel-open")
+        verifyPanelScrollReachability()
         section("text")
         step("font_size", increase = true, times = 2)
         step("line_height", increase = true, times = 2)
@@ -212,6 +213,19 @@ class EInkReaderFormattingUiTest {
         verifyMiddlePageFrames("applied")
 
         rememberAnchor()
+        // Repeat actual changed-value writes after reopening. A persisted value alone is not
+        // success: each Apply must dismiss the panel and leave the live article at its anchor.
+        repeat(2) { index ->
+            openPanel()
+            section("text")
+            step("font_size", increase = index == 0)
+            val expected = persisted.copy(fontSize = persisted.fontSize + if (index == 0) 1 else 0)
+            clickTag("reader_formatting_apply")
+            panelClosed()
+            assertEquals(expected, awaitPersisted { it == expected })
+            assertStyleMatches(expected, settled("repeated-apply-${index + 1}"))
+            assertAnchor("repeated-apply-${index + 1}-anchor")
+        }
         openPanel()
         clickTag("reader_formatting_reset")
         val resetDraft = settled("reset-preview")
@@ -467,6 +481,7 @@ class EInkReaderFormattingUiTest {
         compose.onNodeWithTag("reader_formatting_panel").assertIsDisplayed()
         activeSection = "text"
         settled("panel-visible")
+        assertFooterReachable()
         if (!capturedInitialPanel) {
             capture("initial-panel-fixture")
             capturedInitialPanel = true
@@ -474,19 +489,63 @@ class EInkReaderFormattingUiTest {
     }
 
     private fun section(name: String) { clickTag("reader_formatting_section_$name"); activeSection = name }
+    private fun verifyPanelScrollReachability() {
+        val sections = mapOf(
+            "text" to listOf("font_size", "line_height", "text_darkness", "text_weight", "letter_spacing", "word_spacing", "image_contrast"),
+            "layout" to listOf("margin_left", "margin_right", "margin_top", "margin_bottom", "paragraph_gap", "paragraph_indent"))
+        sections.forEach { (name, controls) ->
+            section(name)
+            controls.forEach { control ->
+                scrollToTag("reader_formatting_${control}_value").assert(!hasSetTextAction())
+                for (direction in listOf("decrease", "increase")) {
+                    val tag = "reader_formatting_${control}_$direction"
+                    scrollToTag(tag)
+                    assertTouchTarget(tag)
+                }
+            }
+        }
+        for (alignment in listOf("start", "end", "center", "justify"))
+            scrollToTag("reader_formatting_alignment_$alignment").assertHasClickAction()
+        section("text")
+        for (mode in listOf("color", "grayscale")) scrollToTag("reader_formatting_image_$mode").assertHasClickAction()
+        assertFooterReachable()
+    }
+
+    private fun assertTouchTarget(tag: String) {
+        val node = compose.onNodeWithTag(tag).assertHasClickAction()
+        if (!node.fetchSemanticsNode().config.contains(SemanticsProperties.Disabled))
+            node.assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Focused))
+        val bounds = node.getUnclippedBoundsInRoot()
+        assertTrue("$tag must retain a 48 dp touch/focus target", bounds.right.value - bounds.left.value >= 47.5f &&
+            bounds.bottom.value - bounds.top.value >= 47.5f)
+    }
+
+    private fun assertFooterReachable() {
+        for (action in listOf("reset", "cancel", "apply")) {
+            val tag = "reader_formatting_$action"
+            compose.onNodeWithTag(tag).assertIsDisplayed().assertIsEnabled()
+            assertFullyInside(tag, "reader_formatting_panel")
+            assertTouchTarget(tag)
+        }
+    }
+
     private fun scrollToTag(tag: String): SemanticsNodeInteraction {
         val isControl = tag.startsWith("reader_formatting_font_") && tag != "reader_formatting_font_list" ||
-            tag.endsWith("_increase") || tag.endsWith("_decrease") || tag.endsWith("_value") || tag.startsWith("reader_formatting_image_")
+            tag.endsWith("_increase") || tag.endsWith("_decrease") || tag.endsWith("_value") ||
+            tag.startsWith("reader_formatting_image_") || tag.startsWith("reader_formatting_alignment_")
         if (isControl) {
             val container = if (activeSection == "fonts") "reader_formatting_font_list" else "reader_formatting_${activeSection}_controls"
             compose.onNodeWithTag(container).performScrollToNode(hasTestTag(tag))
             compose.onNodeWithTag(tag).performScrollTo()
             assertFullyInside(tag, container)
+            val controls = compose.onNodeWithTag(container).getUnclippedBoundsInRoot()
+            val footer = compose.onNodeWithTag("reader_formatting_apply").getUnclippedBoundsInRoot()
+            assertTrue("Scrollable controls must not extend underneath the pinned footer", controls.bottom.value <= footer.top.value)
         }
         return compose.onNodeWithTag(tag).assertIsDisplayed()
     }
     private fun clickTag(tag: String) {
-        scrollToTag(tag).performClick()
+        scrollToTag(tag).assertHasClickAction().performTouchInput { click(center) }
         advanceComposeDraftClock()
     }
 
@@ -771,11 +830,29 @@ class EInkReaderFormattingUiTest {
         settleBarrier()
         NativePageDensityCapture.capture(compose, "$reportName-$label", "", recordDensity = false,
             contentBoundsOnScreen = {
+                // The first page can have a short paragraph followed by an image that starts
+                // in the next column. A fixed middle-of-WebView crop then tests empty paper,
+                // not rendering. Validate actual visible article text, never panel/system ink.
+                val dom = snapshot()
+                val width = dom.getDouble("viewportWidth").toFloat()
+                val height = dom.getDouble("viewportHeight").toFloat()
+                val fragments = dom.getJSONArray("fragments")
+                val text = (0 until fragments.length()).map { index ->
+                    val fragment = fragments.getJSONObject(index)
+                    Rect(fragment.getDouble("left").toFloat().coerceIn(0f, width),
+                        fragment.getDouble("top").toFloat().coerceIn(0f, height),
+                        fragment.getDouble("right").toFloat().coerceIn(0f, width),
+                        fragment.getDouble("bottom").toFloat().coerceIn(0f, height))
+                }.filter { it.width > 0f && it.height > 0f }
+                    .maxByOrNull { it.width * it.height }
+                checkNotNull(text) { "The fixture must have visible article text for screenshot validation" }
                 var bounds: Rect? = null
                 instrumentation.runOnMainSync {
                     val view = webView(); val origin = IntArray(2); view.getLocationOnScreen(origin)
-                    bounds = Rect(origin[0] + view.width * .1f, origin[1] + view.height * .2f,
-                        origin[0] + view.width * .9f, origin[1] + view.height * .8f)
+                    val scaleX = view.width / width
+                    val scaleY = view.height / height
+                    bounds = Rect(origin[0] + text.left * scaleX, origin[1] + text.top * scaleY,
+                        origin[0] + text.right * scaleX, origin[1] + text.bottom * scaleY)
                 }
                 requireNotNull(bounds)
             }, beforeCaptureFrame = ::settleBarrier)

@@ -670,17 +670,18 @@ fun EInkPaginatedContent(
                             formattingError = null
                             val savingGeneration = documentGeneration
                             coroutineScope.launch {
-                                try {
-                                    val saved = saveReaderFormatting(context, draft)
-                                    committedFormatting = saved
-                                    if (savingGeneration == currentGeneration.value) closeFormatting(false, saved)
-                                } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                                    throw cancelled
-                                } catch (failure: Exception) {
-                                    formattingError = "Could not save reading format. Please try again."
-                                } finally {
-                                    formattingSaving = false
-                                }
+                                applyEInkFormatting(
+                                    persist = { saveReaderFormatting(context, draft) },
+                                    onSaved = { saved ->
+                                        committedFormatting = saved
+                                        if (savingGeneration == currentGeneration.value) closeFormatting(false, saved)
+                                    },
+                                    onSaveFailed = { failure ->
+                                        Log.w("InkRead", "Could not persist reading format", failure)
+                                        formattingError = "Could not save reading format. Please try again."
+                                    },
+                                    onFinished = { formattingSaving = false },
+                                )
                             }
                         }
                     },

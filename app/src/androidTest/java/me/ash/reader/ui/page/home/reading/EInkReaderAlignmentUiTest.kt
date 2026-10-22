@@ -70,6 +70,29 @@ class EInkReaderAlignmentUiTest {
     private val fontSize = mutableStateOf(18)
     private val viewportFraction = mutableStateOf(1f)
 
+    @Test fun anchorVisibilityDistinguishesFontOverhangFromActualClipping() {
+        // Recorded fractional-density / font-scale 1.6 geometry: the first
+        // paragraph starts at 24px, but its normal font-metric rect starts at
+        // 21.33px. That complete glyph is visible, not clipped by the line box.
+        val value = JSONObject("""
+            {"viewportWidth":412.19049,"viewportHeight":888,
+             "contentFrame":{"left":24,"right":388.19,"top":24,"bottom":864},
+             "anchorGlyph":{"left":24,"right":53.29762,"top":21.33333,"bottom":54.85715,"width":29.29762,"height":33.52382},
+             "anchorParagraphFragment":{"left":24,"right":388.19049,"top":24,"bottom":455.96429}}
+        """.trimIndent())
+        assertTrue("Normal font overhang is visible inside the real clip boundary", anchorGlyphVisible(value))
+        for ((key, outside) in mapOf("left" to -2.0, "right" to 414.2, "top" to -2.0, "bottom" to 890.0)) {
+            val clipped = JSONObject(value.toString())
+            clipped.getJSONObject("anchorGlyph").put(key, outside)
+            assertEquals("A glyph clipped at $key must fail", false, anchorGlyphVisible(clipped))
+        }
+        for ((key, outside) in mapOf("left" to 22.0, "right" to 390.2, "top" to 22.0, "bottom" to 866.0)) {
+            val misplaced = JSONObject(value.toString())
+            misplaced.getJSONObject("anchorParagraphFragment").put(key, outside)
+            assertEquals("A paragraph outside the $key inset must fail", false, anchorGlyphVisible(misplaced))
+        }
+    }
+
     @Test fun cjkPagesStayCenteredThroughRepeatedTurnsImagesAndReflow() {
         compose.setContent {
             CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON,
@@ -321,12 +344,21 @@ class EInkReaderAlignmentUiTest {
 
     private fun anchorGlyphVisible(value: JSONObject): Boolean {
         val glyph = value.optJSONObject("anchorGlyph") ?: return false
+        val paragraph = value.optJSONObject("anchorParagraphFragment") ?: return false
         val frame = value.getJSONObject("contentFrame")
+        // Range reports font metrics, not a CSS line box. With line-height:1,
+        // normal CJK ascenders extend above the first paragraph fragment. The
+        // body's WebView viewport is the real clip boundary; independently
+        // verify the measured paragraph column fragment obeys all four insets.
         return glyph.getDouble("width") > 0 && glyph.getDouble("height") > 0 &&
-            glyph.getDouble("left") >= frame.getDouble("left") - 1.25 &&
-            glyph.getDouble("right") <= frame.getDouble("right") + 1.25 &&
-            glyph.getDouble("top") >= frame.getDouble("top") - 1.25 &&
-            glyph.getDouble("bottom") <= frame.getDouble("bottom") + 1.25
+            glyph.getDouble("left") >= -1.25 &&
+            glyph.getDouble("right") <= value.getDouble("viewportWidth") + 1.25 &&
+            glyph.getDouble("top") >= -1.25 &&
+            glyph.getDouble("bottom") <= value.getDouble("viewportHeight") + 1.25 &&
+            paragraph.getDouble("left") >= frame.getDouble("left") - 1.25 &&
+            paragraph.getDouble("right") <= frame.getDouble("right") + 1.25 &&
+            paragraph.getDouble("top") >= frame.getDouble("top") - 1.25 &&
+            paragraph.getDouble("bottom") <= frame.getDouble("bottom") + 1.25
     }
 
     private fun assertSameLogicalAnchor(before: JSONObject, after: JSONObject) {
@@ -362,7 +394,7 @@ class EInkReaderAlignmentUiTest {
                         var r = rect(i.getBoundingClientRect()); r.naturalWidth = i.naturalWidth; r.complete = i.complete; return r;
                     });
                     var anchor = window.InkReadFormatting ? InkReadFormatting.currentAnchor() : null;
-                    var anchorGlyph = null, anchorText = null;
+                    var anchorGlyph = null, anchorText = null, anchorParagraphFragment = null;
                     // Independently resolve the canonical node/UTF-16 offset and
                     // measure the real glyph with Range; do not trust a runtime
                     // visibility flag or merely compare page numbers.
@@ -383,6 +415,17 @@ class EInkReaderAlignmentUiTest {
                             var glyph = range.getBoundingClientRect();
                             anchorGlyph = rect(glyph); anchorGlyph.height = glyph.height;
                             anchorText = anchoredNode.data.slice(anchor.offset, anchor.offset + 24);
+                            // This is a measured block fragment, NOT a derived
+                            // line box. Select the anchored paragraph's actual
+                            // current-column fragment using the glyph midpoint.
+                            var paragraph = anchoredNode.parentElement.closest('p.alignment-text');
+                            if (paragraph) {
+                                var x = (glyph.left + glyph.right) / 2, y = (glyph.top + glyph.bottom) / 2;
+                                var fragment = Array.from(paragraph.getClientRects()).find(function(box) {
+                                    return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom;
+                                });
+                                if (fragment) anchorParagraphFragment = rect(fragment);
+                            }
                         }
                     }
                     var late = document.getElementById('late-image');
@@ -395,6 +438,7 @@ class EInkReaderAlignmentUiTest {
                             right:parseFloat(css.left)+parseFloat(css.width), bottom:parseFloat(css.top)+parseFloat(css.height)},
                         documentId:window.InkReadFormatting ? InkReadFormatting.documentId : null,
                         anchor:anchor, anchorGlyph:anchorGlyph, anchorText:anchorText,
+                        anchorParagraphFragment:anchorParagraphFragment,
                         bodyWidth:body.getBoundingClientRect().width, columnWidth:css.columnWidth, columnGap:css.columnGap,
                         paddingLeft:parseFloat(css.left), paddingRight:width-parseFloat(css.left)-parseFloat(css.width),
                         contentFrameWidth:parseFloat(css.width), contentFrameHeight:parseFloat(css.height),
