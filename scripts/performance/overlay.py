@@ -13,7 +13,8 @@ if (providers.gradleProperty("enablePerformanceHarness").orNull == "true") {
 '''
 FILES = ["app/performance.gradle", "app/src/performance/AndroidManifest.xml",
          "app/src/performance/java/me/ash/reader/performance/PerformanceActivity.kt",
-         "app/src/performance/java/me/ash/reader/performance/PerformanceFixture.kt"]
+         "app/src/performance/java/me/ash/reader/performance/PerformanceFixture.kt",
+         "app/src/performance/java/me/ash/reader/performance/ResourceDiagnostic.kt"]
 
 
 def overlay(source, target):
@@ -21,7 +22,7 @@ def overlay(source, target):
     revision = subprocess.check_output(["git", "-C", str(target), "rev-parse", "HEAD"], text=True).strip()
     inputs = {name: (source / name).read_bytes() for name in FILES}
     fingerprints = {name: hashlib.sha256(data).hexdigest() for name, data in inputs.items()}
-    for name in ("overlay.py", "run.py", "summarize.py", "pr-config.json"):
+    for name in ("overlay.py", "run.py", "summarize.py", "pr-config.json", "diagnostic_run.py", "diagnostic_summary.py"):
         fingerprints["scripts/performance/" + name] = hashlib.sha256((source / "scripts/performance" / name).read_bytes()).hexdigest()
     fingerprints["gradle_hook"] = hashlib.sha256(HOOK.encode()).hexdigest()
     harness_sha = hashlib.sha256(json.dumps(fingerprints, sort_keys=True).encode()).hexdigest()

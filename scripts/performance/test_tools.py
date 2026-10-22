@@ -67,6 +67,18 @@ class HarnessTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 summary.summarize(root)
 
+    def test_summary_rejects_diagnostics_even_with_complete_score_runs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.fixture(root)
+            data = json.loads(next(root.glob("*/result.json")).read_text())
+            data["mode"] = "resource_diagnostic"
+            extra = root / "separate-diagnostic"
+            extra.mkdir()
+            (extra / "result.json").write_text(json.dumps(data))
+            with self.assertRaisesRegex(ValueError, "normal score"):
+                summary.summarize(root)
+
     def test_summary_rejects_missing_action(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -89,7 +101,7 @@ class HarnessTest(unittest.TestCase):
                 (source / name).parent.mkdir(parents=True, exist_ok=True)
                 (source / name).write_text("fixed fixture\n")
             (source / "scripts/performance").mkdir(parents=True)
-            for name in ("overlay.py", "run.py", "summarize.py", "pr-config.json"):
+            for name in ("overlay.py", "run.py", "summarize.py", "pr-config.json", "diagnostic_run.py", "diagnostic_summary.py"):
                 (source / "scripts/performance" / name).write_text("fixed driver")
             subprocess.run(["git", "init", "-q", str(target)], check=True)
             subprocess.run(["git", "-C", str(target), "add", "."], check=True)

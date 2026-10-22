@@ -60,6 +60,7 @@ class PerformanceActivity : ComponentActivity() {
     private val samples = JSONArray()
     private lateinit var startup: Snapshot
     private var counterMode = false
+    private var resourceDiagnostic: ResourceDiagnostic? = null
     private var activeScenario = "fixture_activity_ready"
     private lateinit var scale: PerformanceFixture.Scale
 
@@ -73,6 +74,10 @@ class PerformanceActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         check(!BuildConfig.DEBUG) { "Performance measurements require the nondebuggable APK" }
         counterMode = intent.getBooleanExtra("counters", false)
+        if (intent.getBooleanExtra("resource_diagnostic", false)) {
+            check(!counterMode) { "Resource diagnostics cannot use publication counting wrappers" }
+            resourceDiagnostic = ResourceDiagnostic()
+        }
         startup = snapshot()
         scale = PerformanceFixture.scale(intent.getStringExtra("scale") ?: "small")
         articles = PerformanceFixture.articles(scale)
@@ -99,6 +104,7 @@ class PerformanceActivity : ComponentActivity() {
                             awaitRendered()
                             record("fixture_activity_ready", 0, startup, snapshot(), warmup = false)
                             runScenarios()
+                            resourceDiagnostic?.finish()
                             writeResult(null)
                         } catch (failure: Throwable) {
                             writeResult(failure.stackTraceToString())
@@ -196,12 +202,21 @@ class PerformanceActivity : ComponentActivity() {
 
     private suspend fun measure(name: String, iteration: Int, warmup: Boolean, action: () -> Unit, ready: () -> Boolean) {
         activeScenario = "$name[$iteration], warmup=$warmup"
+        val probe = if (name.startsWith("folder_") || name == "reader_open" || name == "reader_back") resourceDiagnostic else null
+        val probeStart = probe?.begin(name, iteration, warmup)
         val start = snapshot()
         action()
+        val actionReturnedNs = if (probe != null) SystemClock.elapsedRealtimeNanos() else 0L
         await(ready)
+        val readinessMetNs = if (probe != null) SystemClock.elapsedRealtimeNanos() else 0L
         awaitRendered()
+        val renderBarriersDoneNs = if (probe != null) SystemClock.elapsedRealtimeNanos() else 0L
         check(draws > start.draws) { "$name must render the changed native screen" }
         val end = snapshot()
+        if (probe != null && probeStart != null) {
+            probe.end(name, iteration, warmup, probeStart, start.wallNs,
+                actionReturnedNs, readinessMetNs, renderBarriersDoneNs)
+        }
         record(name, iteration, start, end, warmup)
     }
 
@@ -258,7 +273,12 @@ class PerformanceActivity : ComponentActivity() {
     private suspend fun writeResult(failure: String?) {
         val data = JSONObject().apply {
             put("schema", 1); put("fixture", PerformanceFixture.VERSION)
-            put("mode", if (counterMode) "work_counters" else "timing")
+            put("mode", when {
+                resourceDiagnostic != null -> "resource_diagnostic"
+                counterMode -> "work_counters"
+                else -> "timing"
+            })
+            resourceDiagnostic?.let { put("resource_diagnostic", it.json()) }
             put("debuggable", BuildConfig.DEBUG); put("width_dp", resources.configuration.screenWidthDp)
             put("height_dp", resources.configuration.screenHeightDp); put("font_scale", resources.configuration.fontScale)
             put("density_dpi", resources.configuration.densityDpi)

@@ -1,0 +1,187 @@
+name: Reader and folder resource diagnostic
+
+on:
+  # PR bootstrap only; do not merge an unvalidated new workflow merely to dispatch it.
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.github/workflows/resource-diagnostic.yml'
+      - 'app/build.gradle.kts'
+      - 'app/performance.gradle'
+      - 'app/src/performance/**'
+      - 'app/src/main/java/me/ash/reader/ui/**'
+      - 'scripts/performance/**'
+      - 'gradle/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: resource-diagnostic-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  folder-resources:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - width: 400
+            size: 400x1000
+          - width: 1000
+            size: 1000x1200
+    env:
+      WIDTH: ${{ matrix.width }}
+      SIZE: ${{ matrix.size }}
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Check out exact diagnostic harness
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          path: harness
+      - name: Check out fixed 0.16.13 baseline
+        uses: actions/checkout@v4
+        with:
+          ref: 70e1e8c4d5666b736fc713be2c13ea87af0e2813
+          persist-credentials: false
+          path: baseline
+      - name: Check out exact candidate
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          path: candidate
+      - name: Verify source identities before building
+        run: |
+          set -euo pipefail
+          test "$(git -C harness rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git -C candidate rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git -C baseline rev-parse HEAD)" = 70e1e8c4d5666b736fc713be2c13ea87af0e2813
+          mkdir -p diagnostic-artifacts
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          revisions = {side: subprocess.check_output(['git', '-C', side, 'rev-parse', 'HEAD'], text=True).strip()
+                       for side in ('harness', 'baseline', 'candidate')}
+          revisions.update(workflow_sha=os.environ['GITHUB_SHA'], run_id=os.environ['GITHUB_RUN_ID'])
+          pathlib.Path('diagnostic-artifacts/run-provenance.json').write_text(json.dumps(revisions, indent=2) + '\n')
+          PY
+          cp harness/.github/workflows/resource-diagnostic.yml diagnostic-artifacts/
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - name: Prepare reviewed Android compile packages
+        run: sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
+      - name: Overlay identical diagnostic inputs and build optimized APKs
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s harness/scripts/performance -p 'test_*.py'
+          for side in baseline candidate; do
+            python3 harness/scripts/performance/overlay.py harness "$side"
+            (cd "$side" && ./gradlew --no-daemon --max-workers=2 -PenablePerformanceHarness=true assembleGithubPerformance)
+            mkdir -p "diagnostic-artifacts/$side"
+            mapfile -t apks < <(find "$side/app/build/outputs/apk/github/performance" -name '*.apk' -type f)
+            test "${#apks[@]}" -eq 1
+            cp "${apks[0]}" "diagnostic-artifacts/$side/performance.apk"
+            cp "$side/performance-provenance.json" "diagnostic-artifacts/$side/"
+            cp -r "$side/app/build/outputs/mapping/githubPerformance" "diagnostic-artifacts/$side/mapping"
+          done
+          python3 - <<'PY'
+          import json
+          a = json.load(open('diagnostic-artifacts/baseline/performance-provenance.json'))
+          b = json.load(open('diagnostic-artifacts/candidate/performance-provenance.json'))
+          assert a['harness_sha256'] == b['harness_sha256'], 'Both sides require the identical diagnostic observer'
+          assert a['harness_inputs'] == b['harness_inputs'], 'Diagnostic inputs differ'
+          PY
+          sha256sum diagnostic-artifacts/*/performance.apk > diagnostic-artifacts/apk-sha256.txt
+      - name: Enable reviewed emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Write separate diagnostic driver
+        run: |
+          cat > run-resource-diagnostic.sh <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          adb shell wm size "$SIZE"
+          adb shell wm density 160
+          adb shell settings put system font_scale 1.0
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
+          adb shell svc wifi disable
+          adb shell svc data disable
+          if adb shell pm path com.google.android.apps.nexuslauncher | grep -q '^package:'; then
+            adb shell pm disable-user --user 0 com.google.android.apps.nexuslauncher
+            adb shell am force-stop com.google.android.apps.nexuslauncher
+          fi
+          BASELINE_SHA=$(git -C baseline rev-parse HEAD)
+          CANDIDATE_SHA=$(git -C candidate rev-parse HEAD)
+          HARNESS_SHA=$(python3 -c 'import json; print(json.load(open("diagnostic-artifacts/baseline/performance-provenance.json"))["harness_sha256"])')
+          for scale in small stress; do
+            python3 harness/scripts/performance/diagnostic_run.py \
+              --baseline diagnostic-artifacts/baseline/performance.apk --baseline-sha "$BASELINE_SHA" \
+              --candidate diagnostic-artifacts/candidate/performance.apk --candidate-sha "$CANDIDATE_SHA" \
+              --harness-sha "$HARNESS_SHA" --output "diagnostic-results/$scale" --width "$WIDTH" --scale "$scale"
+          done
+          SH
+          chmod +x run-resource-diagnostic.sh
+      - name: Run six diagnostic processes per scale on one native AVD
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          cores: 2
+          ram-size: 4096M
+          disk-size: 6000M
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          script: ./run-resource-diagnostic.sh
+      - name: Report diagnostic status separately from normal scores
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, pathlib
+          print('## Reader and folder resource diagnostic')
+          print('Approximate ART counters and equal-idle snapshots; not normal latency scores or retained-memory proof.')
+          for scale in ('small', 'stress'):
+              path = pathlib.Path('diagnostic-results') / scale / 'diagnostic-summary.json'
+              if path.is_file():
+                  result = json.loads(path.read_text())
+                  print(scale + ': completed and validated six diagnostic processes (three matched pairs).')
+                  print('Baseline: ' + result['provenance']['baseline'])
+                  print('Candidate: ' + result['provenance']['candidate'])
+                  print('Harness SHA-256: ' + result['harness_sha256'])
+              else:
+                  print(scale + ': no complete diagnostic summary; inspect preserved partial evidence and job logs.')
+          PY
+      - name: Preserve separate diagnostic evidence and exact APK provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resource-diagnostic-${{ matrix.width }}dp-${{ github.run_id }}
+          path: |
+            diagnostic-results/**
+            diagnostic-artifacts/**
+            baseline/app/build/outputs/logs/**
+            candidate/app/build/outputs/logs/**
+          if-no-files-found: warn
+          retention-days: 30

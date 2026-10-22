@@ -36,6 +36,8 @@ def summarize(root):
         if run["failure"] or run["debuggable"]:
             raise ValueError("Failed or debuggable fixture")
         label, mode, scale = run["revision_label"], run["mode"], run["scale"]
+        if mode not in {"timing", "work_counters"}:
+            raise ValueError("Resource diagnostics must not enter the normal score summary")
         run_counts[(scale, mode, label)] += 1
         revisions[label].add(run["source_revision"])
         present = defaultdict(list)
