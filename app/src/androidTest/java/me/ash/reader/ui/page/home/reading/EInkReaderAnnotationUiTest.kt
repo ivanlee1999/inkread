@@ -16,7 +16,6 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.test.espresso.Espresso.onView
-import androidx.test.espresso.Espresso.openContextualActionModeOverflowMenu
 import androidx.test.espresso.Espresso.pressBack
 import androidx.test.espresso.NoMatchingViewException
 import androidx.test.espresso.action.GeneralClickAction
@@ -24,8 +23,12 @@ import androidx.test.espresso.action.Press
 import androidx.test.espresso.action.Tap
 import androidx.test.espresso.action.ViewActions.click
 import androidx.test.espresso.assertion.ViewAssertions.matches
+import androidx.test.espresso.matcher.RootMatchers.withDecorView
+import androidx.test.espresso.matcher.ViewMatchers.hasDescendant
 import androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom
 import androidx.test.espresso.matcher.ViewMatchers.isDisplayed
+import androidx.test.espresso.matcher.ViewMatchers.withContentDescription
+import androidx.test.espresso.matcher.ViewMatchers.withTagValue
 import androidx.test.espresso.matcher.ViewMatchers.withText
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
@@ -43,6 +46,8 @@ import me.ash.reader.infrastructure.preference.LocalEInkMode
 import me.ash.reader.infrastructure.preference.LocalReaderFormatting
 import me.ash.reader.infrastructure.preference.ReaderFormatting
 import me.ash.reader.ui.theme.AppTheme
+import org.hamcrest.Matchers.allOf
+import org.hamcrest.Matchers.equalTo
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
@@ -290,14 +295,37 @@ class EInkReaderAnnotationUiTest {
         assertEquals(anchor.getString("rangeQuote").length, anchor.getInt("end") - anchor.getInt("start"))
     }
 
-    private fun nativeActionAvailable(label: String): Boolean = try {
-        onView(withText(label)).check(matches(isDisplayed())); true
-    } catch (_: NoMatchingViewException) {
-        openContextualActionModeOverflowMenu()
-        nativeOverflowOpen = true
-        onView(withText(label)).check(matches(isDisplayed())); true
+    // Floating ActionMode uses a nonfocusable PopupWindow, which Espresso's
+    // default (focused activity) root deliberately excludes. Target the actual
+    // platform toolbar, not the selection-handle popups or an app lookalike.
+    private fun nativeToolbarRoot() = withDecorView(
+        hasDescendant(withTagValue(equalTo<Any>("floating_toolbar"))),
+    )
+    private fun nativeAction(label: String) = onView(allOf(withText(label), isDisplayed()))
+        .inRoot(nativeToolbarRoot())
+
+    private fun nativeActionAvailable(label: String): Boolean {
+        // Selection exists before Chromium's asynchronous text classification
+        // shows the toolbar. Espresso's root picker waits for this popup to exist.
+        onView(withTagValue(equalTo<Any>("floating_toolbar")))
+            .inRoot(nativeToolbarRoot()).check(matches(isDisplayed()))
+        try {
+            nativeAction(label).check(matches(isDisplayed()))
+        } catch (_: NoMatchingViewException) {
+            // The floating toolbar's overflow is not the activity/action-bar
+            // overflow searched by openContextualActionModeOverflowMenu().
+            onView(allOf(withContentDescription("More options"), isDisplayed()))
+                .inRoot(nativeToolbarRoot()).perform(click())
+            nativeOverflowOpen = true
+            nativeAction(label).check(matches(isDisplayed()))
+        }
+        return true
     }
-    private fun clickNativeAction(label: String) { nativeActionAvailable(label); onView(withText(label)).perform(click()) }
+    private fun clickNativeAction(label: String) {
+        nativeActionAvailable(label)
+        nativeAction(label).perform(click())
+        nativeOverflowOpen = false
+    }
     private fun volume(code: Int) = instrumentation.runOnMainSync {
         assertTrue(dispatchEInkVolumeKey(true, code, KeyEvent.ACTION_DOWN, 0))
         assertTrue(dispatchEInkVolumeKey(true, code, KeyEvent.ACTION_UP, 0))
