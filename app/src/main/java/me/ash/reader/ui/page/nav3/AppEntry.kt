@@ -32,6 +32,7 @@ import me.ash.reader.ui.page.library.SavedLibraryReadingPage
 import me.ash.reader.ui.page.library.SavedCaptureViewModel
 import me.ash.reader.ui.page.library.LinkCaptureMode
 import me.ash.reader.ui.page.nav3.key.Route
+import me.ash.reader.ui.page.settings.readwise.ReadwiseSettingsPage
 import me.ash.reader.ui.page.settings.SettingsPage
 import me.ash.reader.ui.page.settings.accounts.AccountDetailsPage
 import me.ash.reader.ui.page.settings.accounts.AccountViewModel
@@ -177,6 +178,7 @@ fun AppEntry(
                             SettingsPage(
                                 onBack = onBack,
                                 navigateToAccounts = { backStack.add(Route.Accounts) },
+                                navigateToReadwise = { backStack.add(Route.ReadwiseSettings) },
                                 navigateToColorAndStyle = { backStack.add(Route.ColorAndStyle) },
                                 navigateToInteraction = { backStack.add(Route.Interaction) },
                                 navigateToLanguages = { backStack.add(Route.Languages) },
@@ -186,6 +188,7 @@ fun AppEntry(
                                 navigateToTipsAndSupport = { backStack.add(Route.TipsAndSupport) },
                             )
                         }
+                    Route.ReadwiseSettings -> NavEntry(key) { ReadwiseSettingsPage(onBack = onBack) }
                     Route.Accounts ->
                         NavEntry(key) {
                             AccountsPage(

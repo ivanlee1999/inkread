@@ -47,6 +47,11 @@ import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.unit.sp
 import kotlin.math.abs
 import kotlinx.coroutines.launch
+import me.ash.reader.domain.annotation.AnnotationSource
+import me.ash.reader.domain.annotation.AnnotationSourceKind
+import me.ash.reader.ui.page.annotation.AnnotationReaderViewModel
+import me.ash.reader.ui.page.annotation.AnnotationReaderDialogs
+import me.ash.reader.ui.page.annotation.rememberAnnotationReaderUi
 import me.ash.reader.R
 import me.ash.reader.infrastructure.android.TextToSpeechManager
 import me.ash.reader.infrastructure.android.VolumeKeyEventBus
@@ -82,6 +87,7 @@ fun ReadingPage(
     onNavAction: (NavigationAction) -> Unit,
     onNavigateToStylePage: () -> Unit,
     saveToLibraryViewModel: SaveRssToLibraryViewModel = hiltViewModel(),
+    annotationViewModel: AnnotationReaderViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
     val hapticFeedback = LocalHapticFeedback.current
@@ -90,6 +96,20 @@ fun ReadingPage(
     val isPullToSwitchArticleEnabled = LocalPullToSwitchArticle.current.value
     val readingUiState = viewModel.readingUiState.collectAsStateValue()
     val readerState = viewModel.readerStateStateFlow.collectAsStateValue()
+    val annotationSource = if (isEInkMode && readerState.articleId != null && readerState.sourceAccountId != null &&
+        (readerState.content is ReaderState.FullContent || readerState.content is ReaderState.Description)) {
+        AnnotationSource(
+            kind = AnnotationSourceKind.RSS,
+            sourceId = readerState.articleId,
+            accountId = readerState.sourceAccountId,
+            url = readerState.link,
+            title = readerState.title.orEmpty(),
+            author = readerState.author,
+            sourceName = readerState.feedName,
+        )
+    } else null
+    val annotations = rememberAnnotationReaderUi(annotationSource, readerState.content, annotationViewModel)
+
     val savedSuccessMessage by rememberUpdatedState(stringResource(R.string.saved_rss_save_success))
     val savedFailureMessage by rememberUpdatedState(stringResource(R.string.saved_rss_save_failed))
     LaunchedEffect(saveToLibraryViewModel) {
@@ -190,6 +210,15 @@ fun ReadingPage(
                                 }
                         ) {
                             EInkPaginatedContent(
+                                selectionMode = annotations.selectionMode,
+                                onSelectionModeChange = annotations.onSelectionModeChange.takeIf { annotations.available },
+                                annotationEditing = annotations.annotationEditing,
+                                annotationsJson = annotations.annotationsJson,
+                                onCreateAnnotation = annotations.onCreateAnnotation.takeIf { annotations.available },
+                                onAnnotationLocationsChanged = annotations.onAnnotationLocationsChanged,
+                                onAnnotationsClick = annotations.onAnnotationsClick.takeIf { annotationSource != null },
+                                annotationJumpRequest = annotations.jumpRequest,
+                                onAnnotationJumpResult = annotations.onAnnotationJumpResult,
                                 reserveVolumeKeys = false,
                                 volumeKeyOwner = volumeKeyOwner,
                                 articleId = readerState.articleId,
@@ -472,6 +501,7 @@ fun ReadingPage(
             onDismissRequest = { showFullScreenImageViewer = false },
         )
     }
+    AnnotationReaderDialogs(annotations)
 }
 
 @Composable

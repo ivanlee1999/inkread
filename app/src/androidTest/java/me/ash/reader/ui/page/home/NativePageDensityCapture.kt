@@ -192,8 +192,11 @@ internal object NativePageDensityCapture {
         compose.waitForIdle()
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         instrumentation.waitForIdleSync()
+        // A Compose host containing only a Dialog has no drawable child bounds. Invalidating
+        // that empty host need not schedule a frame, even though its activity window is visible.
+        // Commit one frame per real window (including the dialog), not per Compose child.
         val views = compose.onAllNodes(isRoot()).fetchSemanticsNodes()
-            .map { (it.root as ViewRootForTest).view }.distinct()
+            .map { (it.root as ViewRootForTest).view.rootView }.distinct()
         check(views.isNotEmpty())
         val committed = CountDownLatch(views.size)
         compose.runOnUiThread {

@@ -125,6 +125,15 @@ class EInkPageNavigationController(
         currentPage = page.coerceIn(0, maxOf(0, totalPages - 1))
     }
 
+    /** Explicit annotation jump uses the same ordered native command transport. */
+    fun navigateToPage(page: Int, expectedCommandId: Long = lastIssuedCommandId): Boolean {
+        if (!isReady || articleNavigationPending || expectedCommandId != lastIssuedCommandId) return false
+        currentPage = page.coerceIn(0, maxOf(0, totalPages - 1))
+        applyPageToWebView(currentPage)
+        onPageChanged(currentPage + 1, totalPages)
+        return true
+    }
+
     private fun applyPageToWebView(page: Int) {
         lastIssuedCommandId++
         onApplyPageToWebView(page, lastIssuedCommandId)

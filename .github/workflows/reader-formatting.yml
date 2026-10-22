@@ -82,10 +82,21 @@ jobs:
             adb shell pm list packages -d | tr -d '\r' | grep -qx 'package:com.google.android.apps.nexuslauncher'
           fi
           # No production font downloads or live article services are needed by these tests.
-          adb shell svc wifi disable
-          adb shell svc data disable
-          adb shell settings put secure show_ime_with_hard_keyboard 1
+          # sys.boot_completed can precede the phone service being ready on a cold AVD.
+          # Retry setup only, and require both commands plus verified offline connectivity.
           mkdir -p reader-formatting-evidence
+          offline=0
+          for attempt in $(seq 1 20); do
+            if adb shell svc wifi disable && adb shell svc data disable &&
+                adb shell dumpsys connectivity > reader-formatting-evidence/connectivity.txt &&
+                grep -q 'Active default network: none' reader-formatting-evidence/connectivity.txt; then
+              offline=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$offline" -ne 1 ]; then echo 'Formatting fixtures require ready radio services and an offline AVD' >&2; exit 1; fi
+          adb shell settings put secure show_ime_with_hard_keyboard 1
           git rev-parse HEAD > reader-formatting-evidence/source-sha.txt
           adb shell dumpsys webviewupdate > reader-formatting-evidence/webview.txt
           adb shell wm size > reader-formatting-evidence/size.txt

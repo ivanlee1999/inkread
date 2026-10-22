@@ -376,6 +376,7 @@ constructor(
                 }
                 val base = _readerState.value.copy(
                     articleId = article.id,
+                    sourceAccountId = article.accountId,
                     feedName = feed.name,
                     title = article.title,
                     author = article.author,
@@ -523,6 +524,8 @@ data class ReadingUiState(
 
 data class ReaderState(
     val articleId: String? = null,
+    /** Account captured from the loaded article, never mutable global settings. */
+    val sourceAccountId: Int? = null,
     val feedName: String = "",
     val title: String? = null,
     val author: String? = null,

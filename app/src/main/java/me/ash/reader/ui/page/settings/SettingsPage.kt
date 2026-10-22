@@ -48,6 +48,7 @@ fun SettingsPage(
     updateViewModel: UpdateViewModel = hiltViewModel(),
     onBack: () -> Unit,
     navigateToAccounts: () -> Unit,
+    navigateToReadwise: () -> Unit = {},
     navigateToColorAndStyle: () -> Unit,
     navigateToInteraction: () -> Unit,
     navigateToLanguages: () -> Unit,
@@ -109,6 +110,14 @@ fun SettingsPage(
                         desc = stringResource(R.string.accounts_desc),
                         icon = Icons.Outlined.AccountCircle,
                         onClick = navigateToAccounts
+                    )
+                }
+                item {
+                    SelectableSettingGroupItem(
+                        title = "Annotations & Readwise",
+                        desc = "Local highlights, notes and optional Readwise export",
+                        icon = Icons.Outlined.TipsAndUpdates,
+                        onClick = navigateToReadwise,
                     )
                 }
                 item {
