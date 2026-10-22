@@ -49,6 +49,54 @@ class EInkPageNavigationControllerTest {
     }
 
     @Test
+    fun `held annotation lookup cannot override a later page turn but a fresh lookup can`() {
+        controller.onPaginationReady(10)
+        val capturedCommand = controller.lastIssuedCommandId
+        val heldLookupCallback = { controller.navigateToPage(7, capturedCommand) }
+        controller.handleNavigation(VolumeKeyEvent.NEXT)
+        assertFalse(heldLookupCallback())
+        assertEquals(1, controller.currentPage)
+        assertEquals(listOf(1L), commandIds)
+        val freshLookupCallback = { controller.navigateToPage(7, controller.lastIssuedCommandId) }
+        assertTrue(freshLookupCallback())
+        assertEquals(7, controller.currentPage)
+        assertEquals(listOf(1L, 2L), commandIds)
+        assertFalse(controller.onRepaginated(10, 1, 1L))
+        assertTrue(controller.onRepaginated(10, 7, 2L))
+    }
+
+    @Test
+    fun `annotation jumps clamp endpoints and issue ordered commands without accepting stale acknowledgement`() {
+        controller.navigateToPage(2)
+        assertTrue(pagesApplied.isEmpty())
+        controller.onPaginationReady(5)
+        controller.navigateToPage(99)
+        controller.navigateToPage(-3)
+        assertEquals(listOf(4, 0), pagesApplied)
+        assertEquals(listOf(1L, 2L), commandIds)
+        assertFalse(controller.onRepaginated(5, 4, 1L))
+        assertEquals(0, controller.currentPage)
+        assertTrue(controller.onRepaginated(5, 0, 2L))
+        controller.handleNavigation(VolumeKeyEvent.NEXT)
+        assertEquals(listOf(1L, 2L, 3L), commandIds)
+        assertEquals(1, controller.currentPage)
+    }
+
+    @Test
+    fun `annotation jump cannot interrupt committed article navigation`() {
+        hasNext = true
+        controller.onPaginationReady(1)
+        controller.handleNavigation(VolumeKeyEvent.NEXT)
+        controller.navigateToPage(0)
+        assertTrue(nextArticleCalled)
+        assertTrue(pagesApplied.isEmpty())
+        controller.onContentReset()
+        controller.onPaginationReady(3)
+        controller.navigateToPage(2)
+        assertEquals(listOf(1L), commandIds)
+    }
+
+    @Test
     fun `ready adopts the restored JS page before replaying queued keys`() {
         controller.handleNavigation(VolumeKeyEvent.NEXT)
         controller.onPaginationReady(20, restoredPage = 12)

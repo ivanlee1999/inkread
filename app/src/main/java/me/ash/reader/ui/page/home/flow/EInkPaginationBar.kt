@@ -66,6 +66,8 @@ fun EInkPaginationBar(
     onFormattingClick: (() -> Unit)? = null,
     onSaveArticle: (() -> Unit)? = null,
     onLibraryActions: (() -> Unit)? = null,
+    onSelectText: (() -> Unit)? = null,
+    onAnnotationsClick: (() -> Unit)? = null,
 ) {
     // Bottom bar: page controls, font size, article nav, progress
     Column(
@@ -116,7 +118,7 @@ fun EInkPaginationBar(
                 Icon(Icons.AutoMirrored.Rounded.ArrowForward, stringResource(R.string.next_page), tint = Color.Black)
             }
         }
-        if (onBack != null || onPrevArticle != null || onNextArticle != null || canDecreaseFontSize || canIncreaseFontSize || onFormattingClick != null || onSaveArticle != null || onLibraryActions != null) {
+        if (onBack != null || onPrevArticle != null || onNextArticle != null || canDecreaseFontSize || canIncreaseFontSize || onFormattingClick != null || onSaveArticle != null || onLibraryActions != null || onSelectText != null || onAnnotationsClick != null) {
             // Keep all 48dp targets intact in narrow split-screen windows.
             // Only this on-demand action row grows; reading space is never
             // reserved when controls are hidden.
@@ -163,6 +165,14 @@ fun EInkPaginationBar(
                             .clickable(interactionSource = remember { MutableInteractionSource() },
                                 indication = null, role = Role.Button, onClick = action),
                         contentAlignment = Alignment.Center,
+                    ) { Text(label, color = Color.Black) }
+                }
+                listOf("Select text" to onSelectText, "Annotations" to onAnnotationsClick).forEach { (label, action) ->
+                    if (action != null) Box(
+                        Modifier.size(104.dp, 48.dp)
+                            .testTag(if (label == "Select text") "reader_select_text" else "reader_annotations_open")
+                            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null,
+                                role = Role.Button, onClick = action), contentAlignment = Alignment.Center,
                     ) { Text(label, color = Color.Black) }
                 }
                 IconButton(onClick = { onNextArticle?.invoke() }, enabled = onNextArticle != null, modifier = Modifier.size(48.dp)) {

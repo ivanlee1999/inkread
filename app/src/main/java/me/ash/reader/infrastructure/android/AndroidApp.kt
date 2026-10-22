@@ -6,6 +6,7 @@ import androidx.work.Configuration
 import androidx.work.WorkManager
 import coil.Coil
 import coil.ImageLoader
+import dagger.Lazy
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineDispatcher
@@ -25,6 +26,7 @@ import me.ash.reader.infrastructure.di.ApplicationScope
 import me.ash.reader.infrastructure.di.IODispatcher
 import me.ash.reader.infrastructure.net.NetworkDataSource
 import me.ash.reader.infrastructure.preference.SettingsProvider
+import me.ash.reader.infrastructure.readwise.ReadwiseConnectionManager
 import me.ash.reader.infrastructure.rss.OPMLDataSource
 import me.ash.reader.infrastructure.rss.RssHelper
 import me.ash.reader.ui.ext.del
@@ -87,6 +89,8 @@ class AndroidApp : Application(), Configuration.Provider {
 
     @Inject lateinit var diffMapHolder: DiffMapHolder
 
+    @Inject lateinit var readwiseConnectionManager: Lazy<ReadwiseConnectionManager>
+
     /**
      * When the application startup.
      * 1. Set the uncaught exception handler
@@ -104,6 +108,20 @@ class AndroidApp : Application(), Configuration.Provider {
             accountInit()
             workerInit()
             checkUpdate()
+        }
+        // Recover committed export work even if the process previously ended between
+        // the local annotation transaction and scheduling its background drain. Lazy
+        // creation stays off the main thread; disconnected accounts cannot transmit.
+        applicationScope.launch(ioDispatcher) {
+            try {
+                if (ReadwiseConnectionManager.hasStoredConnection(this@AndroidApp)) {
+                    readwiseConnectionManager.get().requestDrain()
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                Timber.w("Readwise export recovery deferred until the next annotation action.")
+            }
         }
         Coil.setImageLoader(imageLoader)
     }

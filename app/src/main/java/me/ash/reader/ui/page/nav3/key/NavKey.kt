@@ -28,6 +28,8 @@ sealed interface Route : NavKey {
     // Settings
     @Serializable data object Settings : Route
 
+    @Serializable data object ReadwiseSettings : Route
+
     // Accounts
     @Serializable data object Accounts : Route
 

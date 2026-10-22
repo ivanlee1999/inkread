@@ -4,6 +4,10 @@ import android.annotation.SuppressLint
 import android.os.Handler
 import android.util.Log
 import android.os.Looper
+import android.view.ActionMode
+import android.view.Menu
+import android.view.MenuItem
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceResponse
@@ -48,6 +52,7 @@ import kotlinx.coroutines.withContext
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.launch
 import me.ash.reader.ui.component.articleByline
 import me.ash.reader.infrastructure.android.VolumeKeyEvent
@@ -117,6 +122,15 @@ fun EInkPaginatedContent(
     interceptResource: ((url: String) -> WebResourceResponse?)? = null,
     resourceRevision: String? = null,
     dateLabel: String? = null,
+    selectionMode: Boolean = false,
+    onSelectionModeChange: ((Boolean) -> Unit)? = null,
+    annotationEditing: Boolean = false,
+    annotationsJson: String = "[]",
+    onCreateAnnotation: ((anchorJson: String, addNote: Boolean) -> Unit)? = null,
+    onAnnotationLocationsChanged: ((statusJson: String) -> Unit)? = null,
+    onAnnotationsClick: (() -> Unit)? = null,
+    annotationJumpRequest: Pair<String, Long>? = null,
+    onAnnotationJumpResult: ((id: String, attached: Boolean) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -148,6 +162,16 @@ fun EInkPaginatedContent(
     val liveFormatting = formattingDraft ?: committedFormatting ?: persistedFormatting
     val editingFormatting = formattingDraft != null || formattingOpening
     val currentEditingFormatting by rememberUpdatedState(editingFormatting)
+    val currentSelectionMode by rememberUpdatedState(selectionMode)
+    val currentAnnotationEditing by rememberUpdatedState(annotationEditing)
+    val currentOnSelectionModeChange by rememberUpdatedState(onSelectionModeChange)
+    val currentOnCreateAnnotation by rememberUpdatedState(onCreateAnnotation)
+    val currentOnAnnotationLocationsChanged by rememberUpdatedState(onAnnotationLocationsChanged)
+    val currentOnAnnotationJumpResult by rememberUpdatedState(onAnnotationJumpResult)
+    val currentAnnotationJumpRequest by rememberUpdatedState(annotationJumpRequest)
+    val annotationCaptureToken = remember { AtomicLong(0) }
+    var annotationCapturePending by remember { mutableStateOf(false) }
+    val currentAnnotationCapturePending by rememberUpdatedState(annotationCapturePending)
     val fontsDir = remember { File(context.filesDir, "fonts") }
     fun fontFile(index: Int, names: List<String?>): File? = names.getOrNull(index)
         ?.let { File(fontsDir, it) }?.takeIf { it.isFile && it.length() > 0 }
@@ -281,7 +305,8 @@ fun EInkPaginatedContent(
             buildArticleHtmlDocument(context.cacheDir, content, formattingPayload,
                 title, feedName, author, publishedDate, documentGeneration,
                 context.assets.open("eink-formatting.js").bufferedReader().use { it.readText() },
-                articleId, readingContentRevision, initialReadingAnchor, dateLabel)
+                articleId, readingContentRevision, initialReadingAnchor, dateLabel,
+                context.assets.open("eink-annotations.js").bufferedReader().use { it.readText() })
         }
         try {
             ensureActive()
@@ -306,6 +331,8 @@ fun EInkPaginatedContent(
     if (lastHtmlKeyForReady.value != documentGeneration) {
         lastHtmlKeyForReady.value = documentGeneration
         isInitialPaginationReady = false
+        annotationCapturePending = false
+        annotationCaptureToken.incrementAndGet()
         navController.onContentReset()
         currentPage = 0
         totalPages = 0
@@ -339,6 +366,54 @@ fun EInkPaginatedContent(
         }
     }
 
+    fun finishSelection() {
+        annotationCaptureToken.incrementAndGet()
+        annotationCapturePending = false
+        (webViewRef.value as? EInkAnnotationWebView)?.finishSelection()
+        webViewRef.value?.evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.setSelectionMode(false, ${EInkReaderFormatting.quote(documentGeneration)})", null)
+        currentOnSelectionModeChange?.invoke(false)
+    }
+    LaunchedEffect(documentGeneration, selectionMode, isInitialPaginationReady) {
+        if (isInitialPaginationReady) {
+            val view = webViewRef.value
+            view?.isFocusable = selectionMode
+            view?.isFocusableInTouchMode = selectionMode
+            if (selectionMode) {
+                bottomBarVisible = false
+                view?.requestFocus()
+            } else {
+                annotationCaptureToken.incrementAndGet()
+                annotationCapturePending = false
+                (view as? EInkAnnotationWebView)?.finishSelection()
+            }
+            view?.evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.setSelectionMode($selectionMode, ${EInkReaderFormatting.quote(documentGeneration)})", null)
+        }
+    }
+    LaunchedEffect(documentGeneration, annotationsJson, isInitialPaginationReady) {
+        if (isInitialPaginationReady) webViewRef.value?.evaluateJavascript(
+            "window.InkReadAnnotations && InkReadAnnotations.setAnnotations(JSON.parse(${EInkReaderFormatting.quote(annotationsJson)}), ${EInkReaderFormatting.quote(documentGeneration)})", null)
+    }
+    var handledAnnotationJump by remember(documentGeneration) { mutableStateOf<Pair<String, Long>?>(null) }
+    LaunchedEffect(documentGeneration, annotationJumpRequest, isInitialPaginationReady, annotationEditing, selectionMode) {
+        val request = annotationJumpRequest ?: return@LaunchedEffect
+        if (!isInitialPaginationReady || annotationEditing || selectionMode || handledAnnotationJump == request) return@LaunchedEffect
+        handledAnnotationJump = request
+        val generation = documentGeneration
+        val view = webViewRef.value ?: return@LaunchedEffect
+        val commandAtRequest = navController.lastIssuedCommandId
+        view.evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.pageForAnnotation(${EInkReaderFormatting.quote(request.first)}, ${EInkReaderFormatting.quote(generation)})") { result ->
+            if (generation != currentGeneration.value || view !== webViewRef.value || currentAnnotationEditing || currentSelectionMode || currentAnnotationJumpRequest != request ||
+                navController.lastIssuedCommandId != commandAtRequest || currentEditingFormatting) return@evaluateJavascript
+            val page = result.toIntOrNull()
+            if (page != null) {
+                if (!navController.navigateToPage(page, commandAtRequest)) return@evaluateJavascript
+                currentPage = navController.currentPage
+                totalPages = navController.totalPages
+            }
+            currentOnAnnotationJumpResult?.invoke(request.first, page != null)
+        }
+    }
+
     fun exitReader() {
         val action = onBack ?: return
         val view = webViewRef.value
@@ -367,7 +442,7 @@ fun EInkPaginatedContent(
             finish(runCatching { JSONTokener(result).nextValue() as? String }.getOrNull())
         }
     }
-    BackHandler(enabled = onBack != null && !editingFormatting && !bottomBarVisible) { exitReader() }
+    BackHandler(enabled = onBack != null && !editingFormatting && !bottomBarVisible && !selectionMode && !annotationEditing && !annotationCapturePending) { exitReader() }
 
     fun closeFormatting(cancel: Boolean, value: ReaderFormatting) {
         activeFontResources.set(listOfNotNull(
@@ -387,7 +462,7 @@ fun EInkPaginatedContent(
         closeFormatting(true, original)
     }
     fun openFormatting() {
-        if (editingFormatting || !isInitialPaginationReady) return
+        if (editingFormatting || selectionMode || annotationEditing || !isInitialPaginationReady) return
         val view = webViewRef.value ?: return
         val generation = documentGeneration
         val snapshot = committedFormatting ?: persistedFormatting
@@ -408,12 +483,14 @@ fun EInkPaginatedContent(
     }
     // Dismiss the innermost reader surface first. The toolbar's explicit Back
     // action still navigates out; Android Back first restores an unobscured page.
-    BackHandler(enabled = editingFormatting || bottomBarVisible) {
+    BackHandler(enabled = !annotationEditing && (editingFormatting || bottomBarVisible)) {
         if (editingFormatting) cancelFormatting() else bottomBarVisible = false
     }
 
+    BackHandler(enabled = selectionMode && !annotationEditing) { finishSelection() }
+
     fun nextPage() {
-        if (currentEditingFormatting) return
+        if (currentEditingFormatting || currentSelectionMode || currentAnnotationEditing || currentAnnotationCapturePending) return
         navController.handleNavigation(VolumeKeyEvent.NEXT)
         // Sync Compose state from controller
         currentPage = navController.currentPage
@@ -421,7 +498,7 @@ fun EInkPaginatedContent(
     }
 
     fun prevPage() {
-        if (currentEditingFormatting) return
+        if (currentEditingFormatting || currentSelectionMode || currentAnnotationEditing || currentAnnotationCapturePending) return
         navController.handleNavigation(VolumeKeyEvent.PREV)
         // Sync Compose state from controller
         currentPage = navController.currentPage
@@ -430,7 +507,7 @@ fun EInkPaginatedContent(
 
     LaunchedEffect(volumeKeyFlow) {
         volumeKeyFlow.collect { event ->
-            if (VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.HIGH, owner) && !currentEditingFormatting) {
+            if (VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.HIGH, owner) && !currentEditingFormatting && !currentSelectionMode && !currentAnnotationEditing && !currentAnnotationCapturePending) {
                 Log.d("InkRead", "Volume key event received: $event")
                 when (event) {
                     VolumeKeyEvent.NEXT -> nextPage()
@@ -469,25 +546,53 @@ fun EInkPaginatedContent(
 
                 AndroidView(
                     factory = { ctx ->
-                        object : WebView(ctx) {
-                            // Override key handling so volume keys always pass
-                            // through to Activity.dispatchKeyEvent, even if the
-                            // WebView somehow gains focus.
-                            override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {
-                                if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
-                                    keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) {
-                                    return false // let Activity handle it
-                                }
-                                return super.onKeyDown(keyCode, event)
+                        EInkAnnotationWebView(ctx).apply {
+                            selectionEnabled = { currentSelectionMode && !currentAnnotationEditing && !currentAnnotationCapturePending }
+                            onSelectionFinished = {
+                                // Native Back/action-mode dismissal can precede an asynchronous
+                                // JS result. Revoke it just like the explicit Done action.
+                                annotationCaptureToken.incrementAndGet()
+                                annotationCapturePending = false
+                                currentOnSelectionModeChange?.invoke(false)
                             }
-                            override fun onKeyUp(keyCode: Int, event: android.view.KeyEvent?): Boolean {
-                                if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
-                                    keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) {
-                                    return false // let Activity handle it
+                            onAnnotationAction = { addNote, _ ->
+                                if (!currentAnnotationCapturePending) {
+                                    annotationCapturePending = true
+                                    val generation = currentGeneration.value
+                                    val token = annotationCaptureToken.incrementAndGet()
+                                    val callback = currentOnCreateAnnotation
+                                    val view = this
+                                    val timeout = coroutineScope.launch {
+                                        delay(1500)
+                                        if (generation == currentGeneration.value && annotationCaptureToken.compareAndSet(token, token + 1)) {
+                                            annotationCapturePending = false
+                                            view.finishSelection()
+                                            currentOnSelectionModeChange?.invoke(false)
+                                            showBoundaryText = "Selection could not be captured. Please try again."
+                                            delay(1800)
+                                            showBoundaryText = null
+                                        }
+                                    }
+                                    // Do not finish ActionMode or open a dialog until the exact
+                                    // DOM range has been serialized. Focus/IME would clear it.
+                                    evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.captureSelection(${EInkReaderFormatting.quote(generation)})") { result ->
+                                        timeout.cancel()
+                                        if (generation != currentGeneration.value || webViewRef.value !== view || !currentSelectionMode || currentAnnotationEditing ||
+                                            !annotationCaptureToken.compareAndSet(token, token + 1)) return@evaluateJavascript
+                                        val json = runCatching { JSONTokener(result).nextValue() as? String }.getOrNull()
+                                        view.finishSelection()
+                                        evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.clearSelection()", null)
+                                        annotationCapturePending = false
+                                        currentOnSelectionModeChange?.invoke(false)
+                                        if (json != null) callback?.invoke(json, addNote)
+                                        else coroutineScope.launch {
+                                            showBoundaryText = "Select article text to annotate."
+                                            delay(1800)
+                                            showBoundaryText = null
+                                        }
+                                    }
                                 }
-                                return super.onKeyUp(keyCode, event)
                             }
-                        }.apply {
                             layoutParams = ViewGroup.LayoutParams(
                                 ViewGroup.LayoutParams.MATCH_PARENT,
                                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -498,8 +603,8 @@ fun EInkPaginatedContent(
                             setBackgroundColor(android.graphics.Color.WHITE)
                             isHorizontalScrollBarEnabled = false
                             isVerticalScrollBarEnabled = false
-                            isFocusable = false
-                            isFocusableInTouchMode = false
+                            isFocusable = currentSelectionMode
+                            isFocusableInTouchMode = currentSelectionMode
                             overScrollMode = android.view.View.OVER_SCROLL_NEVER
                             setOnKeyListener { _, _, _ ->
                                 // Let all keys propagate normally; the WebView
@@ -576,6 +681,12 @@ fun EInkPaginatedContent(
                                             currentOnReadingAnchorChanged?.invoke(itemId, revision, json)
                                         }
                                     },
+                                    onAnnotationLocations = { generation, json ->
+                                        Handler(Looper.getMainLooper()).post {
+                                            if (generation != currentGeneration.value || webViewRef.value == null) return@post
+                                            currentOnAnnotationLocationsChanged?.invoke(json)
+                                        }
+                                    },
                                     onReadingAnchorRestore = { generation, status ->
                                         Handler(Looper.getMainLooper()).post {
                                             if (generation != currentGeneration.value || webViewRef.value == null) return@post
@@ -605,6 +716,8 @@ fun EInkPaginatedContent(
                             activeArticleHtmlDocument.set(it)
                             activeFontResources.set(fontResources)
                             lastLoadedHtmlKey = it.cacheKey
+                            (webView as? EInkAnnotationWebView)?.finishSelection()
+                            if (currentSelectionMode) currentOnSelectionModeChange?.invoke(false)
                             webView.loadUrl(it.url)
                         }
                     },
@@ -619,7 +732,7 @@ fun EInkPaginatedContent(
                     Box(Modifier.fillMaxSize().clickable(
                         interactionSource = remember { MutableInteractionSource() }, indication = null,
                     ) { cancelFormatting() })
-                } else {
+                } else if (!selectionMode && !annotationEditing && !annotationCapturePending) {
                     Row(
                         modifier = Modifier
                             .fillMaxSize()
@@ -674,7 +787,7 @@ fun EInkPaginatedContent(
                 }
 
                 // Tap detector on bottom 15% of content area to toggle bottom bar
-                if (!editingFormatting) Box(
+                if (!editingFormatting && !selectionMode && !annotationEditing && !annotationCapturePending) Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .fillMaxHeight(0.15f)
@@ -695,6 +808,18 @@ fun EInkPaginatedContent(
                 )
             }
 
+            if (selectionMode && !annotationEditing) {
+                Row(Modifier.fillMaxWidth().background(Color.White), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Long-press text to select", color = Color.Black, modifier = Modifier.weight(1f).padding(horizontal = 12.dp))
+                    Box(Modifier.size(104.dp, 48.dp).testTag("reader_selection_done")
+                        .semantics { contentDescription = "Done selecting text" }
+                        .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null,
+                            role = Role.Button, onClick = ::finishSelection), contentAlignment = Alignment.Center) {
+                        Text("Done", color = Color.Black)
+                    }
+                }
+            }
+
             val progress = if (totalPages > 0) ((currentPage + 1) * 100 / totalPages) else 0
 
             // Thin progress bar — visible at the bottom only after pagination is ready
@@ -710,7 +835,7 @@ fun EInkPaginatedContent(
             // Full bottom bar — shown and dismissed explicitly by the reader
             // Also hidden when pagination is not yet ready (totalPages == 0)
             AnimatedVisibility(
-                visible = bottomBarVisible && totalPages > 0 && !editingFormatting,
+                visible = bottomBarVisible && totalPages > 0 && !editingFormatting && !selectionMode && !annotationEditing && !annotationCapturePending,
                 enter = androidx.compose.animation.EnterTransition.None,
                 exit = androidx.compose.animation.ExitTransition.None,
             ) {
@@ -746,6 +871,10 @@ fun EInkPaginatedContent(
                     onSaveArticle = onSaveArticle,
                     onLibraryActions = onLibraryActions,
                     onFormattingClick = if (isInitialPaginationReady) ::openFormatting else null,
+                    onSelectText = if (isInitialPaginationReady && onCreateAnnotation != null && onSelectionModeChange != null) {
+                        { bottomBarVisible = false; onSelectionModeChange(true) }
+                    } else null,
+                    onAnnotationsClick = onAnnotationsClick?.let { action -> { bottomBarVisible = false; action() } },
                 )
             }
             formattingDraft?.let { draft ->
@@ -785,6 +914,72 @@ fun EInkPaginatedContent(
     }
 }
 
+/** Keeps the system Copy action/selection handles and adds local annotation actions. */
+internal class EInkAnnotationWebView(context: android.content.Context) : WebView(context) {
+    var selectionEnabled: () -> Boolean = { false }
+    var onAnnotationAction: (Boolean, ActionMode) -> Unit = { _, _ -> }
+    var onSelectionFinished: () -> Unit = {}
+    private var selectionActionMode: ActionMode? = null
+    private var finishingInternally = false
+
+    fun finishSelection() {
+        // Successful capture and explicit Done already own their token/state
+        // changes. Only externally destroyed ActionModes need the cancel callback.
+        finishingInternally = true
+        try { selectionActionMode?.finish() } finally {
+            selectionActionMode = null
+            finishingInternally = false
+        }
+    }
+
+    private fun annotationCallback(original: ActionMode.Callback): ActionMode.Callback = object : ActionMode.Callback2() {
+        fun addActions(menu: Menu) {
+            if (menu.findItem(HIGHLIGHT) == null) menu.add(Menu.NONE, HIGHLIGHT, 1, "Highlight").setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM)
+            if (menu.findItem(ADD_NOTE) == null) menu.add(Menu.NONE, ADD_NOTE, 2, "Add note").setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM)
+        }
+        override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
+            if (!selectionEnabled() || !original.onCreateActionMode(mode, menu)) return false
+            selectionActionMode = mode
+            addActions(menu)
+            return true
+        }
+        override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean {
+            val result = original.onPrepareActionMode(mode, menu)
+            addActions(menu)
+            return result
+        }
+        override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean = when (item.itemId) {
+            HIGHLIGHT, ADD_NOTE -> { if (selectionEnabled()) onAnnotationAction(item.itemId == ADD_NOTE, mode); true }
+            else -> original.onActionItemClicked(mode, item)
+        }
+        override fun onDestroyActionMode(mode: ActionMode) {
+            original.onDestroyActionMode(mode)
+            if (selectionActionMode === mode) {
+                selectionActionMode = null
+                if (!finishingInternally) onSelectionFinished()
+            }
+        }
+        override fun onGetContentRect(mode: ActionMode, view: View, outRect: android.graphics.Rect) {
+            if (original is ActionMode.Callback2) original.onGetContentRect(mode, view, outRect)
+            else super.onGetContentRect(mode, view, outRect)
+        }
+    }
+    override fun startActionMode(callback: ActionMode.Callback): ActionMode? =
+        super.startActionMode(annotationCallback(callback))
+    override fun startActionMode(callback: ActionMode.Callback, type: Int): ActionMode? =
+        super.startActionMode(annotationCallback(callback), type)
+
+    // Activity owns HIGH-priority volume events even while native selection has focus.
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean =
+        if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) false
+        else super.onKeyDown(keyCode, event)
+    override fun onKeyUp(keyCode: Int, event: android.view.KeyEvent?): Boolean =
+        if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) false
+        else super.onKeyUp(keyCode, event)
+
+    private companion object { const val HIGHLIGHT = 0x494E4B01; const val ADD_NOTE = 0x494E4B02 }
+}
+
 private data class EInkReadingAnchorSnapshot(
     val generation: String, val itemId: String, val contentRevision: String, val json: String,
 )
@@ -795,7 +990,11 @@ private class EInkJsInterface(
     private val onRepaginated: (String, Int, Int, Long) -> Unit,
     private val onReadingAnchor: (String, String, String, String) -> Unit,
     private val onReadingAnchorRestore: (String, String) -> Unit,
+    private val onAnnotationLocations: (String, String) -> Unit,
 ) {
+    @JavascriptInterface
+    fun onAnnotationLocations(generation: String, json: String) = onAnnotationLocations.invoke(generation, json)
+
     @JavascriptInterface
     fun onTotalPages(generation: String, pages: Int, commandId: Long) = onTotalPages.invoke(generation, pages, commandId)
 
@@ -834,13 +1033,14 @@ private fun buildArticleHtmlDocument(
     readingContentRevision: String?,
     initialReadingAnchor: String?,
     dateLabel: String?,
+    annotationsScript: String,
 ): EInkArticleHtmlDocument {
     val outputDir = File(cacheDir, "eink-articles").apply { mkdirs() }
     deleteStaleArticleHtmlFiles(outputDir)
     val outputFile = File.createTempFile("article-", ".html", outputDir)
     outputFile.bufferedWriter(Charsets.UTF_8).use { writer ->
         writeArticleHtml(writer, content, formattingPayload, title, feedName, author,
-            publishedDate, generation, runtimeScript, itemId, readingContentRevision, initialReadingAnchor, dateLabel)
+            publishedDate, generation, runtimeScript, itemId, readingContentRevision, initialReadingAnchor, dateLabel, annotationsScript)
     }
     return EInkArticleHtmlDocument(file = outputFile, cacheKey = generation)
 }
@@ -865,6 +1065,7 @@ private fun writeArticleHtml(
     readingContentRevision: String?,
     initialReadingAnchor: String?,
     dateLabel: String?,
+    annotationsScript: String,
 ) {
     val dateStr = einkReaderDate(publishedDate, dateLabel)
     val metaLine = listOf(articleByline(feedName, author), dateStr).filter { it.isNotBlank() }.joinToString(" · ")
@@ -886,6 +1087,7 @@ window._inkreadInitialFormatting = $formattingPayload;
 window._inkreadReadingIdentity = $readingIdentity;
 window._inkreadInitialReadingAnchor = ${initialReadingAnchor?.let(EInkReaderFormatting::quote) ?: "null"};
 $runtimeScript
+$annotationsScript
 </script>
 </head><body><main id="eink-content">
 <div class="eink-metadata"><h1>${title.esc()}</h1><p class="eink-meta">${metaLine.esc()}</p></div>

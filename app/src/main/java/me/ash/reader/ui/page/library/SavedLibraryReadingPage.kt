@@ -37,6 +37,12 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import java.io.File
 import java.util.Date
+import me.ash.reader.domain.annotation.AnnotationSource
+import me.ash.reader.domain.annotation.AnnotationSourceKind
+import me.ash.reader.ui.page.annotation.AnnotationReaderUi
+import me.ash.reader.ui.page.annotation.AnnotationReaderViewModel
+import me.ash.reader.ui.page.annotation.AnnotationReaderDialogs
+import me.ash.reader.ui.page.annotation.rememberAnnotationReaderUi
 import me.ash.reader.domain.library.SavedContentState
 import me.ash.reader.domain.library.SavedLocation
 import me.ash.reader.ui.page.home.reading.EInkPaginatedContent
@@ -47,9 +53,16 @@ fun SavedLibraryReadingPage(
     itemId: String,
     onBack: () -> Unit,
     viewModel: SavedLibraryReadingViewModel = hiltViewModel(),
+    annotationViewModel: AnnotationReaderViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
     LaunchedEffect(itemId) { viewModel.open(itemId) }
+    val document = state.document.takeIf { state.itemId == itemId && !state.loading && state.error == null }
+    val source = document?.item?.let { item ->
+        AnnotationSource(AnnotationSourceKind.SAVED, item.id, url = item.url,
+            title = item.title, author = item.author, sourceName = item.sourceName)
+    }
+    val annotations = rememberAnnotationReaderUi(source, document?.contentRevision, annotationViewModel)
     // Key by the route immediately, not by the previous VM's asynchronous state.
     SavedLibraryReadingContent(
         state = if (state.itemId == itemId) state else SavedLibraryReadingState(itemId = itemId),
@@ -60,7 +73,9 @@ fun SavedLibraryReadingPage(
         onReadingAnchorChanged = viewModel::saveAnchor,
         onRetryPositionSave = viewModel::retryPositionSave,
         onExitWithoutSaving = onBack,
+        annotations = annotations,
     )
+    AnnotationReaderDialogs(annotations)
 }
 
 /** Test seam uses the real production reader and never needs an RSS view model. */
@@ -75,6 +90,7 @@ internal fun SavedLibraryReadingContent(
     onReadingAnchorChanged: (String, String, String) -> Unit,
     onRetryPositionSave: () -> Unit = {},
     onExitWithoutSaving: (() -> Unit)? = null,
+    annotations: AnnotationReaderUi? = null,
 ) {
     val context = LocalContext.current
     val readerOwner = remember(state.itemId) { Any() }
@@ -145,6 +161,15 @@ internal fun SavedLibraryReadingContent(
                     link = document.item.url,
                     publishedDate = Date(document.item.savedAt),
                     dateLabel = "Saved",
+                    selectionMode = annotations?.selectionMode ?: false,
+                    onSelectionModeChange = annotations?.onSelectionModeChange?.takeIf { annotations?.available == true },
+                    annotationEditing = annotations?.annotationEditing == true || actionsVisible,
+                    annotationsJson = annotations?.annotationsJson ?: "[]",
+                    onCreateAnnotation = annotations?.onCreateAnnotation?.takeIf { annotations?.available == true },
+                    onAnnotationLocationsChanged = annotations?.onAnnotationLocationsChanged,
+                    onAnnotationsClick = annotations?.onAnnotationsClick?.takeIf { sourceReadyForAnnotations(state) },
+                    annotationJumpRequest = annotations?.jumpRequest,
+                    onAnnotationJumpResult = annotations?.onAnnotationJumpResult,
                     reserveVolumeKeys = false,
                     volumeKeyOwner = readerOwner,
                     onBack = onBack,
@@ -203,3 +228,6 @@ private fun SavedReaderAction(label: String, tag: String, onClick: () -> Unit) {
         contentAlignment = Alignment.Center,
     ) { Text(label, color = Color.Black) }
 }
+
+private fun sourceReadyForAnnotations(state: SavedLibraryReadingState): Boolean =
+    !state.loading && state.error == null && state.document != null

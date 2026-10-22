@@ -1,0 +1,31 @@
+# Device-local annotations and one-way outbox
+
+`Annotations` is a separate Room v1 database. It does not change Reader DB7, SavedLibrary v1, RSS read state, account deletion, cache cleanup or feed subscriptions. Document, annotation, connection and outbox tables have no foreign keys to RSS or Saved. A captured annotation therefore survives deletion of its original article, feed, account or Saved item.
+
+## Identity and immutable content
+
+Document identity reuses the existing conservative Saved URL normalization: HTTP(S), lower-case host/scheme, default port removal, fragment removal, unchanged path case, query order, escaping and tracking parameters. A valid normalized URL joins RSS and Saved selections into one document. Otherwise identity is a length-delimited source key, including the RSS account ID. No content similarity, headline or query-stripping heuristic merges documents.
+
+Each annotation captures its source metadata, exact quote and opaque validated JSON object containing selection context/UTF-16 anchors. These fields are immutable for the annotation's lifetime. Only its note changes, increasing its local revision. A conservative 256 KiB UTF-8 aggregate row budget includes quote, serialized anchor, note and source metadata, with fixed row overhead reserved. The JSON-encoded outbox payload has the same budget to catch control-character escaping expansion. Oversized create/note edits raise a typed AnnotationSizeException before mutation, preserving the previous note and queue. No text or note is truncated to a remote provider's limits. Provider rejection must remain visible and the local text remains intact.
+
+Removing a local annotation creates a hidden update-only tombstone, clears its quote/note/anchor and all stored outbox payloads, and cancels outstanding work. The existing remote receipt remains. There is no remote-delete operation, and an in-flight result cannot reinsert the annotation.
+
+## Consent and connection epochs
+
+The connection stores an opaque local connection ID, not a verified provider account identity or a credential. Explicit token replacement/reconnection/disconnection advances the epoch and pauses old work. A separate enable switch pauses/resumes that epoch without opting in historical local annotations. No token or authentication header is persisted in this database.
+
+Only annotations created while connected and enabled are automatically consented to that epoch. Edits queue only for an already-consented current epoch while enabled. Local-only annotations, notes written while disabled, and annotations from older connections do not become new CREATE requests merely because export is later enabled or a note is edited. The narrow `enqueueExisting` API is an explicit opt-in, not called by normal enable/reconnect flows. `retryFailed` is separately restricted to definite failures already bound to the same epoch; it cannot reassign old backlog or resend review-required writes.
+
+## Durable export state machine
+
+Every local mutation and its eligible outbox operation commit in one Room transaction. CREATE request content is frozen at enqueue. Later note edits become UPDATE operations which wait for the CREATE acknowledgment; pending obsolete UPDATEs can coalesce, but in-flight content is never changed. Acknowledgments update only remote binding/exported revision, never overwrite the local note or local revision. A unique `(exportEpoch, remoteId)` binding plus transactional collision checks prevents two selections deduplicated by the provider from later PATCHing each other's note. A collision is held for review.
+
+Foreground and background runners share one database-level lease, so only one write is claimed at a time. Claims have a unique lease token, expiry, epoch, attempt count and frozen payload. A stale lease, paused/replaced connection or deleted annotation cannot acknowledge. A connection-wide persisted Retry-After deadline prevents another ready item from bypassing throttling.
+
+A potentially committed CREATE is marked for read-only reconciliation. Process-death lease recovery also sets `needsReconciliation` for CREATE; it does not authorize another POST. The export adapter must perform bounded exact-match reconciliation and either acknowledge one verified identity or mark the item REVIEW_REQUIRED. An expired UPDATE can repeat its exact idempotent PATCH under the same remote binding. Reconciliation uncertainty, remote-ID collisions and ambiguous responses are visible review states, excluded from automatic and manual definite-failure retry. CREATE payloads may include a validated v1 raw-body UTF-16 start offset as a nullable ordering hint. It is not a promise of Readwise Reader anchoring; anchor/context JSON is never exported. Older payloads without the hint remain readable. Nothing imports remote edits or synchronizes bidirectionally.
+
+## Verification
+
+`AnnotationRepositoryTest` exercises the production repository, identity and JSON logic with a transactional in-memory DAO. Standalone execution with already-available Kotlin/JUnit dependencies and Room annotation-only stubs passes 18 tests. This verifies domain/outbox behavior, not Android Room code generation or device execution.
+
+`AnnotationRoomPersistenceTest` adds four real Room instrumentation cases: source lifecycle independence and database reopen; process-death frozen CREATE reconciliation/deletion race; cross-instance serialization and collision handling; and actual SQLite transaction rollback via an aborting test-only trigger. These are present for authorized Android CI and have not been executed locally. The Room v1 schema identity bundle must be generated by Android/KSP CI, not invented manually. No SDK, Gradle installation, emulator, APK or adb execution was performed for this change.
