@@ -55,6 +55,17 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - name: Prepare native geometry checks
         run: |
+          cat > "$RUNNER_TEMP/reader-avd-resolution.py" <<'PYTHON'
+          import os, pathlib
+          # Set the disposable AVD framebuffer before boot: wm size can clamp a tall
+          # override against the default 320x640 display even when adb exits zero.
+          config = pathlib.Path(os.environ["ANDROID_AVD_HOME"]) / "reader-alignment.avd/config.ini"
+          width, height = "${{ matrix.size }}".split("x")
+          dimensions = {"hw.lcd.width": width, "hw.lcd.height": height}
+          lines = [line for line in config.read_text().splitlines()
+                   if line.partition("=")[0].strip() not in dimensions]
+          config.write_text("\n".join(lines + [f"{key}={value}" for key, value in dimensions.items()]) + "\n")
+          PYTHON
           cat > "$RUNNER_TEMP/reader-alignment-tests.sh" <<'SCRIPT'
           #!/usr/bin/env bash
           set -euo pipefail
@@ -71,6 +82,11 @@ jobs:
           adb shell dumpsys webviewupdate > reader-alignment-evidence/webview.txt
           adb shell wm size > reader-alignment-evidence/size.txt
           adb shell wm density > reader-alignment-evidence/density.txt
+          actual_size=$(tr -d '\r' < reader-alignment-evidence/size.txt | sed -n 's/^\(Physical\|Override\) size: //p' | tail -n 1)
+          if [ "$actual_size" != "${{ matrix.size }}" ]; then
+            echo "Requested ${{ matrix.size }}, but Android applied $actual_size" >&2
+            exit 1
+          fi
           result=0
           for scale in 1.0 1.6; do
             adb shell settings put system font_scale "$scale"
@@ -126,6 +142,8 @@ jobs:
           api-level: 35
           arch: x86_64
           target: google_apis
+          avd-name: reader-alignment
+          pre-emulator-launch-script: python3 "$RUNNER_TEMP/reader-avd-resolution.py"
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: bash "$RUNNER_TEMP/reader-alignment-tests.sh"
