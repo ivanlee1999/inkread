@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.PointF
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import android.view.InputDevice
@@ -13,6 +14,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewConfiguration
+import android.view.inspector.WindowInspector
 import android.webkit.WebView
 import android.widget.ListView
 import android.widget.TextView
@@ -365,6 +367,7 @@ class EInkReaderAnnotationUiTest {
 
     @Test fun nativeHandlesAdjustDefaultSelectionWithoutPagingAtLargeReaderFont() {
         startReader(fontSize = 32)
+        observeAnnotationCapture()
         val before = page.get()
         longPressFirstWord()
         assertTrue(nativeActionAvailable("Highlight"))
@@ -403,7 +406,12 @@ class EInkReaderAnnotationUiTest {
         compose.waitUntil(5_000) { js("window.getSelection().toString().trim()") == "Selection" }
         val exact = js("window.getSelection().toString()") as String
         clickNativeAction("Highlight")
-        compose.waitUntil(5_000) { created.get() != null }
+        try {
+            compose.waitUntil(5_000) { created.get() != null }
+        } catch (timeout: ComposeTimeoutException) {
+            logReaderSnapshot("Highlight callback timeout")
+            throw timeout
+        }
         assertEquals(exact, JSONObject(created.get()!!).getString("quote"))
         assertEquals(false, note.get())
         assertReadingNavigationRestored()
@@ -469,11 +477,12 @@ class EInkReaderAnnotationUiTest {
         // Holding whitespace is not an invisible page-click shortcut.
         nativeTap(.98f, .5f, longPress = true)
         settle()
+        logReaderSnapshot("after margin hold", .98f, .5f)
         assertEquals(before, page.get())
         assertFalse(selecting.value)
         assertEquals(0, nextArticles.get())
         assertEquals(0, previousArticles.get())
-        assertReadingNavigationRestored()
+        assertReadingNavigationRestored(diagnoseTap = true)
     }
 
     @Test fun realBrowserCrossParagraphSelectionKeepsDisplayAndRawWhitespace() {
@@ -631,12 +640,19 @@ class EInkReaderAnnotationUiTest {
         }
     }
 
-    private fun assertReadingNavigationRestored() {
+    private fun assertReadingNavigationRestored(diagnoseTap: Boolean = false) {
         compose.waitUntil(5_000) { !selecting.value && !editing.value }
         compose.onNodeWithTag("reader_controls_toggle").assertIsDisplayed()
         val before = page.get()
+        if (diagnoseTap) logReaderSnapshot("before restored forward tap")
         nativeTap(.8f, .5f)
-        compose.waitUntil(5_000) { page.get() == before + 1 }
+        if (diagnoseTap) logReaderSnapshot("after restored forward tap")
+        try {
+            compose.waitUntil(5_000) { page.get() == before + 1 }
+        } catch (timeout: ComposeTimeoutException) {
+            if (diagnoseTap) logReaderSnapshot("restored forward tap timeout")
+            throw timeout
+        }
         nativeTap(.2f, .5f)
         compose.waitUntil(5_000) { page.get() == before }
         volume(KeyEvent.KEYCODE_VOLUME_DOWN)
@@ -749,8 +765,72 @@ class EInkReaderAnnotationUiTest {
     private fun assertNativeCopyResult(expected: String) {
         // The native clipboard write can complete after ActionMode is destroyed.
         // Wait for that result, never repeat the gesture or accept old clipboard text.
-        compose.waitUntil(5_000) { clipboardText() == expected }
+        Log.i("InkReadAnnotationTest", "Native Copy result expected=$expected current=${clipboardText()}")
+        try {
+            compose.waitUntil(5_000) { clipboardText() == expected }
+        } catch (timeout: ComposeTimeoutException) {
+            val actual = clipboardText()
+            Log.i("InkReadAnnotationTest", "Native Copy timeout expected=$expected current=$actual")
+            logReaderSnapshot("Native Copy timeout")
+            throw AssertionError("Native Copy did not produce fixture text: expected=<$expected> actual=<$actual>", timeout)
+        }
         assertEquals("Copy must remain the real system action", expected, clipboardText())
+    }
+    private fun observeAnnotationCapture() {
+        // Observe the real native handler and existing JS serializer. Both are
+        // delegated unchanged; this never creates or adjusts a Selection range.
+        instrumentation.runOnMainSync {
+            val view = reader() as EInkAnnotationWebView
+            val original = view.onAnnotationAction
+            view.onAnnotationAction = { addNote, mode ->
+                Log.i("InkReadAnnotationTest", "Native annotation handler reached: addNote=$addNote selecting=${selecting.value} mode=${System.identityHashCode(mode)}")
+                original(addNote, mode)
+            }
+        }
+        js("""(function(){
+            var original=window.InkReadAnnotations.captureSelection;
+            var observed=window.__inkReadCaptureDiagnostics={calls:0,result:null,error:null};
+            window.InkReadAnnotations.captureSelection=function(){
+                observed.calls++;
+                try { var result=original.apply(this,arguments); observed.result=result; return result; }
+                catch(error) { observed.error=String(error); throw error; }
+            };
+            return true;
+        })()""".trimIndent())
+    }
+    private fun logReaderSnapshot(phase: String, xRatio: Float = .8f, yRatio: Float = .5f) {
+        // Diagnostics must not replace the original assertion/timeout if a
+        // renderer or window disappears while its failure is being inspected.
+        runCatching {
+            val dom = js("""(function(){
+                var s=window.getSelection(), ranges=[];
+                for(var i=0;s && i<Math.min(s.rangeCount,3);i++){
+                    var r=s.getRangeAt(i), boxes=r.getClientRects(), rects=[];
+                    for(var j=0;j<Math.min(boxes.length,12);j++){
+                        var b=boxes[j];rects.push([b.left,b.top,b.right,b.bottom]);
+                    }
+                    ranges.push({start:[r.startContainer.nodeName,r.startContainer.parentElement && r.startContainer.parentElement.id,r.startOffset],
+                        end:[r.endContainer.nodeName,r.endContainer.parentElement && r.endContainer.parentElement.id,r.endOffset],
+                        rectCount:boxes.length,rects:rects});
+                }
+                var x=$xRatio*innerWidth,y=$yRatio*innerHeight,e=document.elementFromPoint(x,y),ancestors=[];
+                while(e && ancestors.length<8){ancestors.push({tag:e.tagName,id:e.id,role:e.getAttribute('role'),href:e.getAttribute('href')});e=e.parentElement;}
+                return JSON.stringify({quote:s && s.toString(),collapsed:s && s.isCollapsed,rangeCount:s && s.rangeCount,ranges:ranges,
+                    point:[x,y],viewport:[innerWidth,innerHeight],ancestors:ancestors,capture:window.__inkReadCaptureDiagnostics || null});
+            })()""".trimIndent())
+            val native = AtomicReference<String>()
+            instrumentation.runOnMainSync {
+                val view = reader()
+                val roots = if (Build.VERSION.SDK_INT >= 29) WindowInspector.getGlobalWindowViews() else listOf(view.rootView)
+                native.set(roots.joinToString(prefix = "[", postfix = "]") { root ->
+                    val location = IntArray(2); root.getLocationOnScreen(location)
+                    "${root.javaClass.name}{tag=${root.tag},xy=${location.toList()},size=${root.width}x${root.height},visible=${root.isShown},focus=${root.hasWindowFocus()}}"
+                })
+            }
+            val detail = "$phase: selecting=${selecting.value} editing=${editing.value} page=${page.get()} created=${created.get()} DOM=$dom roots=${native.get()}"
+            val chunks = detail.chunked(3_000)
+            chunks.forEachIndexed { index, chunk -> Log.i("InkReadAnnotationTest", "snapshot ${index + 1}/${chunks.size}: $chunk") }
+        }.onFailure { Log.w("InkReadAnnotationTest", "$phase: diagnostic snapshot unavailable", it) }
     }
     private fun assertNativeSelectionRetained(expected: String, phase: String) {
         settle()
