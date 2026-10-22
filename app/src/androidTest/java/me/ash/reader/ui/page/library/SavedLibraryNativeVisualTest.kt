@@ -261,6 +261,9 @@ class SavedLibraryNativeVisualTest(private val fontScale: Float) {
         }
         val beforeActions = readerState()
         compose.onNodeWithTag("reader_controls_toggle").performClick()
+        compose.waitUntil(5_000) {
+            runCatching { compose.onNodeWithTag("reader_library_actions").assertIsDisplayed() }.isSuccess
+        }
         compose.onNodeWithTag("reader_library_actions").assertIsDisplayed().performClick()
         compose.onNodeWithTag("saved_reader_actions").assertIsDisplayed()
         emitVolume()

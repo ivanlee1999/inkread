@@ -224,10 +224,12 @@
         return Math.max(0, Math.floor((rects[0].left + window._currentPage * window._pageStride - margins.left + .5) / window._pageStride));
     }
     function clearSelection() { var s = window.getSelection(); if (s) s.removeAllRanges(); redraw(); }
-    function setSelectionMode(value, expectedGeneration) {
+    function setSelectionMode(value, expectedGeneration, clearRange) {
         if (destroyed || generation !== expectedGeneration) return false;
         enabled = !!value;
-        if (!enabled) clearSelection();
+        // Native Copy owns its own asynchronous range cleanup. State-only sync
+        // must not remove its range before Chromium has copied it.
+        if (!enabled && clearRange !== false) clearSelection();
         return true;
     }
     function initialize() {

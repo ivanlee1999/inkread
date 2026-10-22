@@ -293,7 +293,7 @@ fun EInkPaginatedContent(
         onDispose {
             persistLatestReadingAnchor()
             webViewRef.value?.let { wv ->
-                (wv as? EInkAnnotationWebView)?.finishSelection()
+                (wv as? EInkAnnotationWebView)?.finishSelection(clearNativeCache = true)
                 wv.removeJavascriptInterface("Android")
                 wv.stopLoading()
                 wv.loadUrl("about:blank")
@@ -383,7 +383,7 @@ fun EInkPaginatedContent(
         nativeSelectionActive = false
         annotationCaptureToken.incrementAndGet()
         annotationCapturePending = false
-        (webViewRef.value as? EInkAnnotationWebView)?.finishSelection()
+        (webViewRef.value as? EInkAnnotationWebView)?.finishSelection(clearNativeCache = true)
         webViewRef.value?.evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.setSelectionMode(false, ${EInkReaderFormatting.quote(currentGeneration.value)})", null)
         currentOnSelectionModeChange?.invoke(false)
     }
@@ -399,10 +399,12 @@ fun EInkPaginatedContent(
                 annotationCapturePending = false
                 (view as? EInkAnnotationWebView)?.finishSelection()
             }
-            view?.evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.setSelectionMode($selectionActive, ${EInkReaderFormatting.quote(documentGeneration)})", null)
+            // This only synchronizes capture availability. Chromium owns native
+            // Copy/dismissal cleanup; a second DOM clear can overtake native Copy.
+            view?.evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.setSelectionMode($selectionActive, ${EInkReaderFormatting.quote(documentGeneration)}, false)", null)
         }
     }
-    LaunchedEffect(onCreateAnnotation != null, annotationCapturePending) {
+    LaunchedEffect(onCreateAnnotation != null) {
         (webViewRef.value as? EInkAnnotationWebView)?.refreshSelectionActions()
     }
     LaunchedEffect(documentGeneration, annotationsJson, isInitialPaginationReady) {
@@ -571,7 +573,9 @@ fun EInkPaginatedContent(
                         EInkAnnotationWebView(ctx).apply {
                             selectionEnabled = { isInitialPaginationReadyState.value && !currentEditingFormatting &&
                                 !currentAnnotationEditing && !annotationCapturePending }
-                            annotationActionsEnabled = { currentOnCreateAnnotation != null && !annotationCapturePending }
+                            // Keep the clicked native menu stable until capture completes.
+                            // Duplicate actions are rejected at invocation, not by rebuilding it.
+                            annotationActionsEnabled = { currentOnCreateAnnotation != null }
                             isSelectionActive = { selectionOwnsInput() }
                             navigationEnabled = { isInitialPaginationReadyState.value && !currentEditingFormatting &&
                                 !selectionOwnsInput() && !currentAnnotationEditing && !annotationCapturePending }
@@ -606,7 +610,7 @@ fun EInkPaginatedContent(
                             }
                             onSelectionFinished = {
                                 nativeSelectionActive = false
-                                evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.setSelectionMode(false, ${EInkReaderFormatting.quote(currentGeneration.value)})", null)
+                                evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.setSelectionMode(false, ${EInkReaderFormatting.quote(currentGeneration.value)}, false)", null)
                                 currentOnSelectionModeChange?.invoke(false)
                             }
                             onAnnotationAction = annotation@{ addNote, _ ->
@@ -621,7 +625,7 @@ fun EInkPaginatedContent(
                                         if (generation == currentGeneration.value && annotationCaptureToken.compareAndSet(token, token + 1)) {
                                             annotationCapturePending = false
                                             nativeSelectionActive = false
-                                            view.finishSelection()
+                                            view.finishSelection(clearNativeCache = true)
                                             evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.clearSelection()", null)
                                             currentOnSelectionModeChange?.invoke(false)
                                             showBoundaryText = "Selection could not be captured. Please try again."
@@ -637,7 +641,7 @@ fun EInkPaginatedContent(
                                             !annotationCaptureToken.compareAndSet(token, token + 1)) return@evaluateJavascript
                                         val json = runCatching { JSONTokener(result).nextValue() as? String }.getOrNull()
                                         nativeSelectionActive = false
-                                        view.finishSelection()
+                                        view.finishSelection(clearNativeCache = true)
                                         evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.clearSelection()", null)
                                         annotationCapturePending = false
                                         currentOnSelectionModeChange?.invoke(false)
@@ -779,7 +783,7 @@ fun EInkPaginatedContent(
                             lastLoadedHtmlKey = it.cacheKey
                             nativeSelectionActive = false
                             (webView as? EInkAnnotationWebView)?.invalidateReaderGesture()
-                            (webView as? EInkAnnotationWebView)?.finishSelection()
+                            (webView as? EInkAnnotationWebView)?.finishSelection(clearNativeCache = true)
                             if (currentSelectionMode) currentOnSelectionModeChange?.invoke(false)
                             webView.loadUrl(it.url)
                         }
@@ -976,7 +980,7 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
 
     override fun onDetachedFromWindow() {
         val ownedSelection = hasActiveSelection
-        finishSelection()
+        finishSelection(clearNativeCache = true)
         if (ownedSelection) {
             onSelectionInvalidated()
             onSelectionFinished()
@@ -1061,7 +1065,7 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
 
     fun refreshSelectionActions() { selectionActionMode?.invalidate() }
 
-    fun finishSelection() {
+    fun finishSelection(clearNativeCache: Boolean = false) {
         gestureSerial++
         touch.claimSelection()
         // Explicit dismissal owns its token/state changes and immediately
@@ -1069,6 +1073,10 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
         val mode = selectionActionMode
         selectionLifecycle.finish()
         mode?.finish()
+        // Explicit cancellation must also tell Chromium to forget its cached
+        // range/handles, otherwise a later blank-margin hold can revive them.
+        // Never blur for native Copy or ordinary reactive state synchronization.
+        if (clearNativeCache) clearFocus()
     }
 
     private fun annotationCallback(original: ActionMode.Callback): ActionMode.Callback =

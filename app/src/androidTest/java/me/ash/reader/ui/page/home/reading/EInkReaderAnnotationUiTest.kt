@@ -471,6 +471,10 @@ class EInkReaderAnnotationUiTest {
         settle()
         assertEquals(before, page.get())
         assertFalse(selecting.value)
+        assertEquals("A blank-margin hold must not resurrect the dismissed DOM range", true,
+            js("window.getSelection().isCollapsed"))
+        assertEquals("A blank-margin hold must not restore the old selected quote", "",
+            js("window.getSelection().toString()"))
         assertEquals(0, nextArticles.get())
         assertEquals(0, previousArticles.get())
         assertReadingNavigationRestored()

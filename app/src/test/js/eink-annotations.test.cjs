@@ -106,6 +106,55 @@ test('capture requires active selection mode, live document generation and nonem
     assert.equal(f.api.setAnnotations([], 'old-doc'),false);f.windowListeners.get('pagehide')();assert.equal(f.api.setSelectionMode(true,'doc-1'),false);
 });
 
+test('state-only selection mode sync disables capture without mutating the native Copy range',()=>{
+    const a=text('Native Copy keeps its exact quote'),f=fixture([element('P',a)]);f.select(a,7,a,11);
+    const selection=f.context.getSelection(),range=selection.getRangeAt(0),saved=f.capture();
+    let clears=0;const remove=selection.removeAllRanges;
+    selection.removeAllRanges=function(){clears++;return remove.call(this);};
+    // Both the native completion and its later reactive sync are state-only.
+    for(let repeat=0;repeat<2;repeat++) {
+        assert.equal(f.api.setSelectionMode(false,'doc-1',false),true);
+        assert.equal(f.api.captureSelection('doc-1'),null);
+        assert.equal(f.context.getSelection(),selection);assert.equal(selection.getRangeAt(0),range);
+        assert.equal(selection.rangeCount,1);assert.equal(selection.isCollapsed,false);
+        assert.equal(range.startContainer,a);assert.equal(range.startOffset,7);
+        assert.equal(range.endContainer,a);assert.equal(range.endOffset,11);
+        assert.equal(selection.toString(),'Copy');assert.equal(clears,0);
+    }
+    assert.equal(f.api.setSelectionMode(true,'doc-1',false),true);
+    assert.deepEqual(f.capture(),saved);assert.equal(clears,0);f.immutable();
+});
+
+test('explicit selection dismissal still clears by default and with clearRange true',()=>{
+    const a=text('Explicit dismissal'),f=fixture([element('P',a)]);
+    for(const explicitFlag of [false,true]) {
+        f.api.setSelectionMode(true,'doc-1');f.select(a,0,a,8);
+        const selection=f.context.getSelection();let clears=0;const remove=selection.removeAllRanges;
+        selection.removeAllRanges=function(){clears++;return remove.call(this);};
+        const result=explicitFlag?f.api.setSelectionMode(false,'doc-1',true):f.api.setSelectionMode(false,'doc-1');
+        assert.equal(result,true);assert.equal(clears,1);
+        assert.equal(selection.rangeCount,0);assert.equal(selection.isCollapsed,true);
+        f.select(a,0,a,8);assert.equal(f.api.captureSelection('doc-1'),null,'Dismissal also disables capture');
+    }
+    f.immutable();
+});
+
+test('stale generation mode sync cannot clear a range or change capture enablement',()=>{
+    const a=text('Current document quote'),f=fixture([element('P',a)]);f.select(a,0,a,7);
+    const selection=f.context.getSelection(),range=selection.getRangeAt(0),saved=f.capture();
+    let clears=0;const remove=selection.removeAllRanges;
+    selection.removeAllRanges=function(){clears++;return remove.call(this);};
+    assert.equal(f.api.setSelectionMode(false,'old-doc'),false);
+    assert.equal(f.api.setSelectionMode(false,'old-doc',false),false);
+    assert.deepEqual(f.capture(),saved,'Stale disable must not change live capture enablement');
+    assert.equal(f.api.setSelectionMode(false,'doc-1',false),true);
+    assert.equal(f.api.setSelectionMode(true,'old-doc',false),false);
+    assert.equal(f.api.captureSelection('doc-1'),null,'Stale enable must not revive disabled capture');
+    assert.equal(f.context.getSelection(),selection);assert.equal(selection.getRangeAt(0),range);
+    assert.equal(selection.rangeCount,1);assert.equal(selection.isCollapsed,false);
+    assert.equal(selection.toString(),'Current');assert.equal(clears,0);f.immutable();
+});
+
 test('captured JSON survives clearing selection before a note editor opens',()=>{
     const a=text('An exact note quote'),f=fixture([element('P',a)]);f.select(a,3,a,13);
     const json=f.api.captureSelection('doc-1');f.api.clearSelection();assert.equal(f.capture(),null);assert.equal(JSON.parse(json).quote,'exact note');
