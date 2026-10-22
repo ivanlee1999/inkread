@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="saved_rss_save_action">Save to library</string>
+    <string name="saved_rss_save_success">Saved to library</string>
+    <string name="saved_rss_save_failed">Could not save this article. Please try again.</string>
+</resources>

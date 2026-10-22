@@ -11,10 +11,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.util.Consumer
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -27,8 +29,6 @@ import coil.ImageLoader
 import dagger.hilt.android.AndroidEntryPoint
 import java.lang.reflect.Field
 import javax.inject.Inject
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import me.ash.reader.domain.data.FilterStateUseCase
 import me.ash.reader.domain.service.AccountService
 import me.ash.reader.domain.service.WidgetUpdateWorker
@@ -42,7 +42,13 @@ import me.ash.reader.ui.ext.initialPage
 import me.ash.reader.ui.ext.isFirstLaunch
 import me.ash.reader.ui.ext.languages
 import me.ash.reader.ui.page.common.ExtraName
+import me.ash.reader.ui.page.home.feeds.subscribe.SubscribeState
 import me.ash.reader.ui.page.home.feeds.subscribe.SubscribeViewModel
+import me.ash.reader.ui.page.library.SavedCaptureHost
+import me.ash.reader.ui.page.library.SavedCaptureViewModel
+import me.ash.reader.ui.page.library.LinkCaptureMode
+import me.ash.reader.ui.page.library.externalLinkCaptureMode
+import me.ash.reader.ui.page.nav3.showRetainedDestination
 import me.ash.reader.ui.page.nav3.AppEntry
 import me.ash.reader.ui.page.nav3.key.Route
 import me.ash.reader.ui.page.nav3.key.Route.*
@@ -51,6 +57,8 @@ import me.ash.reader.ui.theme.AppTheme
 /** The Single-Activity Architecture. */
 @AndroidEntryPoint
 class MainActivity : AppCompatActivity() {
+    private var deferredRssLaunch: LaunchAction? = null
+
     @Inject lateinit var imageLoader: ImageLoader
 
     @Inject lateinit var settingsProvider: SettingsProvider
@@ -62,7 +70,13 @@ class MainActivity : AppCompatActivity() {
     @Inject lateinit var filterUseCase: FilterStateUseCase
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Intent extras can become SavedStateHandle defaults. A third-party share must not
+        // impersonate a restored, user-approved capture transaction or success result.
+        intent.extras?.keySet()?.filter { it.startsWith("saved_capture_") }?.forEach(intent::removeExtra)
         super.onCreate(savedInstanceState)
+        @Suppress("DEPRECATION")
+        val restoredLaunch = savedInstanceState?.getSerializable("deferred_rss_launch") as? LaunchAction
+        deferredRssLaunch = restoredLaunch
         Log.i("RLog", "onCreate: ${ProfileInstallerInitializer().create(this)}")
 
         enableEdgeToEdge()
@@ -96,51 +110,61 @@ class MainActivity : AppCompatActivity() {
             requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
+        // A restored coordinator owns its pending request. Never replay the Activity's original
+        // share after rotation/process restoration, cancellation or a completed save.
+        val initialLaunchAction = if (savedInstanceState == null) intent.consumeLaunchAction() else null
+
         setContent {
             AccountSettingsProvider(accountService = accountService) {
                 settingsProvider.ProvidesSettings {
                     val subscribeViewModel: SubscribeViewModel = hiltViewModel()
+                    val captureViewModel: SavedCaptureViewModel = hiltViewModel()
+                    val subscribeState by subscribeViewModel.subscribeState.collectAsState()
 
                     ProvideCompositionLocals {
                         AppTheme(useDarkTheme = LocalDarkTheme.current.isDarkTheme()) {
                             val isFirstLaunch = remember { isFirstLaunch }
                             val initialPage = remember { initialPage }
-                            val launchAction = intent.getLaunchAction()
-
                             val startDestination = remember {
+                                val ordinary = if (initialPage == InitialPagePreference.FlowPage.value)
+                                    listOf(Route.Feeds, Route.Reading(null)) else listOf(Route.Feeds)
                                 if (isFirstLaunch) listOf(Route.Startup)
-                                else
-                                    when (launchAction) {
-                                        is LaunchAction.OpenArticle -> {
-                                            filterUseCase.init(
-                                                launchAction.feedId,
-                                                launchAction.groupId,
-                                            )
-                                            listOf(
-                                                Route.Feeds,
-                                                Route.Reading(launchAction.articleId),
-                                            )
-                                        }
-                                        is LaunchAction.Subscribe -> {
-                                            subscribeViewModel.handleSharedUrlFromIntent(
-                                                launchAction.url
-                                            )
-                                            listOf(Route.Feeds)
-                                        }
-                                        else -> {
-                                            if (
-                                                initialPage == InitialPagePreference.FlowPage.value
-                                            ) {
-                                                listOf(Route.Feeds, Route.Reading(null))
-                                            } else listOf(Route.Feeds)
-                                        }
+                                else when (val launch = initialLaunchAction) {
+                                    is LaunchAction.OpenArticle -> {
+                                        filterUseCase.init(launch.feedId, launch.groupId)
+                                        listOf(Route.Feeds, Route.Reading(launch.articleId))
                                     }
+                                    is LaunchAction.OpenArticleList -> {
+                                        if (launch.accountId == null || launch.accountId == accountService.getCurrentAccountId()) {
+                                            filterUseCase.init(launch.feedId, launch.groupId)
+                                            listOf(Route.Feeds, Route.Reading(null))
+                                        } else ordinary
+                                    }
+                                    is LaunchAction.Capture -> if (launch.mode == LinkCaptureMode.SUBSCRIBE)
+                                        listOf(Route.Feeds) else ordinary
+                                    null -> ordinary
+                                }
                             }
 
                             val backStack = rememberNavBackStack(*startDestination.toTypedArray())
 
-                            NewIntentHandlerEffect(backStack, subscribeViewModel)
-                            AppEntry(backStack)
+                            // The initial non-onboarding RSS route was already selected synchronously.
+                            // Only captures and onboarding-deferred RSS actions enter the listener path.
+                            val deferredInitialAction = initialLaunchAction.takeIf {
+                                isFirstLaunch || it is LaunchAction.Capture
+                            }
+                            NewIntentHandlerEffect(backStack, captureViewModel, deferredInitialAction)
+                            AppEntry(backStack, subscribeViewModel, captureViewModel)
+                            SavedCaptureHost(
+                                viewModel = captureViewModel,
+                                ready = backStack.lastOrNull() != Route.Startup && subscribeState is SubscribeState.Hidden,
+                                onSubscribe = { url ->
+                                    showRetainedDestination(backStack, Route.Feeds)
+                                    subscribeViewModel.handleSharedUrlFromIntent(url)
+                                },
+                                onSaved = { showRetainedDestination(backStack, Route.SavedLibrary) },
+                                onOpenSaved = { backStack.add(Route.SavedReading(it)) },
+                            )
                         }
                     }
                 }
@@ -149,67 +173,58 @@ class MainActivity : AppCompatActivity() {
     }
 
     @Composable
-    fun NewIntentHandlerEffect(
+    private fun NewIntentHandlerEffect(
         backStack: NavBackStack<NavKey>,
-        subscribeViewModel: SubscribeViewModel,
+        captureViewModel: SavedCaptureViewModel,
+        initialLaunchAction: LaunchAction?,
     ) {
-        val scope = rememberCoroutineScope()
-        DisposableEffect(backStack) {
-            val listener =
-                Consumer<Intent> { intent ->
-                    intent.getLaunchAction()?.let { action ->
-                        when (action) {
-                            is LaunchAction.OpenArticle -> {
-                                val (articleId, feedId, groupId) = action
-                                filterUseCase.init(feedId, groupId)
-                                val readingIndex = backStack.indexOfFirst { it is Route.Reading }
-                                if (readingIndex != -1) {
-                                    repeat(backStack.size - readingIndex) {
-                                        backStack.removeLastOrNull()
-                                    }
-                                }
-                                scope.launch {
-                                    delay(500L)
-                                    backStack.add(Reading(articleId = articleId))
-                                }
-                            }
-
-                            is LaunchAction.OpenArticleList -> {
-                                val (accountId, feedId, groupId) = action
-                                if (
-                                    accountId != null &&
-                                        accountId != accountService.getCurrentAccountId()
-                                )
-                                    return@Consumer
-                                filterUseCase.init(feedId, groupId)
-                                val readingIndex = backStack.indexOfFirst { it is Reading }
-                                if (readingIndex != -1) {
-                                    repeat(backStack.size - readingIndex) {
-                                        backStack.removeLastOrNull()
-                                    }
-                                }
-                                backStack.add(Reading(articleId = null))
-                            }
-
-                            is LaunchAction.Subscribe -> {
-                                subscribeViewModel.handleSharedUrlFromIntent(action.url)
-                                val feedsIndex = backStack.indexOf(Route.Feeds)
-                                if (feedsIndex != -1) {
-                                    repeat(backStack.size - (feedsIndex + 1)) {
-                                        backStack.removeLastOrNull()
-                                    }
-                                } else {
-                                    backStack.add(0, Route.Feeds)
-                                    repeat(backStack.size - 1) { backStack.removeLastOrNull() }
-                                }
-                            }
-                        }
-                    }
+        LaunchedEffect(backStack.lastOrNull()) {
+            if (backStack.lastOrNull() != Route.Startup) deferredRssLaunch?.let {
+                deferredRssLaunch = null
+                handleRssLaunch(backStack, it)
+            }
+        }
+        DisposableEffect(backStack, captureViewModel) {
+            fun handle(action: LaunchAction?) {
+                when (action) {
+                    is LaunchAction.OpenArticle, is LaunchAction.OpenArticleList -> handleRssLaunch(backStack, action)
+                    is LaunchAction.Capture -> captureViewModel.enqueue(action.text, action.titleHint, action.mode)
+                    null -> Unit
                 }
-            listener.accept(intent) // consume the launch intent as well
+            }
+            val listener = Consumer<Intent> { handle(it.consumeLaunchAction()) }
+            handle(initialLaunchAction)
             addOnNewIntentListener(listener)
             onDispose { removeOnNewIntentListener(listener) }
         }
+    }
+
+    private fun handleRssLaunch(backStack: NavBackStack<NavKey>, action: LaunchAction) {
+        if (backStack.lastOrNull() == Route.Startup) {
+            deferredRssLaunch = action
+            return
+        }
+        when (action) {
+            is LaunchAction.OpenArticle -> {
+                filterUseCase.init(action.feedId, action.groupId)
+                val readingIndex = backStack.indexOfFirst { it is Route.Reading }
+                if (readingIndex != -1) repeat(backStack.size - readingIndex) { backStack.removeLastOrNull() }
+                backStack.add(Reading(action.articleId))
+            }
+            is LaunchAction.OpenArticleList -> {
+                if (action.accountId != null && action.accountId != accountService.getCurrentAccountId()) return
+                filterUseCase.init(action.feedId, action.groupId)
+                val readingIndex = backStack.indexOfFirst { it is Route.Reading }
+                if (readingIndex != -1) repeat(backStack.size - readingIndex) { backStack.removeLastOrNull() }
+                backStack.add(Reading(null))
+            }
+            is LaunchAction.Capture -> Unit
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putSerializable("deferred_rss_launch", deferredRssLaunch)
+        super.onSaveInstanceState(outState)
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -248,8 +263,8 @@ class MainActivity : AppCompatActivity() {
     }
 }
 
-sealed interface LaunchAction {
-    data class Subscribe(val url: String) : LaunchAction
+internal sealed interface LaunchAction : java.io.Serializable {
+    data class Capture(val text: String, val titleHint: String?, val mode: LinkCaptureMode) : LaunchAction
 
     data class OpenArticle(val articleId: String, val feedId: String?, val groupId: String?) :
         LaunchAction
@@ -258,16 +273,20 @@ sealed interface LaunchAction {
         LaunchAction
 }
 
-private fun Intent.getLaunchAction(): LaunchAction? {
+internal fun Intent.consumeLaunchAction(): LaunchAction? {
     return when (action) {
-        Intent.ACTION_VIEW -> {
-            dataString?.let { LaunchAction.Subscribe(it) }
-        }
-
-        Intent.ACTION_SEND -> {
-            getStringExtra(Intent.EXTRA_TEXT)
-                ?.also { removeExtra(Intent.EXTRA_TEXT) }
-                ?.let { LaunchAction.Subscribe(it) }
+        Intent.ACTION_VIEW, Intent.ACTION_SEND -> {
+            val mode = externalLinkCaptureMode(action, type) ?: return null
+            val text = if (action == Intent.ACTION_SEND) getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString() ?: clipData?.getItemAt(0)?.text?.toString() ?: dataString else dataString
+            val title = getCharSequenceExtra(Intent.EXTRA_TITLE)?.toString() ?: getStringExtra(Intent.EXTRA_SUBJECT)
+            removeExtra(Intent.EXTRA_TEXT)
+            removeExtra(Intent.EXTRA_TITLE)
+            removeExtra(Intent.EXTRA_SUBJECT)
+            clipData = null
+            // Consume the URL once without changing the delivery's MIME identity.
+            // Intent.setData(null) also clears type, breaking lifecycle matching for SEND.
+            setDataAndType(null, type)
+            text?.let { LaunchAction.Capture(it, title, mode) }
         }
 
         else -> {

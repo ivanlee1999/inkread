@@ -9,18 +9,21 @@ const defaults = {fontSize:18,lineHeight:1,marginLeft:24,marginRight:24,marginTo
     letterSpacing:.5,wordSpacing:0,textDarkness:1,textWeight:400,paragraphGap:1,paragraphIndent:0,
     alignment:'start',imageContrast:1,imageGrayscale:false,fontCss:''};
 
-function fixture({layoutUnit=0, layoutScale=1, nodeCount=30, serializeStyles=false}={}) {
+function fixture({layoutUnit=0, layoutScale=1, nodeCount=30, serializeStyles=false, identity=null, savedAnchor=null, mediaCount=0}={}) {
+    const documentListeners = new Map();
     const listeners = new Map(), frameListeners = new Map(), fontListeners = new Map();
     const variables = {}, queue = new Map(), calls = [], timers = new Map(), bodyChildren = [];
     let serial=0, prefix=0, glyphScale=1, fontScale=1;
     const context = {console, Math, Object, Array, isFinite, innerWidth:411.42, innerHeight:760,
         _inkreadInitialFormatting:{...defaults}, _inkreadGeneration:'unchanged-document',
+        _inkreadReadingIdentity:identity, _inkreadInitialReadingAnchor:savedAnchor,
         NodeFilter:{SHOW_TEXT:4,FILTER_ACCEPT:1,FILTER_REJECT:2},
         requestAnimationFrame:cb=>{queue.set(++serial,cb);return serial;},
         cancelAnimationFrame:id=>queue.delete(id),
         setTimeout:cb=>{timers.set(++serial,cb);return serial;}, clearTimeout:id=>timers.delete(id),
         addEventListener:(name,cb)=>listeners.set(name,cb),removeEventListener:name=>listeners.delete(name),
-        Android:{onInitialPaginationReady:(...args)=>calls.push(['ready',...args]),onRepaginated:(...args)=>calls.push(['reflow',...args])}
+        Android:{onInitialPaginationReady:(...args)=>calls.push(['ready',...args]),onRepaginated:(...args)=>calls.push(['reflow',...args]),
+            onReadingAnchor:(...args)=>calls.push(['anchor',...args]), onReadingAnchorRestore:(...args)=>calls.push(['restore',...args])}
     };
     const rawStyles = new WeakMap();
     function createStyle() {
@@ -53,10 +56,19 @@ function fixture({layoutUnit=0, layoutScale=1, nodeCount=30, serializeStyles=fal
         const top=parseFloat(style.top)+row*line;
         return {left,top,right:left+charWidth,bottom:top+line,width:charWidth,height:line};
     }
+    const media=Array.from({length:mediaCount},(_,i)=>({
+        source:'https://inkread.local/saved-library-assets/'+i,
+        getAttribute(name){return name==='src'?this.source:null;},
+        setAttribute(name,value){if(name==='src')this.source=value;},
+        getBoundingClientRect:()=>{
+        const translation=Number((style.transform||'').match(/translateX\(-([0-9.]+)px\)/)?.[1]||0);
+        const left=parseFloat(style.left)+i*actualStride()-translation,top=parseFloat(style.top);
+        return {left,right:left+100,top,bottom:top+100,width:100,height:100};
+    }}));
     const frame={style,addEventListener:(n,cb)=>frameListeners.set(n,cb),removeEventListener:n=>frameListeners.delete(n),
-        querySelectorAll:()=>[],getBoundingClientRect:()=>({width:parseFloat(style.width),height:parseFloat(style.height)}),
+        querySelectorAll:()=>media,getBoundingClientRect:()=>({width:parseFloat(style.width),height:parseFloat(style.height)}),
         get scrollWidth(){
-            if(!nodes.length)return Math.round(layoutValue(assigned(style,'width')));
+            if(!nodes.length)return Math.round(Math.max(1,mediaCount)*actualStride()-layoutValue(assigned(style,'columnGap')));
             const last=geometry(nodes.at(-1),nodes.at(-1).length-1);
             const translation=Number((style.transform||'').match(/translateX\(-([0-9.]+)px\)/)?.[1]||0);
             const pages=Math.floor((last.left+translation-parseFloat(style.left))/actualStride())+1;
@@ -72,7 +84,7 @@ function fixture({layoutUnit=0, layoutScale=1, nodeCount=30, serializeStyles=fal
                 layoutValue(assigned(element.parentElement.style,'width'))+layoutValue(assigned(element.parentElement.style,'columnGap')))})};
         return element;
     }
-    const document={readyState:'complete',createElement,body:{appendChild:child=>bodyChildren.push(child)}, documentElement:{style:{setProperty:(name,value)=>variables[name]=String(value)},
+    const document={readyState:'complete',visibilityState:'visible',addEventListener:(name,cb)=>documentListeners.set(name,cb),createElement,body:{appendChild:child=>bodyChildren.push(child)}, documentElement:{style:{setProperty:(name,value)=>variables[name]=String(value)},
         getBoundingClientRect:()=>({width:context.innerWidth}),clientHeight:context.innerHeight},
         fonts:{ready:Promise.resolve(), addEventListener:(n,cb)=>fontListeners.set(n,cb),removeEventListener:n=>fontListeners.delete(n)},
         getElementById:id=>id==='eink-content'?frame:fontFaceStyle,
@@ -92,10 +104,10 @@ function fixture({layoutUnit=0, layoutScale=1, nodeCount=30, serializeStyles=fal
     vm.createContext(context);vm.runInContext(runtime,context);
     async function flush() {await Promise.resolve();while(queue.size){const work=[...queue.values()];queue.clear();work.forEach(cb=>cb());await Promise.resolve();}}
     function fireResize(width,height){context.innerWidth=width;context.innerHeight=height;listeners.get('resize')();for(const cb of timers.values())cb();timers.clear();}
-    return {context,frame,nodes,calls,listeners,frameListeners,fontListeners,variables,bodyChildren,actualStride,flush,fireResize,
+    return {context,frame,nodes,media,calls,documentListeners,listeners,frameListeners,fontListeners,variables,bodyChildren,actualStride,flush,fireResize,
         setPrefix:n=>prefix=n,setGlyphScale:n=>glyphScale=n,setFontScale:n=>fontScale=n,
         anchor:()=>JSON.parse(JSON.stringify(context.InkReadFormatting.currentAnchor())),
-        anchorRect:()=>{const a=context.InkReadFormatting.currentAnchor();return geometry(nodes[a.node],a.offset);}};
+        anchorRect:()=>{const a=context.InkReadFormatting.currentAnchor();return a.element === undefined ? geometry(nodes[a.node],a.offset) : media[a.element].getBoundingClientRect();}};
 }
 
 function assertAnchorVisible(f) {
@@ -131,6 +143,114 @@ test('late ordinary images and font readiness reflow using the pre-event anchor'
     assert.deepEqual(f.anchor(),anchor);assertAnchorVisible(f);assert.ok(f.context._currentPage>12);
     f.setGlyphScale(1.3);f.fontListeners.get('loadingdone')();await f.flush();
     assert.deepEqual(f.anchor(),anchor);assertAnchorVisible(f);
+});
+
+for (const event of ['font', 'image', 'resize']) {
+    test(`queued ${event} reflow retains newer rapid forward and backward turns`,async()=>{
+        const f=fixture();await f.flush();f.context.goToPage(6);
+        if(event==='font')f.fontListeners.get('loadingdone')();
+        else if(event==='image')f.frameListeners.get('load')();
+        else f.fireResize(f.context.innerWidth,f.context.innerHeight);
+        // All these turns arrive after the event but before its animation frame.
+        for(const page of [7,8,7,8,9])f.context.goToPage(page);
+        const accepted=f.anchor();
+        assert.equal(f.context._currentPage,9);
+        await f.flush();
+        assert.equal(f.context._currentPage,9,'A queued reflow must not roll an accepted turn back');
+        assert.deepEqual(f.anchor(),accepted);assertAnchorVisible(f);
+        assert.equal(f.calls.filter(c=>c[0]==='reflow').at(-1)[3],9,'Native receives the latest page, not the event-time page');
+    });
+}
+
+test('initial formatting font-ready reflow cannot undo the first accepted turn',async()=>{
+    const f=fixture();await f.flush();
+    f.context.InkReadFormatting.apply({...defaults});
+    await Promise.resolve(); // fonts.ready has queued its rAF, but it has not run.
+    f.context.goToPage(1);const accepted=f.anchor();
+    await f.flush();
+    assert.equal(f.context._currentPage,1);
+    assert.deepEqual(f.anchor(),accepted);assertAnchorVisible(f);
+});
+
+test('correlated ready, reflow and rapid command acknowledgements carry the applied ID',async()=>{
+    const f=fixture();await f.flush();
+    assert.deepEqual(f.calls.find(c=>c[0]==='ready'),['ready','unchanged-document',f.context._totalPages,0,0]);
+    const initialPages=f.context._totalPages;
+    f.context.InkReadFormatting.apply({...defaults,fontSize:22});
+    assert.notEqual(f.context._totalPages,initialPages,'Exercise acknowledgements carrying a changed page count');
+    const oldReport=f.calls.filter(c=>c[0]==='reflow').at(-1).slice();
+    assert.equal(oldReport[4],0);
+    await Promise.resolve(); // Queue font-ready reflow before the newer commands.
+    for(const [page,id] of [[1,1],[2,2],[1,3]]) {
+        f.context.goToPage(page,id,'unchanged-document');
+        assert.deepEqual(f.calls.at(-1),['reflow','unchanged-document',f.context._totalPages,page,id]);
+    }
+    const accepted=f.anchor();await f.flush();
+    assert.deepEqual(f.anchor(),accepted);assertAnchorVisible(f);
+    assert.deepEqual(f.calls.at(-1),['reflow','unchanged-document',f.context._totalPages,1,3]);
+    assert.equal(oldReport[3],0);assert.equal(oldReport[4],0,'An older posted report remains distinguishable');
+});
+
+test('correlated same-page and clamped commands acknowledge without replacing the canonical anchor',async()=>{
+    const expected={node:17,offset:333};
+    const f=fixture({identity:readingIdentity,savedAnchor:envelope(expected)});await f.flush();
+    const restoredPage=f.context._currentPage;
+    assert.deepEqual(f.calls.find(c=>c[0]==='ready'),['ready','unchanged-document',f.context._totalPages,restoredPage,0]);
+    f.context.goToPage(restoredPage,1,'unchanged-document');
+    assert.deepEqual(f.anchor(),expected);assert.equal(f.calls.filter(c=>c[0]==='anchor').length,0);
+    assert.deepEqual(f.calls.at(-1),['reflow','unchanged-document',f.context._totalPages,restoredPage,1]);
+    f.context.goToPage(f.context._totalPages+10,2,'unchanged-document');const lastAnchor=f.anchor();
+    f.context.goToPage(f.context._totalPages+20,3,'unchanged-document');
+    assert.deepEqual(f.anchor(),lastAnchor);
+    assert.deepEqual(f.calls.at(-1),['reflow','unchanged-document',f.context._totalPages,f.context._totalPages-1,3]);
+    f.context.goToPage(-10,4,'unchanged-document');
+    assert.deepEqual(f.calls.at(-1),['reflow','unchanged-document',f.context._totalPages,0,4]);
+    assert.deepEqual(f.calls.filter(c=>c[0]==='reflow').map(c=>c[4]),[1,2,3,4]);
+});
+
+test('correlated commands reject an old document generation or an older command ID',async()=>{
+    const f=fixture();await f.flush();f.context.goToPage(4,2,'unchanged-document');
+    const accepted=f.anchor(),count=f.calls.length;
+    f.context.goToPage(8,3,'old-document');
+    f.context.goToPage(10,1,'unchanged-document');
+    assert.equal(f.context._currentPage,4);assert.deepEqual(f.anchor(),accepted);
+    assert.equal(f.calls.length,count,'Rejected commands do not acknowledge or publish an anchor');
+    f.fontListeners.get('loadingdone')();await f.flush();
+    assert.deepEqual(f.calls.at(-1),['reflow','unchanged-document',f.context._totalPages,4,2]);
+});
+
+test('correlated duplicate command acknowledges current geometry without replaying its old target',async()=>{
+    const f=fixture();await f.flush();f.context.goToPage(10,1,'unchanged-document');
+    const accepted=f.anchor();
+    f.context.InkReadFormatting.apply({...defaults,fontSize:30});await f.flush();
+    const reflowedPage=f.context._currentPage;
+    assert.notEqual(reflowedPage,10,'Exercise a real reflow after the command was handled');
+    assert.deepEqual(f.anchor(),accepted);assertAnchorVisible(f);
+    const count=f.calls.length;f.context.goToPage(10,1,'unchanged-document');
+    assert.equal(f.context._currentPage,reflowedPage,'A duplicate ID must not replay the old absolute target');
+    assert.deepEqual(f.anchor(),accepted);assert.equal(f.calls.length,count+1);
+    assert.deepEqual(f.calls.at(-1),['reflow','unchanged-document',f.context._totalPages,reflowedPage,1]);
+});
+
+test('correlated formatting sessions block commands without advancing their applied ID',async()=>{
+    const f=fixture();await f.flush();f.context.goToPage(4,1,'unchanged-document');
+    const accepted=f.anchor(),count=f.calls.length;
+    f.context.InkReadFormatting.beginSession();f.context.goToPage(5,2,'unchanged-document');
+    assert.equal(f.calls.length,count);assert.deepEqual(f.anchor(),accepted);
+    f.context.InkReadFormatting.apply({...defaults,fontSize:28});await f.flush();
+    assert.equal(f.calls.at(-1)[4],1);assert.deepEqual(f.anchor(),accepted);
+    f.context.InkReadFormatting.endSession(true,defaults);await f.flush();
+    assert.equal(f.calls.at(-1)[4],1);assert.deepEqual(f.anchor(),accepted);
+    f.context.goToPage(5,3,'unchanged-document');
+    assert.deepEqual(f.calls.at(-1),['reflow','unchanged-document',f.context._totalPages,5,3]);
+});
+
+test('correlated legacy one-argument navigation keeps its behavior and the last native command ID',async()=>{
+    const f=fixture();await f.flush();f.context.goToPage(2,7,'unchanged-document');
+    const count=f.calls.length;f.context.goToPage(3);
+    assert.equal(f.context._currentPage,3);assert.equal(f.calls.length,count,'Legacy calls do not force a native acknowledgement');
+    f.frameListeners.get('load')();await f.flush();
+    assert.deepEqual(f.calls.at(-1),['reflow','unchanged-document',f.context._totalPages,3,7]);
 });
 
 test('extreme insets are temporary effective values and retain one complete requested line',async()=>{
@@ -234,3 +354,92 @@ for (const width of [412.19049072265625,342.0952453613281]) {
         assert.deepEqual(f.anchor(),anchor);assertAnchorVisible(f);
     });
 }
+
+const readingIdentity={itemId:'saved-A',contentRevision:'content-v1',documentFingerprint:'body-and-metadata-v1'};
+function envelope(anchor, overrides={}) {
+    return JSON.stringify({version:1,...readingIdentity,anchor,...overrides});
+}
+
+test('reopen restores the exact logical anchor before ready and never emits initial page zero',async()=>{
+    const first=fixture({identity:readingIdentity});await first.flush();first.context.goToPage(12);
+    const saved=first.context.InkReadFormatting.exportReadingAnchor(), expected=first.anchor();
+    const second=fixture({identity:readingIdentity,savedAnchor:saved});await second.flush();
+    assert.deepEqual(second.anchor(),expected);assertAnchorVisible(second);
+    assert.equal(second.context._currentPage,12);
+    assert.equal(second.calls.find(c=>c[0]==='ready')[3],12,'Native controller receives restored page');
+    assert.equal(second.calls.find(c=>c[0]==='restore')[2],'restored');
+    assert.equal(second.calls.filter(c=>c[0]==='anchor').length,0,'Initialization never writes page zero');
+    assert.equal(second.context.InkReadFormatting.exportReadingAnchor(),saved);
+});
+
+test('saved anchor persists across fresh DOM, new viewport, formatting and late font/image reflow',async()=>{
+    const anchor={node:17,offset:333}, saved=envelope(anchor);
+    const f=fixture({identity:readingIdentity,savedAnchor:saved});await f.flush();
+    f.fireResize(300,500);await f.flush();
+    f.context.InkReadFormatting.beginSession();
+    f.context.InkReadFormatting.apply({...defaults,fontSize:32,lineHeight:1.8});await f.flush();
+    f.setPrefix(3000);f.frameListeners.get('load')();await f.flush();
+    f.setGlyphScale(1.2);f.fontListeners.get('loadingdone')();await f.flush();
+    f.context.InkReadFormatting.endSession(false,{...defaults,fontSize:32,lineHeight:1.8});await f.flush();
+    assert.deepEqual(f.anchor(),anchor);assertAnchorVisible(f);
+    for(const call of f.calls.filter(c=>c[0]==='anchor')) assert.deepEqual(JSON.parse(call[4]).anchor,anchor);
+});
+
+test('accepted turns publish immediately; blocked formatting turns do not overwrite the anchor',async()=>{
+    const f=fixture({identity:readingIdentity});await f.flush();f.context.goToPage(3);
+    const calls=f.calls.filter(c=>c[0]==='anchor');assert.equal(calls.length,1);
+    assert.equal(calls[0][1],'unchanged-document');assert.equal(calls[0][2],readingIdentity.itemId);
+    assert.equal(calls[0][3],readingIdentity.contentRevision);assert.deepEqual(JSON.parse(calls[0][4]).anchor,f.anchor());
+    f.context.InkReadFormatting.beginSession();f.context.goToPage(8);
+    assert.equal(f.calls.filter(c=>c[0]==='anchor').length,1);
+    assert.equal(f.context._currentPage,3);
+});
+
+test('document revision, metadata fingerprint and item identity changes explicitly fall back to the beginning',async()=>{
+    for(const override of [{contentRevision:'v2'},{documentFingerprint:'new-title'},{itemId:'saved-B'}]) {
+        const f=fixture({identity:readingIdentity,savedAnchor:envelope({node:17,offset:333},override)});await f.flush();
+        assert.equal(f.context._currentPage,0);assert.equal(f.calls.find(c=>c[0]==='restore')[2],'changed');
+        assert.equal(f.calls.filter(c=>c[0]==='anchor').length,0);
+    }
+});
+
+test('invalid and out-of-range anchors are rejected without clamping to an unrelated glyph',async()=>{
+    for(const savedAnchor of ['{broken',envelope({node:9999,offset:3}),envelope({node:1,offset:99999}),
+        envelope({node:1,offset:-1}),envelope({node:1.5,offset:0}),envelope({element:0,offset:0})]) {
+        const f=fixture({identity:readingIdentity,savedAnchor});await f.flush();
+        assert.equal(f.context._currentPage,0);assert.equal(f.calls.find(c=>c[0]==='restore')[2],'invalid');
+    }
+});
+
+test('UTF16 surrogate halves are not accepted as resume positions',async()=>{
+    const f=fixture({identity:readingIdentity,savedAnchor:envelope({node:1,offset:1})});
+    f.nodes[1].data='😀 reading text';await f.flush();
+    assert.equal(f.calls.find(c=>c[0]==='restore')[2],'invalid');
+});
+
+test('image-only saved document restores a media anchor, not a fabricated text node',async()=>{
+    const f=fixture({identity:readingIdentity,nodeCount:0,mediaCount:4,savedAnchor:envelope({element:2,offset:0})});
+    await f.flush();assert.equal(f.context._currentPage,2);assert.deepEqual(f.anchor(),{element:2,offset:0});
+    assertAnchorVisible(f);assert.equal(JSON.parse(f.context.InkReadFormatting.exportReadingAnchor()).anchor.element,2);
+});
+
+test('background and exit publish the canonical anchor once each; destroyed documents stop publishing',async()=>{
+    const f=fixture({identity:readingIdentity,savedAnchor:envelope({node:17,offset:333})});await f.flush();
+    f.context.document.visibilityState='hidden';f.documentListeners.get('visibilitychange')();
+    assert.equal(f.calls.filter(c=>c[0]==='anchor').length,1);
+    f.listeners.get('pagehide')();assert.equal(f.calls.filter(c=>c[0]==='anchor').length,2);
+    assert.equal(f.context.InkReadFormatting.publishReadingAnchor(),null);
+    assert.equal(f.calls.filter(c=>c[0]==='anchor').length,2);
+});
+
+
+test('new offline image mappings refresh existing media elements without a document reload or anchor reset',async()=>{
+    const f=fixture({identity:readingIdentity,nodeCount:0,mediaCount:4,savedAnchor:envelope({element:2,offset:0})});
+    await f.flush();const element=f.media[2], anchor=f.anchor();
+    f.context.InkReadFormatting.refreshLocalImages('new-resource-version');
+    assert.equal(f.media[2],element);
+    assert.equal(element.source,'https://inkread.local/saved-library-assets/2?revision=new-resource-version');
+    f.frameListeners.get('load')();await f.flush();
+    assert.deepEqual(f.anchor(),anchor);assertAnchorVisible(f);
+    assert.equal(f.context.InkReadFormatting.documentId,'unchanged-document');
+});

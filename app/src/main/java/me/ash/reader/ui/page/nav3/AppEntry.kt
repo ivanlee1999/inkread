@@ -22,14 +22,15 @@ import androidx.navigation3.ui.LocalNavAnimatedContentScope
 import androidx.navigation3.ui.NavDisplay
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
-import me.ash.reader.infrastructure.preference.LocalEInkMode
-import me.ash.reader.ui.motion.materialSharedAxisXIn
-import me.ash.reader.ui.motion.materialSharedAxisXOut
 import me.ash.reader.ui.page.adaptive.rememberArticleListNavigator
 import me.ash.reader.ui.page.adaptive.ArticleListReaderPage
 import me.ash.reader.ui.page.adaptive.ArticleListReaderViewModel
 import me.ash.reader.ui.page.home.feeds.FeedsPage
 import me.ash.reader.ui.page.home.feeds.subscribe.SubscribeViewModel
+import me.ash.reader.ui.page.library.SavedLibraryPage
+import me.ash.reader.ui.page.library.SavedLibraryReadingPage
+import me.ash.reader.ui.page.library.SavedCaptureViewModel
+import me.ash.reader.ui.page.library.LinkCaptureMode
 import me.ash.reader.ui.page.nav3.key.Route
 import me.ash.reader.ui.page.settings.SettingsPage
 import me.ash.reader.ui.page.settings.accounts.AccountDetailsPage
@@ -53,7 +54,6 @@ import me.ash.reader.ui.page.settings.tips.TipsAndSupportPage
 import me.ash.reader.ui.page.settings.troubleshooting.TroubleshootingPage
 import me.ash.reader.ui.page.startup.StartupPage
 
-private const val INITIAL_OFFSET_FACTOR = 0.10f
 
 @OptIn(
     ExperimentalSharedTransitionApi::class,
@@ -61,8 +61,11 @@ private const val INITIAL_OFFSET_FACTOR = 0.10f
     ExperimentalMaterial3AdaptiveApi::class,
 )
 @Composable
-fun AppEntry(backStack: NavBackStack<NavKey>) {
-    val subscribeViewModel = hiltViewModel<SubscribeViewModel>()
+fun AppEntry(
+    backStack: NavBackStack<NavKey>,
+    subscribeViewModel: SubscribeViewModel = hiltViewModel(),
+    captureViewModel: SavedCaptureViewModel = hiltViewModel(),
+) {
 
     val currentRoute = backStack.lastOrNull()
     val onBack: () -> Unit = { navigateAppBack(backStack, currentRoute, Route.Feeds) }
@@ -75,7 +78,6 @@ fun AppEntry(backStack: NavBackStack<NavKey>) {
 
     val scaffoldDirective = calculatePaneScaffoldDirective(currentWindowAdaptiveInfo())
 
-    val einkMode = LocalEInkMode.current.isEInkMode()
 
     SharedTransitionLayout {
         val noAnimTransition = { EnterTransition.None togetherWith ExitTransition.None }
@@ -88,29 +90,10 @@ fun AppEntry(backStack: NavBackStack<NavKey>) {
                     rememberSaveableStateHolderNavEntryDecorator(),
                     rememberViewModelStoreNavEntryDecorator(),
                 ),
-            transitionSpec = {
-                if (einkMode) noAnimTransition()
-                else materialSharedAxisXIn(
-                    initialOffsetX = { (it * INITIAL_OFFSET_FACTOR).toInt() }
-                ) togetherWith
-                    materialSharedAxisXOut(
-                        targetOffsetX = { -(it * INITIAL_OFFSET_FACTOR).toInt() }
-                    )
-            },
-            popTransitionSpec = {
-                if (einkMode) noAnimTransition()
-                else materialSharedAxisXIn(
-                    initialOffsetX = { -(it * INITIAL_OFFSET_FACTOR).toInt() }
-                ) togetherWith
-                    materialSharedAxisXOut(targetOffsetX = { (it * INITIAL_OFFSET_FACTOR).toInt() })
-            },
-            predictivePopTransitionSpec = {
-                if (einkMode) noAnimTransition()
-                else materialSharedAxisXIn(
-                    initialOffsetX = { -(it * INITIAL_OFFSET_FACTOR).toInt() }
-                ) togetherWith
-                    materialSharedAxisXOut(targetOffsetX = { (it * INITIAL_OFFSET_FACTOR).toInt() })
-            },
+            // Navigation is a static page replacement, including Saved on LCD devices.
+            transitionSpec = { noAnimTransition() },
+            popTransitionSpec = { noAnimTransition() },
+            predictivePopTransitionSpec = { noAnimTransition() },
             onBack = onBack,
             entryProvider = { key ->
                 // Outgoing entries can remain composed during a transition. Their toolbar must
@@ -124,6 +107,7 @@ fun AppEntry(backStack: NavBackStack<NavKey>) {
                                 sharedTransitionScope = this@SharedTransitionLayout,
                                 animatedVisibilityScope = LocalNavAnimatedContentScope.current,
                                 navigateToSettings = { backStack.add(Route.Settings) },
+                                navigateToSavedLibrary = { backStack.add(Route.SavedLibrary) },
                                 navigationToFlow = { backStack.add(Route.Reading(null)) },
                                 navigateToAccountList = { backStack.add(Route.Accounts) },
                                 navigateToAccountDetail = {
@@ -131,6 +115,16 @@ fun AppEntry(backStack: NavBackStack<NavKey>) {
                                 },
                             )
                         }
+                    }
+                    Route.SavedLibrary -> NavEntry(key) {
+                        SavedLibraryPage(
+                            onBack = onBack,
+                            onOpen = { backStack.add(Route.SavedReading(it)) },
+                            onCapture = { captureViewModel.enqueue(it, mode = LinkCaptureMode.SAVE) },
+                        )
+                    }
+                    is Route.SavedReading -> NavEntry(key) {
+                        SavedLibraryReadingPage(itemId = key.itemId, onBack = onBack)
                     }
                     is Route.Reading -> {
                         NavEntry(key) {
@@ -170,7 +164,12 @@ fun AppEntry(backStack: NavBackStack<NavKey>) {
                     //                    }
                     Route.Startup -> {
                         NavEntry(key) {
-                            StartupPage(onNavigateToFeeds = { backStack.add(Route.Feeds) })
+                            StartupPage(onNavigateToFeeds = {
+                                if (backStack.lastOrNull() == Route.Startup) {
+                                    backStack.removeLastOrNull()
+                                    backStack.add(Route.Feeds)
+                                }
+                            })
                         }
                     }
                     Route.Settings ->

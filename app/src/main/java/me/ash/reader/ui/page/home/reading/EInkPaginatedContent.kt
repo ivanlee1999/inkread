@@ -39,9 +39,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import java.io.File
 import java.io.Writer
-import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -68,6 +66,10 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
 import androidx.activity.compose.BackHandler
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import org.json.JSONTokener
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -106,9 +108,21 @@ fun EInkPaginatedContent(
     reserveVolumeKeys: Boolean = true,
     volumeKeyOwner: Any? = null,
     onBack: (() -> Unit)? = null,
+    onSaveArticle: (() -> Unit)? = null,
+    onLibraryActions: (() -> Unit)? = null,
+    readingContentRevision: String? = null,
+    initialReadingAnchor: String? = null,
+    onReadingAnchorChanged: ((itemId: String, contentRevision: String, anchorJson: String) -> Unit)? = null,
+    onReadingAnchorRestore: ((status: String) -> Unit)? = null,
+    interceptResource: ((url: String) -> WebResourceResponse?)? = null,
+    resourceRevision: String? = null,
+    dateLabel: String? = null,
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    // Saved storage uses a semantic body revision. Image-only file rewrites keep
+    // that identity and refresh local resources without recreating the article DOM.
+    val contentIdentity = readingContentRevision ?: content
     val persistedFormatting = LocalReaderFormatting.current
     val loadError = LocalReaderFormattingLoadError.current
     val retry = LocalRetryReaderFormatting.current
@@ -121,12 +135,12 @@ fun EInkPaginatedContent(
         }
         return
     }
-    var formattingDraft by remember(articleId, content) { mutableStateOf<ReaderFormatting?>(null) }
-    var originalFormatting by remember(articleId, content) { mutableStateOf<ReaderFormatting?>(null) }
+    var formattingDraft by remember(articleId, contentIdentity) { mutableStateOf<ReaderFormatting?>(null) }
+    var originalFormatting by remember(articleId, contentIdentity) { mutableStateOf<ReaderFormatting?>(null) }
     var committedFormatting by remember { mutableStateOf<ReaderFormatting?>(null) }
-    var formattingOpening by remember(articleId, content) { mutableStateOf(false) }
-    var formattingSaving by remember(articleId, content) { mutableStateOf(false) }
-    var formattingError by remember(articleId, content) { mutableStateOf<String?>(null) }
+    var formattingOpening by remember(articleId, contentIdentity) { mutableStateOf(false) }
+    var formattingSaving by remember(articleId, contentIdentity) { mutableStateOf(false) }
+    var formattingError by remember(articleId, contentIdentity) { mutableStateOf<String?>(null) }
     var fontAvailability by remember { mutableIntStateOf(0) }
     LaunchedEffect(persistedFormatting, committedFormatting) {
         if (committedFormatting == persistedFormatting) committedFormatting = null
@@ -162,14 +176,21 @@ fun EInkPaginatedContent(
     val currentOnPageChanged by rememberUpdatedState(onPageChanged)
     val currentOnNextArticle by rememberUpdatedState(onNextArticle)
     val currentOnPrevArticle by rememberUpdatedState(onPrevArticle)
+    val currentOnReadingAnchorChanged by rememberUpdatedState(onReadingAnchorChanged)
+    val currentOnReadingAnchorRestore by rememberUpdatedState(onReadingAnchorRestore)
+    val activeResourceInterceptor = remember { AtomicReference<((String) -> WebResourceResponse?)?>(null) }
+    activeResourceInterceptor.set(interceptResource)
+    val latestReadingAnchor = remember { AtomicReference<EInkReadingAnchorSnapshot?>(null) }
 
     // Compose state wrappers that the navigation controller drives.
     var currentPage by rememberSaveable { mutableIntStateOf(0) }
     var totalPages by rememberSaveable { mutableIntStateOf(0) }
 
-    // JS has already placed the anchor during reflow. Never echo its notification
-    // as an asynchronous goToPage: a stale echo could overwrite a newer anchor.
-    val applyingRepagination = remember { AtomicBoolean(false) }
+    // Formatting is deliberately not part of document identity: only article changes reload HTML.
+    val documentGeneration = remember(articleId, link, contentIdentity, title, feedName, author, publishedDate, dateLabel) {
+        UUID.randomUUID().toString()
+    }
+    val currentGeneration = rememberUpdatedState(documentGeneration)
     // Extracted navigation controller — keeps page-state decisions testable
     // and queues volume key events received while pagination is resetting.
     val navController = remember {
@@ -177,10 +198,9 @@ fun EInkPaginatedContent(
             onPageChanged = { page, total ->
                 currentOnPageChanged?.invoke(page, total)
             },
-            onApplyPageToWebView = { page ->
-                if (!applyingRepagination.get()) {
-                    webViewRef.value?.evaluateJavascript("goToPage($page)", null)
-                }
+            onApplyPageToWebView = { page, commandId ->
+                val generation = EInkReaderFormatting.quote(currentGeneration.value)
+                webViewRef.value?.evaluateJavascript("goToPage($page,$commandId,$generation)", null)
             },
             onNextArticle = {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -205,20 +225,6 @@ fun EInkPaginatedContent(
         )
     }
 
-    // Clean up WebView when leaving composition to prevent memory leaks
-    DisposableEffect(Unit) {
-        onDispose {
-            webViewRef.value?.let { wv ->
-                wv.removeJavascriptInterface("Android")
-                wv.stopLoading()
-                wv.loadUrl("about:blank")
-                (wv.parent as? ViewGroup)?.removeView(wv)
-                wv.destroy()
-            }
-            webViewRef.value = null
-        }
-    }
-
     // Register as HIGH-priority volume key consumer so that when the article
     // (ReadingPage) is visible it receives events exclusively, preventing the
     // FlowPage (list) from also reacting in two-pane layouts.
@@ -231,11 +237,40 @@ fun EInkPaginatedContent(
             if (reserveVolumeKeys) VolumeKeyEventBus.unregister(VolumeKeyPriority.HIGH, owner)
         }
     }
-    // Formatting is deliberately not part of document identity: only article changes reload HTML.
-    val documentGeneration = remember(articleId, link, content, title, feedName, author, publishedDate) {
-        UUID.randomUUID().toString()
+    // A successful accepted turn is published immediately by JS. Keep that exact
+    // canonical position available for disposal even if the WebView cannot run JS.
+    fun persistLatestReadingAnchor() {
+        latestReadingAnchor.get()?.takeIf { it.generation == currentGeneration.value }?.let {
+            currentOnReadingAnchorChanged?.invoke(it.itemId, it.contentRevision, it.json)
+        }
     }
-    val currentGeneration = rememberUpdatedState(documentGeneration)
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle, documentGeneration) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_STOP) {
+                persistLatestReadingAnchor()
+                webViewRef.value?.evaluateJavascript(
+                    "window.InkReadFormatting && InkReadFormatting.publishReadingAnchor()", null)
+            }
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+    // Clean up WebView when leaving composition to prevent memory leaks
+    DisposableEffect(Unit) {
+        onDispose {
+            persistLatestReadingAnchor()
+            webViewRef.value?.let { wv ->
+                wv.removeJavascriptInterface("Android")
+                wv.stopLoading()
+                wv.loadUrl("about:blank")
+                (wv.parent as? ViewGroup)?.removeView(wv)
+                wv.destroy()
+            }
+            webViewRef.value = null
+        }
+    }
+
     val fontResources = remember(englishFontFile, chineseFontFile, fontAvailability) {
         listOfNotNull(englishFontFile, chineseFontFile).map { EInkFontResource(it) }
     }
@@ -245,7 +280,8 @@ fun EInkPaginatedContent(
         val document = withContext(Dispatchers.IO + NonCancellable) {
             buildArticleHtmlDocument(context.cacheDir, content, formattingPayload,
                 title, feedName, author, publishedDate, documentGeneration,
-                context.assets.open("eink-formatting.js").bufferedReader().use { it.readText() })
+                context.assets.open("eink-formatting.js").bufferedReader().use { it.readText() },
+                articleId, readingContentRevision, initialReadingAnchor, dateLabel)
         }
         try {
             ensureActive()
@@ -295,6 +331,43 @@ fun EInkPaginatedContent(
             webViewRef.value?.evaluateJavascript("window.InkReadFormatting && InkReadFormatting.apply($formattingPayload)", null)
         }
     }
+
+    LaunchedEffect(documentGeneration, resourceRevision, isInitialPaginationReady) {
+        if (isInitialPaginationReady && resourceRevision != null) {
+            webViewRef.value?.evaluateJavascript(
+                "window.InkReadFormatting && InkReadFormatting.refreshLocalImages(${EInkReaderFormatting.quote(resourceRevision)})", null)
+        }
+    }
+
+    fun exitReader() {
+        val action = onBack ?: return
+        val view = webViewRef.value
+        if (readingContentRevision == null || view == null) {
+            persistLatestReadingAnchor()
+            action()
+            return
+        }
+        val generation = documentGeneration
+        // This query is ordered after pending goToPage evaluations. Read its
+        // result as well as the bridge so Back cannot outrun the last page turn.
+        val finished = AtomicBoolean(false)
+        fun finish(json: String?) {
+            if (!finished.compareAndSet(false, true) || generation != currentGeneration.value || webViewRef.value !== view) return
+            if (json != null && articleId != null) {
+                latestReadingAnchor.set(EInkReadingAnchorSnapshot(generation, articleId, readingContentRevision, json))
+            }
+            persistLatestReadingAnchor()
+            action()
+        }
+        // A stalled WebView must not trap Back. Accepted turns are already cached
+        // natively; the fallback still drains that most recent known position.
+        val timeout = coroutineScope.launch { delay(750); finish(null) }
+        view.evaluateJavascript("window.InkReadFormatting && InkReadFormatting.publishReadingAnchor()") { result ->
+            timeout.cancel()
+            finish(runCatching { JSONTokener(result).nextValue() as? String }.getOrNull())
+        }
+    }
+    BackHandler(enabled = onBack != null && !editingFormatting && !bottomBarVisible) { exitReader() }
 
     fun closeFormatting(cancel: Boolean, value: ReaderFormatting) {
         activeFontResources.set(listOfNotNull(
@@ -459,6 +532,7 @@ fun EInkPaginatedContent(
                                         else WebResourceResponse("text/plain", "UTF-8", java.io.ByteArrayInputStream(ByteArray(0)))
                                     } else {
                                         val url = request?.url?.toString().orEmpty()
+                                        activeResourceInterceptor.get()?.invoke(url)?.let { return it }
                                         val font = activeFontResources.get().firstOrNull { it.url == url }
                                         val stream = runCatching { font?.open(url) }.getOrNull()
                                         if (stream != null) WebResourceResponse(font!!.mimeType, null, stream)
@@ -470,34 +544,42 @@ fun EInkPaginatedContent(
                             }
                             addJavascriptInterface(
                                 EInkJsInterface(
-                                    onTotalPages = { generation, pages ->
+                                    onTotalPages = { generation, pages, commandId ->
                                         Handler(Looper.getMainLooper()).post {
                                             if (generation != currentGeneration.value || webViewRef.value == null) return@post
-                                            navController.onTotalPagesUpdated(pages)
+                                            navController.onTotalPagesUpdated(pages, commandId)
                                             totalPages = navController.totalPages
                                             currentPage = navController.currentPage
                                         }
                                     },
-                                    onRepaginated = { generation, pages, page ->
+                                    onRepaginated = { generation, pages, page, commandId ->
                                         Handler(Looper.getMainLooper()).post {
                                             if (generation != currentGeneration.value || webViewRef.value == null) return@post
-                                            applyingRepagination.set(true)
-                                            try {
-                                                navController.onRepaginated(pages, page)
-                                            } finally {
-                                                applyingRepagination.set(false)
-                                            }
+                                            navController.onRepaginated(pages, page, commandId)
                                             totalPages = navController.totalPages
                                             currentPage = navController.currentPage
                                         }
                                     },
-                                    onInitialPaginationReady = { generation, pages ->
+                                    onInitialPaginationReady = { generation, pages, restoredPage, commandId ->
                                         Handler(Looper.getMainLooper()).post {
                                             if (generation != currentGeneration.value || webViewRef.value == null) return@post
-                                            navController.onPaginationReady(pages)
+                                            if (!navController.onPaginationReady(pages, restoredPage, commandId)) return@post
                                             isInitialPaginationReady = true
                                             totalPages = navController.totalPages
                                             currentPage = navController.currentPage
+                                        }
+                                    },
+                                    onReadingAnchor = { generation, itemId, revision, json ->
+                                        Handler(Looper.getMainLooper()).post {
+                                            if (generation != currentGeneration.value || webViewRef.value == null) return@post
+                                            latestReadingAnchor.set(EInkReadingAnchorSnapshot(generation, itemId, revision, json))
+                                            currentOnReadingAnchorChanged?.invoke(itemId, revision, json)
+                                        }
+                                    },
+                                    onReadingAnchorRestore = { generation, status ->
+                                        Handler(Looper.getMainLooper()).post {
+                                            if (generation != currentGeneration.value || webViewRef.value == null) return@post
+                                            currentOnReadingAnchorRestore?.invoke(status)
                                         }
                                     },
                                 ),
@@ -660,7 +742,9 @@ fun EInkPaginatedContent(
                     progress = progress,
                     currentArticleIndex = currentArticleIndex,
                     totalArticleCount = totalArticleCount,
-                    onBack = onBack,
+                    onBack = onBack?.let { { exitReader() } },
+                    onSaveArticle = onSaveArticle,
+                    onLibraryActions = onLibraryActions,
                     onFormattingClick = if (isInitialPaginationReady) ::openFormatting else null,
                 )
             }
@@ -701,19 +785,32 @@ fun EInkPaginatedContent(
     }
 }
 
+private data class EInkReadingAnchorSnapshot(
+    val generation: String, val itemId: String, val contentRevision: String, val json: String,
+)
+
 private class EInkJsInterface(
-    private val onTotalPages: (String, Int) -> Unit,
-    private val onInitialPaginationReady: (String, Int) -> Unit,
-    private val onRepaginated: (String, Int, Int) -> Unit,
+    private val onTotalPages: (String, Int, Long) -> Unit,
+    private val onInitialPaginationReady: (String, Int, Int, Long) -> Unit,
+    private val onRepaginated: (String, Int, Int, Long) -> Unit,
+    private val onReadingAnchor: (String, String, String, String) -> Unit,
+    private val onReadingAnchorRestore: (String, String) -> Unit,
 ) {
     @JavascriptInterface
-    fun onTotalPages(generation: String, pages: Int) = onTotalPages.invoke(generation, pages)
+    fun onTotalPages(generation: String, pages: Int, commandId: Long) = onTotalPages.invoke(generation, pages, commandId)
 
     @JavascriptInterface
-    fun onRepaginated(generation: String, pages: Int, page: Int) = onRepaginated.invoke(generation, pages, page)
+    fun onRepaginated(generation: String, pages: Int, page: Int, commandId: Long) = onRepaginated.invoke(generation, pages, page, commandId)
 
     @JavascriptInterface
-    fun onInitialPaginationReady(generation: String, pages: Int) = onInitialPaginationReady.invoke(generation, pages)
+    fun onInitialPaginationReady(generation: String, pages: Int, page: Int, commandId: Long) = onInitialPaginationReady.invoke(generation, pages, page, commandId)
+
+    @JavascriptInterface
+    fun onReadingAnchor(generation: String, itemId: String, revision: String, json: String) =
+        onReadingAnchor.invoke(generation, itemId, revision, json)
+
+    @JavascriptInterface
+    fun onReadingAnchorRestore(generation: String, status: String) = onReadingAnchorRestore.invoke(generation, status)
 }
 
 private data class EInkArticleHtmlDocument(
@@ -733,13 +830,17 @@ private fun buildArticleHtmlDocument(
     publishedDate: Date,
     generation: String,
     runtimeScript: String,
+    itemId: String?,
+    readingContentRevision: String?,
+    initialReadingAnchor: String?,
+    dateLabel: String?,
 ): EInkArticleHtmlDocument {
     val outputDir = File(cacheDir, "eink-articles").apply { mkdirs() }
     deleteStaleArticleHtmlFiles(outputDir)
     val outputFile = File.createTempFile("article-", ".html", outputDir)
     outputFile.bufferedWriter(Charsets.UTF_8).use { writer ->
         writeArticleHtml(writer, content, formattingPayload, title, feedName, author,
-            publishedDate, generation, runtimeScript)
+            publishedDate, generation, runtimeScript, itemId, readingContentRevision, initialReadingAnchor, dateLabel)
     }
     return EInkArticleHtmlDocument(file = outputFile, cacheKey = generation)
 }
@@ -760,9 +861,19 @@ private fun writeArticleHtml(
     publishedDate: Date,
     generation: String,
     runtimeScript: String,
+    itemId: String?,
+    readingContentRevision: String?,
+    initialReadingAnchor: String?,
+    dateLabel: String?,
 ) {
-    val dateStr = SimpleDateFormat("MMM d, yyyy · HH:mm", Locale.getDefault()).format(publishedDate)
+    val dateStr = einkReaderDate(publishedDate, dateLabel)
     val metaLine = listOf(articleByline(feedName, author), dateStr).filter { it.isNotBlank() }.joinToString(" · ")
+    val readingIdentity = if (itemId != null && readingContentRevision != null) {
+        // Storage's semantic revision covers the immutable body. Local image
+        // transport URLs may change while its text/media node order stays fixed.
+        val fingerprint = EInkReadingDocumentFingerprint.create(readingContentRevision, title, metaLine)
+        """{"itemId":${EInkReaderFormatting.quote(itemId)},"contentRevision":${EInkReaderFormatting.quote(readingContentRevision)},"documentFingerprint":${EInkReaderFormatting.quote(fingerprint)}}"""
+    } else "null"
     fun String.esc() = replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     writer.write("""<!DOCTYPE html>
 <html><head>
@@ -772,6 +883,8 @@ private fun writeArticleHtml(
 <script>
 window._inkreadGeneration = ${EInkReaderFormatting.quote(generation)};
 window._inkreadInitialFormatting = $formattingPayload;
+window._inkreadReadingIdentity = $readingIdentity;
+window._inkreadInitialReadingAnchor = ${initialReadingAnchor?.let(EInkReaderFormatting::quote) ?: "null"};
 $runtimeScript
 </script>
 </head><body><main id="eink-content">
