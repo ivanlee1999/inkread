@@ -114,6 +114,25 @@ class EInkReaderResumeUiTest {
         capture("reopened-reader")
     }
 
+    @Test fun resumeVisibilityDistinguishesLayoutMarginsFromViewportClipping() {
+        assumeTrue(phase == null)
+        // Native tablet evidence: the 18px line starts at y=24, while its font-em
+        // Range spans y=22..43. All of it remains inside the actual WebView.
+        fun sample(left: Double = 24.0, right: Double = 34.296875,
+            top: Double = 22.0, bottom: Double = 43.0) = JSONObject()
+            .put("width", 1000).put("height", 1173)
+            .put("margins", JSONObject().put("left", 24).put("right", 24).put("top", 24).put("bottom", 24))
+            .put("rect", JSONObject().put("left", left).put("right", right).put("top", top).put("bottom", bottom))
+        assertTrue("Font-em overhang into blank layout margin is not clipping", anchorIsOnVisiblePage(sample()))
+        assertFalse("Left viewport clipping must fail", anchorIsOnVisiblePage(sample(left = -2.0)))
+        assertFalse("Right viewport clipping must fail", anchorIsOnVisiblePage(sample(right = 1002.0)))
+        assertFalse("Top viewport clipping must fail", anchorIsOnVisiblePage(sample(top = -2.0)))
+        assertFalse("Bottom viewport clipping must fail", anchorIsOnVisiblePage(sample(bottom = 1175.0)))
+        assertFalse("A different column must fail", anchorIsOnVisiblePage(sample(left = 1024.0, right = 1034.296875)))
+        assertFalse("A box wholly in the blank margin is not an article anchor", anchorIsOnVisiblePage(sample(top = 1.0, bottom = 20.0)))
+        assertFalse("An empty Range must fail", anchorIsOnVisiblePage(sample(right = 24.0)))
+    }
+
     @Test fun onDemandSaveHasFortyEightDpTargetAndBackExportsBeforeExit() {
         assumeTrue(phase == null)
         startReader()
@@ -327,11 +346,24 @@ class EInkReaderResumeUiTest {
     }
 
     private fun assertAnchorVisible(value: JSONObject) {
+        assertTrue("The exact logical anchor must occupy this page without viewport clipping: $value",
+            anchorIsOnVisiblePage(value))
+    }
+
+    private fun anchorIsOnVisiblePage(value: JSONObject): Boolean {
         val r = value.getJSONObject("rect"); val m = value.getJSONObject("margins")
-        assertTrue(r.getDouble("left") >= m.getDouble("left") - .75)
-        assertTrue(r.getDouble("right") <= value.getDouble("width") - m.getDouble("right") + .75)
-        assertTrue(r.getDouble("top") >= m.getDouble("top") - .75)
-        assertTrue(r.getDouble("bottom") <= value.getDouble("height") - m.getDouble("bottom") + .75)
+        val left = r.getDouble("left"); val right = r.getDouble("right")
+        val top = r.getDouble("top"); val bottom = r.getDouble("bottom")
+        val width = value.getDouble("width"); val height = value.getDouble("height")
+        // CSS columns have overflow:visible. Margins position the line box; they
+        // do not clip its font ascent/descent whitespace. Keep the complete Range
+        // inside the actual WebView, with the original subpixel tolerance, and
+        // require overlap with the inset reading area. Exact node/offset identity
+        // is asserted separately; the formatting suite retains native ink proofs.
+        return right > left && bottom > top &&
+            left >= -.75 && right <= width + .75 && top >= -.75 && bottom <= height + .75 &&
+            right > m.getDouble("left") && left < width - m.getDouble("right") &&
+            bottom > m.getDouble("top") && top < height - m.getDouble("bottom")
     }
 
     private fun findWebView(view: View): WebView? {
@@ -341,6 +373,26 @@ class EInkReaderResumeUiTest {
     }
 
     private fun capture(name: String) {
+        compose.waitForIdle()
+        val drawn = CountDownLatch(1)
+        instrumentation.runOnMainSync {
+            val view = findWebView(compose.activity.window.decorView)
+            // The loading/error inset fixtures deliberately contain no WebView.
+            if (view == null) drawn.countDown()
+            else view.postVisualStateCallback(0, object : WebView.VisualStateCallback() {
+                override fun onComplete(requestId: Long) {
+                    // Visual readiness promises the next draw, not an already displayed frame.
+                    if (android.os.Build.VERSION.SDK_INT >= 29 && view.isHardwareAccelerated) {
+                        view.viewTreeObserver.registerFrameCommitCallback { drawn.countDown() }
+                        view.invalidate()
+                    } else {
+                        view.postOnAnimation { view.postOnAnimation { drawn.countDown() } }
+                        view.invalidate()
+                    }
+                }
+            })
+        }
+        assertTrue("The screenshot must include the measured WebView page", drawn.await(10, TimeUnit.SECONDS))
         val bitmap = checkNotNull(instrumentation.uiAutomation.takeScreenshot())
         File(outputDirectory(), "reader-$name.png").outputStream().use { check(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)) }
         bitmap.recycle()

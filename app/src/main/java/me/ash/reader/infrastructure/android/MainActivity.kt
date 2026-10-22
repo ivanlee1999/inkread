@@ -283,8 +283,9 @@ internal fun Intent.consumeLaunchAction(): LaunchAction? {
             removeExtra(Intent.EXTRA_TITLE)
             removeExtra(Intent.EXTRA_SUBJECT)
             clipData = null
-            // View data must also be consumed exactly once by this launch delivery.
-            data = null
+            // Consume the URL once without changing the delivery's MIME identity.
+            // Intent.setData(null) also clears type, breaking lifecycle matching for SEND.
+            setDataAndType(null, type)
             text?.let { LaunchAction.Capture(it, title, mode) }
         }
 

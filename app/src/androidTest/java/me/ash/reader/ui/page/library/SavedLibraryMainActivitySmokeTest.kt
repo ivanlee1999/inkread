@@ -30,6 +30,7 @@ import me.ash.reader.domain.library.SavedContentState
 import me.ash.reader.domain.model.feed.Feed
 import me.ash.reader.infrastructure.android.AndroidApp
 import me.ash.reader.infrastructure.android.MainActivity
+import me.ash.reader.infrastructure.android.consumeLaunchAction
 import me.ash.reader.infrastructure.library.*
 import me.ash.reader.ui.ext.DataStoreKey
 import me.ash.reader.ui.ext.dataStore
@@ -112,6 +113,12 @@ class SavedLibraryMainActivitySmokeTest {
         val intent = Intent(context, MainActivity::class.java).setAction(Intent.ACTION_SEND).setType("text/plain")
             .putExtra(Intent.EXTRA_TEXT, "https://example.test/main-route-0")
         scenario = ActivityScenario.launch(intent)
+        scenario!!.onActivity { activity ->
+            assertEquals("text/plain", activity.intent.type)
+            assertNull(activity.intent.getCharSequenceExtra(Intent.EXTRA_TEXT))
+            assertNull(activity.intent.clipData)
+            assertNull(activity.intent.consumeLaunchAction())
+        }
         compose.onNodeWithTag("saved-capture-dialog").assertIsDisplayed()
         assertSavedRowsUnchanged()
         scenario!!.recreate()

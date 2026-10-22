@@ -131,8 +131,77 @@ class SavedLibraryNativeVisualTest(private val fontScale: Float) {
         capture("later-read", "saved-library-viewport")
     }
 
+    @Test fun changingSavedSourcesKeepsWholePagesOrderedAndSurvivingAnchors() {
+        val fixture = Fixture()
+        val original = fixture.repository.rows.value
+        compose.setContent { fixture.Screen() }
+        awaitEdition(fixture)
+
+        fun awaitItems(ids: List<String>) {
+            compose.waitUntil(15_000) {
+                fixture.edition.items.map { it.id } == ids &&
+                    fixture.edition.pages.isEmpty() == ids.isEmpty()
+            }
+            compose.waitForIdle()
+        }
+        fun assertOrderedPages(ids: List<String>) {
+            compose.runOnIdle { while (fixture.edition.turn(false)) Unit }
+            val seen = mutableListOf<String>()
+            val count = compose.runOnIdle { fixture.edition.pages.size }
+            repeat(count) { page ->
+                seen += assertWholePage(fixture)
+                if (page < count - 1) compose.runOnIdle { assertTrue(fixture.edition.turn(true)) }
+            }
+            assertEquals("Replanning must not skip, duplicate or substitute Saved identities", ids, seen)
+        }
+
+        nextPage()
+        val inboxAnchor = assertWholePage(fixture).first()
+        val movedId = original.first { it.location == SavedLocation.INBOX && it.id != inboxAnchor }.id
+        compose.runOnIdle { fixture.model.move(movedId, SavedLocation.LATER) }
+        awaitItems(original.filter { it.location == SavedLocation.INBOX && it.id != movedId }.map { it.id })
+        assertTrue("Removing an earlier story preserves the surviving page anchor", inboxAnchor in assertWholePage(fixture))
+
+        // The old Inbox slots contain indices beyond this three-item source. They may
+        // recompose before the next measure removes them, including measurement-only slots.
+        compose.onNodeWithTag("saved-library-location-LATER").performClick()
+        val later = fixture.repository.rows.value.filter { it.location == SavedLocation.LATER }
+        awaitItems(later.map { it.id })
+        assertOrderedPages(later.map { it.id })
+        val laterAnchor = assertWholePage(fixture).first()
+
+        compose.runOnIdle {
+            fixture.repository.rows.value = fixture.repository.rows.value.filter { it.location != SavedLocation.LATER } + later.reversed()
+        }
+        awaitItems(later.reversed().map { it.id })
+        assertTrue("A same-size replacement keeps the anchor's identity, not its old index", laterAnchor in assertWholePage(fixture))
+        assertOrderedPages(later.reversed().map { it.id })
+
+        val survivor = assertWholePage(fixture).first()
+        compose.runOnIdle {
+            fixture.repository.rows.value = fixture.repository.rows.value.filter { it.location != SavedLocation.LATER || it.id == survivor }
+        }
+        awaitItems(listOf(survivor))
+        assertEquals(listOf(survivor), assertWholePage(fixture))
+        val survivorIsRead = later.first { it.id == survivor }.isRead
+        compose.runOnIdle { fixture.model.selectReadFilter(if (survivorIsRead) SavedReadFilter.UNREAD else SavedReadFilter.READ) }
+        awaitItems(emptyList())
+        compose.onNodeWithTag("saved-item-$survivor", useUnmergedTree = true).assertDoesNotExist()
+        compose.runOnIdle { fixture.model.selectReadFilter(SavedReadFilter.ALL) }
+        awaitItems(listOf(survivor))
+        assertEquals(listOf(survivor), assertWholePage(fixture))
+
+        compose.runOnIdle {
+            fixture.repository.rows.value = original
+            fixture.model.selectLocation(SavedLocation.INBOX)
+        }
+        awaitItems(original.filter { it.location == SavedLocation.INBOX }.map { it.id })
+        assertTrue("Returning to the restored source preserves its surviving anchor", inboxAnchor in assertWholePage(fixture))
+    }
+
     @Test fun savedReaderOwnsVolumeAndBackReturnsToTheSamePrintedLibraryPage() {
         val fixture = Fixture()
+        fixture.readerFormatting = null
         compose.setContent { fixture.Screen() }
         awaitEdition(fixture)
         nextPage()
@@ -140,7 +209,17 @@ class SavedLibraryNativeVisualTest(private val fontScale: Float) {
         val ids = assertWholePage(fixture)
         clickArticle(ids.first())
         compose.onNodeWithTag("saved_library_reader").assertIsDisplayed()
-        compose.waitUntil(15_000) { findWebView(compose.activity.window.decorView) != null }
+        compose.onNodeWithText("Loading reading format…").assertIsDisplayed()
+        assertNull("Reader waits for settings before creating its WebView",
+            compose.runOnUiThread { findWebView(compose.activity.window.decorView) })
+        assertTrue("Reader retains key ownership before settings finish loading",
+            VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.HIGH))
+        emitVolume()
+        assertEquals("Reader owns page keys while settings are still loading", page, fixture.edition.currentPage)
+        // ComponentActivity does not install SettingsProvider. Publish its loaded
+        // value explicitly, as the real app does, rather than waiting forever on null.
+        compose.runOnIdle { fixture.readerFormatting = ReaderFormatting.Default }
+        compose.waitUntil(15_000) { compose.runOnUiThread { findWebView(compose.activity.window.decorView) != null } }
         compose.waitUntil(20_000) { js("typeof _didFinishInitialPagination !== 'undefined' && _didFinishInitialPagination") == true }
         compose.waitUntil(5_000) { VolumeKeyEventBus.isActiveConsumer(VolumeKeyPriority.HIGH) }
         val readerPage = (js("_currentPage") as Number).toInt()
@@ -223,6 +302,7 @@ class SavedLibraryNativeVisualTest(private val fontScale: Float) {
         val capture = SavedCaptureViewModel(repository, SavedStateHandle()).also(::retain)
         val edition get() = model.edition("${model.location.value}_${model.readFilter.value}")
         var readerId by mutableStateOf<String?>(null)
+        var readerFormatting by mutableStateOf<ReaderFormatting?>(ReaderFormatting.Default)
         var ready by mutableStateOf(true)
         var outerBacks = 0
         val savedResults = mutableListOf<String>()
@@ -232,6 +312,7 @@ class SavedLibraryNativeVisualTest(private val fontScale: Float) {
             CompositionLocalProvider(
                 LocalDensity provides Density(nativeDensity, fontScale),
                 LocalEInkMode provides EInkModePreference.ON,
+                LocalReaderFormatting provides readerFormatting,
                 LocalFlowArticleListImage provides FlowArticleListImagePreference.ON,
                 LocalFlowArticleListFeedIcon provides FlowArticleListFeedIconPreference.OFF,
                 LocalFlowArticleListFeedName provides FlowArticleListFeedNamePreference.ON,

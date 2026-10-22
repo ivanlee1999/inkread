@@ -32,6 +32,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -89,11 +90,11 @@ fun ReadingPage(
     val isPullToSwitchArticleEnabled = LocalPullToSwitchArticle.current.value
     val readingUiState = viewModel.readingUiState.collectAsStateValue()
     val readerState = viewModel.readerStateStateFlow.collectAsStateValue()
+    val savedSuccessMessage by rememberUpdatedState(stringResource(R.string.saved_rss_save_success))
+    val savedFailureMessage by rememberUpdatedState(stringResource(R.string.saved_rss_save_failed))
     LaunchedEffect(saveToLibraryViewModel) {
         saveToLibraryViewModel.events.collect { result ->
-            context.showToast(context.getString(
-                if (result.saved) R.string.saved_rss_save_success else R.string.saved_rss_save_failed
-            ))
+            context.showToast(if (result.saved) savedSuccessMessage else savedFailureMessage)
         }
     }
     val saveArticle: (() -> Unit)? = readerState.link?.takeIf(String::isNotBlank)?.let { url ->

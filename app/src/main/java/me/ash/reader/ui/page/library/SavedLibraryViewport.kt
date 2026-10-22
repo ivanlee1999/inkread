@@ -85,12 +85,13 @@ internal fun SavedLibraryViewport(
     val measuredHeights = remember(geometryInputs) { mutableMapOf<List<Any>, Int>() }
     val pagePlans = remember(geometryInputs) { mutableMapOf<Pair<Int, Int>, List<me.ash.reader.ui.page.home.flow.NewspaperViewportPage>>() }
     val enrichedPages = remember(geometryInputs) { mutableMapOf<List<Any>, me.ash.reader.ui.page.home.flow.NewspaperViewportPage>() }
+    val snapshotIdentity = remember(geometryInputs, state) { Any() }
     val currentNavigationEnabled by rememberUpdatedState(navigationEnabled)
     val gestureKey = listOf(source, state.currentPage, columns, density.fontScale)
     val turn: (Boolean) -> Boolean = { currentNavigationEnabled && state.turn(it) }
-    val body: @Composable (MeasuredNewspaperRow, Boolean, Dp) -> Unit = { row, measurementOnly, height ->
-        SavedLibraryRow(source, state, row, columns, horizontalPadding, columnSpacing, height, measurementOnly, onOpen, onOptions)
-    }
+    // A retained subcomposition can recompose before the next measure removes it after a
+    // move/filter change. Bind its row and immutable source together inside that slot, not
+    // through a shared composable lambda whose captured source updates ahead of the row.
     SubcomposeLayout(modifier.fillMaxSize().testTag("saved-library-viewport")
         .semantics {
             verticalScrollAxisRange = ScrollAxisRange({ state.currentPage.toFloat() }, { (state.pages.size - 1).coerceAtLeast(0).toFloat() })
@@ -120,7 +121,10 @@ internal fun SavedLibraryViewport(
                 candidate.extraHeadlineLines, width, height)
             val rowHeight = measuredHeights.getOrPut(key) {
                 val slotHeight = ((height - 2).coerceAtLeast(1) / candidate.row.slots.maxOf { it.indices.size }).toDp()
-                subcompose(listOf("measure", key)) { body(candidate, true, slotHeight) }.single().measure(measureConstraints).height
+                subcompose(listOf("measure", snapshotIdentity, key)) {
+                    SavedLibraryRow(source, state, candidate, columns, horizontalPadding, columnSpacing,
+                        slotHeight, true, onOpen, onOptions)
+                }.single().measure(measureConstraints).height
             }
             return candidate.copy(heightPx = rowHeight)
         }
@@ -157,7 +161,10 @@ internal fun SavedLibraryViewport(
         }
         val placed = page?.rows.orEmpty().map { row ->
             val slotHeight = ((height - 2).coerceAtLeast(1) / row.row.slots.maxOf { it.indices.size }).toDp()
-            subcompose(listOf("print", row.row.indices)) { body(row, false, slotHeight) }.single().measure(measureConstraints)
+            subcompose(listOf("print", snapshotIdentity, row.row.indices)) {
+                SavedLibraryRow(source, state, row, columns, horizontalPadding, columnSpacing,
+                    slotHeight, false, onOpen, onOptions)
+            }.single().measure(measureConstraints)
         }
         layout(width, height) {
             var y = 0
