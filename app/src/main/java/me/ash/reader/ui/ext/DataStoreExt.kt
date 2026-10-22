@@ -211,6 +211,16 @@ sealed interface PreferencesKey {
         const val einkEnglishFont = "einkEnglishFont"
         const val einkChineseFont = "einkChineseFont"
         const val einkWordSpacing = "einkWordSpacing"
+        const val einkMarginLeft = "einkMarginLeft"
+        const val einkMarginRight = "einkMarginRight"
+        const val einkMarginTop = "einkMarginTop"
+        const val einkMarginBottom = "einkMarginBottom"
+        const val einkTextDarkness = "einkTextDarkness"
+        const val einkTextWeight = "einkTextWeight"
+        const val einkParagraphGap = "einkParagraphGap"
+        const val einkParagraphIndent = "einkParagraphIndent"
+        const val einkImageContrast = "einkImageContrast"
+        const val einkImageGrayscale = "einkImageGrayscale"
 
         private val keyList =
             listOf(
@@ -296,6 +306,16 @@ sealed interface PreferencesKey {
                 IntKey(einkEnglishFont),
                 IntKey(einkChineseFont),
                 FloatKey(einkWordSpacing),
+                IntKey(einkMarginLeft),
+                IntKey(einkMarginRight),
+                IntKey(einkMarginTop),
+                IntKey(einkMarginBottom),
+                FloatKey(einkTextDarkness),
+                IntKey(einkTextWeight),
+                FloatKey(einkParagraphGap),
+                FloatKey(einkParagraphIndent),
+                FloatKey(einkImageContrast),
+                BooleanKey(einkImageGrayscale),
             )
 
         val keys = keyList.associateBy { it.name }
@@ -394,6 +414,16 @@ data class DataStoreKey<T>(val key: Preferences.Key<T>, val type: Class<T>) {
         const val einkEnglishFont = "einkEnglishFont"
         const val einkChineseFont = "einkChineseFont"
         const val einkWordSpacing = "einkWordSpacing"
+        const val einkMarginLeft = "einkMarginLeft"
+        const val einkMarginRight = "einkMarginRight"
+        const val einkMarginTop = "einkMarginTop"
+        const val einkMarginBottom = "einkMarginBottom"
+        const val einkTextDarkness = "einkTextDarkness"
+        const val einkTextWeight = "einkTextWeight"
+        const val einkParagraphGap = "einkParagraphGap"
+        const val einkParagraphIndent = "einkParagraphIndent"
+        const val einkImageContrast = "einkImageContrast"
+        const val einkImageGrayscale = "einkImageGrayscale"
 
         val keys: MutableMap<String, DataStoreKey<*>> =
             mutableMapOf(
@@ -559,6 +589,16 @@ data class DataStoreKey<T>(val key: Preferences.Key<T>, val type: Class<T>) {
                 einkEnglishFont to DataStoreKey(intPreferencesKey(einkEnglishFont), Int::class.java),
                 einkChineseFont to DataStoreKey(intPreferencesKey(einkChineseFont), Int::class.java),
                 einkWordSpacing to DataStoreKey(floatPreferencesKey(einkWordSpacing), Float::class.java),
+                einkMarginLeft to DataStoreKey(intPreferencesKey(einkMarginLeft), Int::class.java),
+                einkMarginRight to DataStoreKey(intPreferencesKey(einkMarginRight), Int::class.java),
+                einkMarginTop to DataStoreKey(intPreferencesKey(einkMarginTop), Int::class.java),
+                einkMarginBottom to DataStoreKey(intPreferencesKey(einkMarginBottom), Int::class.java),
+                einkTextDarkness to DataStoreKey(floatPreferencesKey(einkTextDarkness), Float::class.java),
+                einkTextWeight to DataStoreKey(intPreferencesKey(einkTextWeight), Int::class.java),
+                einkParagraphGap to DataStoreKey(floatPreferencesKey(einkParagraphGap), Float::class.java),
+                einkParagraphIndent to DataStoreKey(floatPreferencesKey(einkParagraphIndent), Float::class.java),
+                einkImageContrast to DataStoreKey(floatPreferencesKey(einkImageContrast), Float::class.java),
+                einkImageGrayscale to DataStoreKey(booleanPreferencesKey(einkImageGrayscale), Boolean::class.java),
             )
     }
 }

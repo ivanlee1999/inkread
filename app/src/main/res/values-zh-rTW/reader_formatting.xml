@@ -1,0 +1,49 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="reader_formatting_title">文章樣式</string>
+    <string name="reader_formatting_live_draft">即時預覽 · 套用後儲存</string>
+    <string name="reader_formatting_text">文字</string>
+    <string name="reader_formatting_layout">版面</string>
+    <string name="reader_formatting_fonts">字型</string>
+    <string name="reader_formatting_reset">重設</string>
+    <string name="reader_formatting_line_height">行高</string>
+    <string name="reader_formatting_darkness">文字深淺</string>
+    <string name="reader_formatting_darkness_hint" formatted="false">僅調整文字顏色。100% 為純黑，不改變螢幕對比度。</string>
+    <string name="reader_formatting_weight">字重</string>
+    <string name="reader_formatting_weight_hint">數值越大，文字越粗；效果因字型而異。</string>
+    <string name="reader_formatting_letter_spacing">字元間距</string>
+    <string name="reader_formatting_word_spacing">詞間距</string>
+    <string name="reader_formatting_images">圖片</string>
+    <string name="reader_formatting_image_contrast">圖片對比度</string>
+    <string name="reader_formatting_image_contrast_hint" formatted="false">僅調整圖片。100% 保持原始對比度。</string>
+    <string name="reader_formatting_image_color">彩色</string>
+    <string name="reader_formatting_image_grayscale">灰階</string>
+    <string name="reader_formatting_margin_left">左邊距</string>
+    <string name="reader_formatting_margin_right">右邊距</string>
+    <string name="reader_formatting_margin_top">上邊距</string>
+    <string name="reader_formatting_margin_bottom">下邊距</string>
+    <string name="reader_formatting_alignment">對齊方式</string>
+    <string name="reader_formatting_align_start">行首</string>
+    <string name="reader_formatting_align_end">行尾</string>
+    <string name="reader_formatting_align_center">置中</string>
+    <string name="reader_formatting_align_justify">左右對齊</string>
+    <string name="reader_formatting_paragraph_gap">段落間距</string>
+    <string name="reader_formatting_paragraph_indent">首行縮排</string>
+    <string name="reader_formatting_value_description">%1$s數值，%2$s</string>
+    <string name="reader_formatting_decrease">減小%1$s</string>
+    <string name="reader_formatting_increase">增大%1$s</string>
+    <string name="reader_formatting_range">範圍 %1$s 至 %2$s %3$s</string>
+    <string name="reader_formatting_english">英文字型</string>
+    <string name="reader_formatting_chinese">中文字型</string>
+    <string name="reader_formatting_download_hint">選擇字型即可預覽。下載的字型保留在裝置上，即使取消也不會刪除。</string>
+    <string name="reader_formatting_download">下載</string>
+    <string name="reader_formatting_download_font">下載%1$s</string>
+    <string name="reader_formatting_downloading">下載中…</string>
+    <string name="reader_formatting_not_downloaded">尚未下載</string>
+    <string name="reader_formatting_font_missing_selected">尚未下載 · 使用系統字型</string>
+    <string name="reader_formatting_system_font">系統字型 · 可離線使用</string>
+    <string name="reader_formatting_downloaded">已下載 · 可離線使用</string>
+    <string name="reader_formatting_download_failed">字型下載失敗，請檢查網路後重試。</string>
+    <string name="reader_formatting_saving">儲存中…</string>
+    <string name="reader_formatting_label_unit">%1$s (%2$s)</string>
+</resources>

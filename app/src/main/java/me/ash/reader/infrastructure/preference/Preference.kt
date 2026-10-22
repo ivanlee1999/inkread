@@ -94,6 +94,8 @@ fun Preferences.toSettings(): Settings {
         // Languages
         languages = LanguagesPreference.fromPreferences(this),
 
+        readerFormatting = ReaderFormattingPreference.fromPreferences(this),
+
         // E-Ink
         einkMode = EInkModePreference.fromPreferences(this),
         einkFontSize = EInkFontSizePreference.fromPreferences(this),

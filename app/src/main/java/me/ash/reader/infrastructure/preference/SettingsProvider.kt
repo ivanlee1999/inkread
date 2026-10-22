@@ -8,10 +8,14 @@ import androidx.datastore.preferences.core.preferencesOf
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import me.ash.reader.infrastructure.datastore.get
 import me.ash.reader.infrastructure.datastore.getOrDefault
@@ -22,6 +26,7 @@ import me.ash.reader.ui.ext.collectAsStateValue
 import me.ash.reader.ui.ext.dataStore
 import javax.inject.Inject
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class SettingsProvider @Inject constructor(
     @ApplicationContext private val context: Context,
     @ApplicationScope coroutineScope: CoroutineScope,
@@ -31,7 +36,22 @@ class SettingsProvider @Inject constructor(
     val settingsFlow: StateFlow<Settings> = _settingsFlow
     val settings: Settings get() = settingsFlow.value
 
-    val dataStore = context.dataStore.data
+    private val preferenceReadAttempt = MutableStateFlow(0)
+    private val preferenceReadError = MutableStateFlow<Throwable?>(null)
+
+    // Share only real disk emissions. In particular, the synthetic preferencesFlow initial value
+    // must not turn into a "loaded" formatting snapshot and overwrite a user's saved appearance.
+    val dataStore = preferenceReadAttempt.flatMapLatest {
+        context.dataStore.data.recoverPreferenceReadErrors(
+            onRead = { preferenceReadError.value = null },
+            onFailure = { preferenceReadError.value = it },
+        )
+    }.shareIn(coroutineScope, SharingStarted.Eagerly, replay = 1)
+
+    fun retryReaderFormatting() {
+        // Keep a visible failure and the last good snapshot until a real read succeeds.
+        preferenceReadAttempt.update { it + 1 }
+    }
 
     val preferencesFlow: StateFlow<Preferences> =
         dataStore.stateIn(
@@ -52,7 +72,7 @@ class SettingsProvider @Inject constructor(
 
     init {
         coroutineScope.launch(ioDispatcher) {
-            preferencesFlow.collect {
+            dataStore.collect {
                 _settingsFlow.value = it.toSettings()
             }
         }
@@ -61,8 +81,12 @@ class SettingsProvider @Inject constructor(
     @Composable
     fun ProvidesSettings(content: @Composable () -> Unit) {
         val settings = settingsFlow.collectAsStateValue()
+        val formattingError = preferenceReadError.collectAsStateValue()
         CompositionLocalProvider(
             LocalSettings provides settings,
+            LocalReaderFormatting provides settings.readerFormatting,
+            LocalReaderFormattingLoadError provides formattingError,
+            LocalRetryReaderFormatting provides ::retryReaderFormatting,
 
             // Version
             NewVersionNumberPreference.provide(settings),

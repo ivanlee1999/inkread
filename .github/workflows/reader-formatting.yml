@@ -1,0 +1,217 @@
+name: Live reader formatting
+
+on:
+  pull_request:
+    paths:
+      - 'app/src/main/java/me/ash/reader/ui/page/home/reading/**'
+      - 'app/src/main/assets/**'
+      - 'app/src/main/res/**'
+      - 'app/src/main/java/me/ash/reader/infrastructure/preference/**'
+      - 'app/src/main/java/me/ash/reader/ui/ext/DataStore*'
+      - 'app/src/androidTest/java/me/ash/reader/ui/page/home/reading/EInkReaderFormattingUiTest.kt'
+      - '.github/workflows/reader-formatting.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reader-formatting-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-formatting:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: phone
+            size: 400x1000
+            density: 160
+          - name: fractional-phone
+            size: 1080x2400
+            density: 420
+          - name: tablet
+            size: 1000x1200
+            density: 160
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Validate deterministic live-formatting runtime
+        run: |
+          node --check app/src/main/assets/eink-formatting.js
+          node --test app/src/test/js/eink-formatting.test.cjs
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - name: Install compile SDK
+        run: sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Prepare disposable native display and tests
+        run: |
+          cat > "$RUNNER_TEMP/formatting-avd-resolution.py" <<'PYTHON'
+          import os, pathlib
+          config = pathlib.Path(os.environ["ANDROID_AVD_HOME"]) / "reader-formatting.avd/config.ini"
+          width, height = "${{ matrix.size }}".split("x")
+          dimensions = {"hw.lcd.width": width, "hw.lcd.height": height}
+          lines = [line for line in config.read_text().splitlines() if line.partition("=")[0].strip() not in dimensions]
+          config.write_text("\n".join(lines + [f"{key}={value}" for key, value in dimensions.items()]) + "\n")
+          PYTHON
+          cat > "$RUNNER_TEMP/reader-formatting-tests.sh" <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          adb shell wm size ${{ matrix.size }}
+          adb shell wm density ${{ matrix.density }}
+          if adb shell pm path com.google.android.apps.nexuslauncher | grep -q '^package:'; then
+            adb shell pm disable-user --user 0 com.google.android.apps.nexuslauncher
+            adb shell am force-stop com.google.android.apps.nexuslauncher
+            adb shell pm list packages -d | tr -d '\r' | grep -qx 'package:com.google.android.apps.nexuslauncher'
+          fi
+          # No production font downloads or live article services are needed by these tests.
+          adb shell svc wifi disable
+          adb shell svc data disable
+          adb shell settings put secure show_ime_with_hard_keyboard 1
+          mkdir -p reader-formatting-evidence
+          git rev-parse HEAD > reader-formatting-evidence/source-sha.txt
+          adb shell dumpsys webviewupdate > reader-formatting-evidence/webview.txt
+          adb shell wm size > reader-formatting-evidence/size.txt
+          adb shell wm density > reader-formatting-evidence/density.txt
+          adb shell settings get global wifi_on > reader-formatting-evidence/wifi.txt
+          actual_size=$(tr -d '\r' < reader-formatting-evidence/size.txt | sed -n 's/^\(Physical\|Override\) size: //p' | tail -n 1)
+          test "$actual_size" = "${{ matrix.size }}"
+          result=0
+          preserve() {
+            local destination="reader-formatting-evidence/$1"
+            mkdir -p "$destination"
+            for output in app/build/outputs/connected_android_test_additional_output app/build/outputs/androidTest-results app/build/reports/androidTests; do
+              if [ -d "$output" ]; then cp -R "$output" "$destination/"; fi
+            done
+            adb logcat -d > "$destination/logcat.txt"
+          }
+          for scale in 1.0 1.6; do
+            adb shell settings put system font_scale "$scale"
+            export FORMATTING_FONT_SCALE="$scale"
+            test_result=0
+            ./gradlew --no-daemon --max-workers=2 connectedGithubDebugAndroidTest \
+              -Pandroid.testInstrumentationRunnerArguments.class=me.ash.reader.ui.page.home.reading.EInkReaderFormattingUiTest \
+              -Pandroid.testInstrumentationRunnerArguments.additionalTestOutputDir=/sdcard/Android/media/me.ash.reader/reader-formatting || test_result=$?
+            preserve "font-$scale"
+            validation=0
+            python3 - <<'PYTHON' || validation=$?
+          import json, os, pathlib, struct
+          root = pathlib.Path("reader-formatting-evidence") / f"font-{os.environ['FORMATTING_FONT_SCALE']}"
+          for name in ("live", "fonts-modal", "persistence-same-process"):
+              reports = list(root.rglob(f"reader-formatting-{name}.json"))
+              assert len(reports) == 1, f"Missing/duplicate {name} report: {reports}"
+              report = json.loads(reports[0].read_text())
+              assert report["schema"] == 1 and report["densityDpi"] == ${{ matrix.density }}
+              assert abs(report["systemFontScale"] - float(os.environ["FORMATTING_FONT_SCALE"])) < .01
+              assert not report["remoteRequests"], report["remoteRequests"]
+              samples = report["samples"]
+              labels = {s["label"] for s in samples}
+              if name == "live":
+                  required = {"before-panel", "four-independent-margins", "image-only-contrast", "late-image-during-draft",
+                              "panel-resized", "apply", "reset-preview", "cancel-reset", "cancel-edit", "stepper-no-ime", "external-shared-setting", "external-shared-setting-anchor",
+                              "late-preference-error-keeps-draft", "late-preference-error-keeps-anchor",
+                              "retry-keeps-draft", "retry-keeps-anchor", "cancel-after-retry",
+                              "maximum-formatting-short-viewport", "maximum-formatting-anchor",
+                              "cancel-maximum-formatting", "cancel-maximum-formatting-anchor"}
+                  assert required <= labels, f"Missing live assertions: {required-labels}"
+                  assert report["htmlRequests"] == 1, "Live draft unexpectedly reloaded its article HTML"
+                  for label in ("apply", "reset-preview", "cancel-reset", "cancel-edit", "panel-resized", "late-image-during-draft"):
+                      sample = next(s for s in samples if s["label"] == label)
+                      assert sample["sameAnchor"] and sample["sameDocument"] and sample["anchorVisible"] and sample["documentSentinel"], sample
+                  for direction in ("middle", "return"):
+                      assert {f"applied-{direction}-{n}" for n in (1,2,3)} <= labels
+              elif name == "fonts-modal":
+                  assert {"latin-face-ready", "cjk-face-ready", "offline-script-faces", "modal-volume-and-swipe", "back-cancels-draft", "reader-reopened"} <= labels
+                  fonts = next(s for s in samples if s["label"] == "offline-script-faces")
+                  assert all(fonts[key] for key in ("latinFaceLoaded", "cjkFaceLoaded", "latinPaintMatchesFace", "cjkPaintMatchesFace", "latinPaintDiffersFromSans"))
+              else:
+                  assert "persisted-before-restart" in labels
+              if ${{ matrix.density }} == 420:
+                  assert any(abs(s["viewportWidth"] - round(s["viewportWidth"])) > .05 for s in samples if s.get("ready")), "Fractional CSS viewport was not exercised"
+          for stem in ("reader-formatting-live-live-panel", "reader-formatting-live-narrow-panel", "reader-formatting-live-applied-article", "reader-formatting-fonts-modal-fonts-and-modal"):
+              images = list(root.rglob(f"newspaper-{stem}-*.png"))
+              assert len(images) == 1, f"Missing native screenshot: {stem}"
+              data = images[0].read_bytes()
+              assert data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) > 100
+              assert struct.unpack(">II", data[16:24]) == tuple(map(int, "${{ matrix.size }}".split("x")))
+          PYTHON
+            if [ "$test_result" -ne 0 ] || [ "$validation" -ne 0 ]; then result=1; fi
+          done
+          # Persistence is not emulated by recomposition: write through the real Apply action,
+          # stop the application, and assert the settings in a different instrumentation PID.
+          if [ "${{ matrix.name }}" = phone ]; then
+            adb shell settings put system font_scale 1.0
+            # AGP may uninstall a tested app at the end of connectedAndroidTest. Install once
+            # and invoke both instrumentation phases directly so its private DataStore survives.
+            mapfile -t app_apks < <(find app/build/outputs/apk/github/debug -maxdepth 1 -name '*.apk')
+            mapfile -t test_apks < <(find app/build/outputs/apk/androidTest/github/debug -maxdepth 1 -name '*.apk')
+            test "${#app_apks[@]}" -eq 1
+            test "${#test_apks[@]}" -eq 1
+            adb install -r "${app_apks[0]}"
+            adb install -r "${test_apks[0]}"
+            for phase in seed restore; do
+              adb shell am force-stop me.ash.reader
+              destination="reader-formatting-evidence/process-$phase"
+              mkdir -p "$destination"
+              adb shell am instrument -w -r \
+                -e class me.ash.reader.ui.page.home.reading.EInkReaderFormattingUiTest#appliedFormattingSurvivesARealInstrumentationProcessRestart \
+                -e formattingPersistencePhase "$phase" \
+                -e additionalTestOutputDir "/sdcard/Android/media/me.ash.reader/reader-formatting-process-$phase" \
+                me.ash.reader.test/androidx.test.runner.AndroidJUnitRunner | tee "$destination/instrumentation.txt"
+              adb pull "/sdcard/Android/media/me.ash.reader/reader-formatting-process-$phase" "$destination/native" || result=1
+              adb logcat -d > "$destination/logcat.txt"
+              if ! grep -Eq 'OK \(1 test\)' "$destination/instrumentation.txt"; then result=1; fi
+              if grep -Eq 'FAILURES!!!|INSTRUMENTATION_FAILED|shortMsg=' "$destination/instrumentation.txt"; then result=1; fi
+            done
+            python3 - <<'PYTHON' || result=1
+          import json, pathlib
+          root = pathlib.Path("reader-formatting-evidence")
+          seed = list((root/"process-seed").rglob("reader-formatting-persistence-seed.json"))
+          restored = list((root/"process-restore").rglob("reader-formatting-persistence-restore.json"))
+          assert len(seed) == len(restored) == 1
+          a, b = (json.loads(paths[0].read_text()) for paths in (seed, restored))
+          assert a["pid"] != b["pid"], "Persistence checks reused one process"
+          assert "fresh-process-restored" in {s["label"] for s in b["samples"]}
+          PYTHON
+          fi
+          exit "$result"
+          SCRIPT
+      - name: Test production live formatting on native Android
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          avd-name: reader-formatting
+          pre-emulator-launch-script: python3 "$RUNNER_TEMP/formatting-avd-resolution.py"
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: bash "$RUNNER_TEMP/reader-formatting-tests.sh"
+      - name: Upload native formatting evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reader-formatting-${{ matrix.name }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            reader-formatting-evidence/**
+            app/build/reports/androidTests/**
+            app/build/outputs/androidTest-results/**
+            app/build/outputs/connected_android_test_additional_output/**
+          if-no-files-found: error

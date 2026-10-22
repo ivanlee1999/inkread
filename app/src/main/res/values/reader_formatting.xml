@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="reader_formatting_title">Article style</string>
+    <string name="reader_formatting_live_draft">Live preview · Apply to save</string>
+    <string name="reader_formatting_text">Text</string>
+    <string name="reader_formatting_layout">Layout</string>
+    <string name="reader_formatting_fonts">Fonts</string>
+    <string name="reader_formatting_reset">Reset</string>
+    <string name="reader_formatting_line_height">Line height</string>
+    <string name="reader_formatting_darkness">Text darkness</string>
+    <string name="reader_formatting_darkness_hint" formatted="false">Text color only. 100% is black; this is not a screen contrast setting.</string>
+    <string name="reader_formatting_weight">Text weight</string>
+    <string name="reader_formatting_weight_hint">Higher values make text heavier. Results depend on the font.</string>
+    <string name="reader_formatting_letter_spacing">Letter spacing</string>
+    <string name="reader_formatting_word_spacing">Word spacing</string>
+    <string name="reader_formatting_images">Images</string>
+    <string name="reader_formatting_image_contrast">Image contrast</string>
+    <string name="reader_formatting_image_contrast_hint" formatted="false">Images only. 100% keeps their original contrast.</string>
+    <string name="reader_formatting_image_color">Color</string>
+    <string name="reader_formatting_image_grayscale">Grayscale</string>
+    <string name="reader_formatting_margin_left">Left margin</string>
+    <string name="reader_formatting_margin_right">Right margin</string>
+    <string name="reader_formatting_margin_top">Top margin</string>
+    <string name="reader_formatting_margin_bottom">Bottom margin</string>
+    <string name="reader_formatting_alignment">Alignment</string>
+    <string name="reader_formatting_align_start">Start</string>
+    <string name="reader_formatting_align_end">End</string>
+    <string name="reader_formatting_align_center">Center</string>
+    <string name="reader_formatting_align_justify">Justify</string>
+    <string name="reader_formatting_paragraph_gap">Paragraph gap</string>
+    <string name="reader_formatting_paragraph_indent">First-line indent</string>
+    <string name="reader_formatting_value_description">%1$s value, %2$s</string>
+    <string name="reader_formatting_decrease">Decrease %1$s</string>
+    <string name="reader_formatting_increase">Increase %1$s</string>
+    <string name="reader_formatting_range">Range %1$s to %2$s %3$s</string>
+    <string name="reader_formatting_english">English</string>
+    <string name="reader_formatting_chinese">Chinese</string>
+    <string name="reader_formatting_download_hint">Select a font to preview it. Downloads stay on this device even if you cancel.</string>
+    <string name="reader_formatting_download">Download</string>
+    <string name="reader_formatting_download_font">Download %1$s</string>
+    <string name="reader_formatting_downloading">Downloading…</string>
+    <string name="reader_formatting_not_downloaded">Not downloaded</string>
+    <string name="reader_formatting_font_missing_selected">Not downloaded · Using system fallback</string>
+    <string name="reader_formatting_system_font">System font · Available offline</string>
+    <string name="reader_formatting_downloaded">Downloaded · Available offline</string>
+    <string name="reader_formatting_download_failed">Could not download this font. Check your connection and try again.</string>
+    <string name="reader_formatting_saving">Saving…</string>
+    <string name="reader_formatting_label_unit">%1$s (%2$s)</string>
+</resources>

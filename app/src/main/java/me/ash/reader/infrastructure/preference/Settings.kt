@@ -87,6 +87,9 @@ data class Settings(
     // Languages
     val languages: LanguagesPreference = LanguagesPreference.default,
 
+    // Null until a real DataStore snapshot is loaded, never a synthetic default draft.
+    val readerFormatting: ReaderFormatting? = null,
+
     // E-Ink
     val einkMode: EInkModePreference = EInkModePreference.default,
     val einkFontSize: Int = EInkFontSizePreference.default,

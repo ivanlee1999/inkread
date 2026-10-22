@@ -34,7 +34,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import me.ash.reader.infrastructure.android.dispatchEInkVolumeKey
 import me.ash.reader.infrastructure.preference.EInkModePreference
-import me.ash.reader.infrastructure.preference.LocalEInkFontSize
+import me.ash.reader.infrastructure.preference.LocalReaderFormatting
+import me.ash.reader.infrastructure.preference.ReaderFormatting
 import me.ash.reader.infrastructure.preference.LocalEInkMode
 import me.ash.reader.ui.page.home.NativePageDensityCapture
 import me.ash.reader.ui.theme.AppTheme
@@ -69,10 +70,33 @@ class EInkReaderAlignmentUiTest {
     private val fontSize = mutableStateOf(18)
     private val viewportFraction = mutableStateOf(1f)
 
+    @Test fun anchorVisibilityDistinguishesFontOverhangFromActualClipping() {
+        // Recorded fractional-density / font-scale 1.6 geometry: the first
+        // paragraph starts at 24px, but its normal font-metric rect starts at
+        // 21.33px. That complete glyph is visible, not clipped by the line box.
+        val value = JSONObject("""
+            {"viewportWidth":412.19049,"viewportHeight":888,
+             "contentFrame":{"left":24,"right":388.19,"top":24,"bottom":864},
+             "anchorGlyph":{"left":24,"right":53.29762,"top":21.33333,"bottom":54.85715,"width":29.29762,"height":33.52382},
+             "anchorParagraphFragment":{"left":24,"right":388.19049,"top":24,"bottom":455.96429}}
+        """.trimIndent())
+        assertTrue("Normal font overhang is visible inside the real clip boundary", anchorGlyphVisible(value))
+        for ((key, outside) in mapOf("left" to -2.0, "right" to 414.2, "top" to -2.0, "bottom" to 890.0)) {
+            val clipped = JSONObject(value.toString())
+            clipped.getJSONObject("anchorGlyph").put(key, outside)
+            assertEquals("A glyph clipped at $key must fail", false, anchorGlyphVisible(clipped))
+        }
+        for ((key, outside) in mapOf("left" to 22.0, "right" to 390.2, "top" to 22.0, "bottom" to 866.0)) {
+            val misplaced = JSONObject(value.toString())
+            misplaced.getJSONObject("anchorParagraphFragment").put(key, outside)
+            assertEquals("A paragraph outside the $key inset must fail", false, anchorGlyphVisible(misplaced))
+        }
+    }
+
     @Test fun cjkPagesStayCenteredThroughRepeatedTurnsImagesAndReflow() {
         compose.setContent {
             CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON,
-                LocalEInkFontSize provides fontSize.value) {
+                LocalReaderFormatting provides ReaderFormatting.Default.copy(fontSize = fontSize.value)) {
                 AppTheme(useDarkTheme = false) {
                     Box(Modifier.fillMaxSize()) {
                         EInkPaginatedContent(
@@ -108,18 +132,46 @@ class EInkReaderAlignmentUiTest {
             traverse("tap-before-image", volume = false)
             repeat(12) { turn(forward = true, volume = true) }
             record("before-late-image", screenshot = true)
+            val beforeLateImage = geometry()
+            assertTrue("The late-image fixture must start with a real visible text anchor", anchorGlyphVisible(beforeLateImage))
+            val lateImageObserverReady = CountDownLatch(1)
+            instrumentation.runOnMainSync {
+                webView().evaluateJavascript("""
+                    window.__inkreadAlignmentReflowSettled = false;
+                    document.getElementById('late-image').addEventListener('load', function() {
+                        requestAnimationFrame(function() { requestAnimationFrame(function() {
+                            window.__inkreadAlignmentReflowSettled = true;
+                        }); });
+                    }, {once:true});
+                """.trimIndent()) { lateImageObserverReady.countDown() }
+            }
+            assertTrue("The load observer must be installed before releasing the image", lateImageObserverReady.await(10, TimeUnit.SECONDS))
             releaseLateImage.countDown()
             assertTrue("The ordinary JPEG response must be delivered", lateDelivered.await(10, TimeUnit.SECONDS))
             compose.waitUntil(15_000) {
                 geometry().getJSONObject("lateImage").let { it.getBoolean("complete") && it.getInt("naturalWidth") > 0 }
             }
+            // Image completion can precede the queued anchor-preserving reflow.
+            // Wait for the DOM/native page state and actual anchored glyph, not a
+            // raw page index that legitimately changes when an earlier photo grows.
+            compose.waitUntil(10_000) {
+                geometry().let { value ->
+                    value.optBoolean("reflowSettled") && value.getInt("currentPage") + 1 == page.get() &&
+                        value.getInt("totalPages") == count.get() && anchorGlyphVisible(value)
+                }
+            }
             awaitVisualFrame()
+            val afterLateImage = geometry()
+            assertSameLogicalAnchor(beforeLateImage, afterLateImage)
             record("after-late-image", screenshot = true)
-            repeat(12) { turn(forward = false, volume = true); record("image-back-$it") }
+            val imageReturnDistance = page.get() - 1
+            assertTrue("Late-image return must retain at least 12 backwards page turns", imageReturnDistance >= 12)
+            repeat(imageReturnDistance) { turn(forward = false, volume = true); record("image-back-$it") }
+            assertEquals("Late-image traversal must return to the actual first page", 1, page.get())
             traverse("volume-after-image", volume = true)
 
-            // Font preference reloads the actual production document; resizing reflows the same
-            // WebView. Both must keep the full page frame centered, not center-align paragraphs.
+            // Font preference and resizing reflow the same production document. Both must
+            // keep the full page frame centered, not center-align paragraphs.
             compose.runOnIdle { page.set(0); count.set(0); fontSize.value = 32 }
             awaitFirstPage()
             traverse("large-font", volume = true)
@@ -290,6 +342,35 @@ class EInkReaderAlignmentUiTest {
         return requireNotNull(bounds)
     }
 
+    private fun anchorGlyphVisible(value: JSONObject): Boolean {
+        val glyph = value.optJSONObject("anchorGlyph") ?: return false
+        val paragraph = value.optJSONObject("anchorParagraphFragment") ?: return false
+        val frame = value.getJSONObject("contentFrame")
+        // Range reports font metrics, not a CSS line box. With line-height:1,
+        // normal CJK ascenders extend above the first paragraph fragment. The
+        // body's WebView viewport is the real clip boundary; independently
+        // verify the measured paragraph column fragment obeys all four insets.
+        return glyph.getDouble("width") > 0 && glyph.getDouble("height") > 0 &&
+            glyph.getDouble("left") >= -1.25 &&
+            glyph.getDouble("right") <= value.getDouble("viewportWidth") + 1.25 &&
+            glyph.getDouble("top") >= -1.25 &&
+            glyph.getDouble("bottom") <= value.getDouble("viewportHeight") + 1.25 &&
+            paragraph.getDouble("left") >= frame.getDouble("left") - 1.25 &&
+            paragraph.getDouble("right") <= frame.getDouble("right") + 1.25 &&
+            paragraph.getDouble("top") >= frame.getDouble("top") - 1.25 &&
+            paragraph.getDouble("bottom") <= frame.getDouble("bottom") + 1.25
+    }
+
+    private fun assertSameLogicalAnchor(before: JSONObject, after: JSONObject) {
+        assertEquals("Late images must not reload the article", before.getString("documentId"), after.getString("documentId"))
+        val expected = before.getJSONObject("anchor")
+        val actual = after.getJSONObject("anchor")
+        assertEquals("Late images must preserve the exact DOM text node", expected.getInt("node"), actual.getInt("node"))
+        assertEquals("Late images must preserve the exact UTF-16 text offset", expected.getInt("offset"), actual.getInt("offset"))
+        assertEquals("The anchored text must remain unchanged", before.getString("anchorText"), after.getString("anchorText"))
+        assertTrue("The same anchored glyph must remain visible after late-image reflow", anchorGlyphVisible(after))
+    }
+
     private fun geometry(): JSONObject = requireNotNull(readGeometry()) { "Reader document is not ready for geometry capture" }
 
     private fun readGeometry(): JSONObject? {
@@ -298,8 +379,8 @@ class EInkReaderAlignmentUiTest {
         instrumentation.runOnMainSync {
             webView().evaluateJavascript("""
                 (function() {
-                    if (!document.body || !document.querySelector('h1') || typeof _pageStride === 'undefined') return null;
-                    var body = document.body, css = getComputedStyle(body);
+                    if (!document.body || !document.querySelector('h1') || !document.getElementById('eink-content') || typeof _pageStride === 'undefined') return null;
+                    var body = document.body, frame = document.getElementById('eink-content'), css = getComputedStyle(frame);
                     var width = document.documentElement.getBoundingClientRect().width;
                     function visible(r) { return r.width > 0 && r.height > 0 && r.right > 1 && r.left < width - 1; }
                     function rect(r) { return {left:r.left, right:r.right, top:r.top, bottom:r.bottom, width:r.width}; }
@@ -312,11 +393,55 @@ class EInkReaderAlignmentUiTest {
                     var images = Array.from(document.images).filter(function(i) { return visible(i.getBoundingClientRect()); }).map(function(i) {
                         var r = rect(i.getBoundingClientRect()); r.naturalWidth = i.naturalWidth; r.complete = i.complete; return r;
                     });
+                    var anchor = window.InkReadFormatting ? InkReadFormatting.currentAnchor() : null;
+                    var anchorGlyph = null, anchorText = null, anchorParagraphFragment = null;
+                    // Independently resolve the canonical node/UTF-16 offset and
+                    // measure the real glyph with Range; do not trust a runtime
+                    // visibility flag or merely compare page numbers.
+                    if (anchor && typeof anchor.node === 'number') {
+                        var walker = document.createTreeWalker(frame, NodeFilter.SHOW_TEXT, {
+                            acceptNode:function(node) {
+                                return node.parentElement && !/^(SCRIPT|STYLE|NOSCRIPT)$/.test(node.parentElement.tagName) && /\S/.test(node.data)
+                                    ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+                            }
+                        });
+                        var textNodes = [], textNode;
+                        while ((textNode = walker.nextNode())) textNodes.push(textNode);
+                        var anchoredNode = textNodes[anchor.node];
+                        if (anchoredNode && anchor.offset >= 0 && anchor.offset < anchoredNode.length) {
+                            var range = document.createRange();
+                            range.setStart(anchoredNode, anchor.offset);
+                            range.setEnd(anchoredNode, anchor.offset + 1);
+                            var glyph = range.getBoundingClientRect();
+                            anchorGlyph = rect(glyph); anchorGlyph.height = glyph.height;
+                            anchorText = anchoredNode.data.slice(anchor.offset, anchor.offset + 24);
+                            // This is a measured block fragment, NOT a derived
+                            // line box. Select the anchored paragraph's actual
+                            // current-column fragment using the glyph midpoint.
+                            var paragraph = anchoredNode.parentElement.closest('p.alignment-text');
+                            if (paragraph) {
+                                var x = (glyph.left + glyph.right) / 2, y = (glyph.top + glyph.bottom) / 2;
+                                var fragment = Array.from(paragraph.getClientRects()).find(function(box) {
+                                    return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom;
+                                });
+                                if (fragment) anchorParagraphFragment = rect(fragment);
+                            }
+                        }
+                    }
                     var late = document.getElementById('late-image');
                     var ordinary = document.getElementById('ordinary-image');
-                    return JSON.stringify({viewportWidth:width, innerWidth:innerWidth, devicePixelRatio:devicePixelRatio,
+                    return JSON.stringify({viewportWidth:width, viewportHeight:innerHeight, innerWidth:innerWidth, devicePixelRatio:devicePixelRatio,
+                        reflowSettled:window.__inkreadAlignmentReflowSettled === true,
+                        // The column container is translated for the current page;
+                        // its untransformed CSS geometry is the visible page inset.
+                        contentFrame:{left:parseFloat(css.left), top:parseFloat(css.top),
+                            right:parseFloat(css.left)+parseFloat(css.width), bottom:parseFloat(css.top)+parseFloat(css.height)},
+                        documentId:window.InkReadFormatting ? InkReadFormatting.documentId : null,
+                        anchor:anchor, anchorGlyph:anchorGlyph, anchorText:anchorText,
+                        anchorParagraphFragment:anchorParagraphFragment,
                         bodyWidth:body.getBoundingClientRect().width, columnWidth:css.columnWidth, columnGap:css.columnGap,
-                        paddingLeft:parseFloat(css.paddingLeft), paddingRight:parseFloat(css.paddingRight),
+                        paddingLeft:parseFloat(css.left), paddingRight:width-parseFloat(css.left)-parseFloat(css.width),
+                        contentFrameWidth:parseFloat(css.width), contentFrameHeight:parseFloat(css.height),
                         scrollX:scrollX, scrollY:scrollY, scrollWidth:body.scrollWidth, stride:_pageStride,
                         currentPage:_currentPage, totalPages:_totalPages, ready:_didFinishInitialPagination, transform:css.transform,
                         fontSize:css.fontSize, title:document.querySelector('h1').textContent,
@@ -378,8 +503,8 @@ class EInkReaderAlignmentUiTest {
         }
     }
 
-    // Keep >=13 pages on the widest tablet, but stay below the production 500-page sanity
-    // cap on phones at 32px x system-font-1.6 after resizing. The same content is retained
+    // Keep >=13 pages on the widest tablet without an unnecessarily huge phone fixture
+    // at 32px x system-font-1.6 after resizing. The same content is retained
     // throughout each run's font changes, image loads and article swipe round trips.
     private fun paragraphCount(): Int = if (instrumentation.targetContext.resources.configuration.screenWidthDp >= 600) 180 else 100
 

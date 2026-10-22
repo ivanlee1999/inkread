@@ -8,7 +8,6 @@ import kotlinx.coroutines.launch
 import me.ash.reader.ui.ext.DataStoreKey
 import me.ash.reader.ui.ext.DataStoreKey.Companion.readingTextHorizontalPadding
 import me.ash.reader.ui.ext.dataStore
-import me.ash.reader.ui.ext.put
 
 val LocalReadingTextHorizontalPadding =
     compositionLocalOf { ReadingTextHorizontalPaddingPreference.default }
@@ -19,7 +18,7 @@ object ReadingTextHorizontalPaddingPreference {
 
     fun put(context: Context, scope: CoroutineScope, value: Int) {
         scope.launch {
-            context.dataStore.put(DataStoreKey.readingTextHorizontalPadding, value)
+            context.dataStore.saveReaderHorizontalPadding(value)
         }
     }
 
