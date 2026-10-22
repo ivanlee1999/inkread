@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.MenuOpen
+import androidx.compose.material.icons.outlined.BookmarkAdd
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.rounded.Close
@@ -57,6 +58,7 @@ fun TopBar(
     onClick: (() -> Unit)? = null,
     onNavButtonClick: (NavigationAction) -> Unit = {},
     onNavigateToStylePage: () -> Unit,
+    onSaveArticle: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val sharedContent = LocalSharedContent.current
@@ -113,6 +115,14 @@ fun TopBar(
                         }
                     },
                     actions = {
+                        if (onSaveArticle != null) {
+                            FeedbackIconButton(
+                                modifier = Modifier.size(24.dp),
+                                imageVector = Icons.Outlined.BookmarkAdd,
+                                contentDescription = stringResource(R.string.saved_rss_save_action),
+                                onClick = onSaveArticle,
+                            )
+                        }
                         FeedbackIconButton(
                             modifier = Modifier.size(22.dp),
                             imageVector = Icons.Outlined.Palette,

@@ -44,6 +44,23 @@ class EInkPageNavigationControllerTest {
     }
 
     @Test
+    fun `ready adopts the restored JS page before replaying queued keys`() {
+        controller.handleNavigation(VolumeKeyEvent.NEXT)
+        controller.onPaginationReady(20, restoredPage = 12)
+        assertEquals(13, controller.currentPage)
+        assertEquals(listOf(13 to 20, 14 to 20), pageChanges)
+        assertEquals(listOf(13), pagesApplied)
+    }
+
+    @Test
+    fun `restored initial page is clamped and never echoed as page zero`() {
+        controller.onPaginationReady(5, restoredPage = 99)
+        assertEquals(4, controller.currentPage)
+        assertEquals(listOf(5 to 5), pageChanges)
+        assertTrue(pagesApplied.isEmpty())
+    }
+
+    @Test
     fun `NEXT increments page when ready`() {
         controller.onPaginationReady(5)
 

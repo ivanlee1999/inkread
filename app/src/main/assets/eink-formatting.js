@@ -8,12 +8,53 @@ var _didFinishInitialPagination = false;
     var resizeTimer = 0, reflowFrame = 0, destroyed = false;
     var margins = { left: 0, right: 0, top: 0, bottom: 0 };
     var fontCss = '', pendingAnchor = null, columnProbe = null;
+    var readingIdentity = window._inkreadReadingIdentity || null;
 
     function notify(name) {
         try {
-            if (name === 'ready') Android.onInitialPaginationReady(window._inkreadGeneration, _totalPages);
+            if (name === 'ready') Android.onInitialPaginationReady(window._inkreadGeneration, _totalPages, _currentPage);
             else Android.onRepaginated(window._inkreadGeneration, _totalPages, _currentPage);
         } catch (ignored) {}
+    }
+    // Persist immutable DOM positions, never CSS page numbers. The identity includes
+    // storage revision plus rendered metadata/body fingerprint, not typography.
+    function validAnchor(value) {
+        if (!value || typeof value.offset !== 'number' || value.offset < 0 || value.offset % 1) return false;
+        if (value.element !== undefined) return typeof value.element === 'number' &&
+            value.element >= 0 && value.element % 1 === 0 && !!media[value.element] && value.offset === 0;
+        var node = nodes[value.node];
+        return typeof value.node === 'number' && value.node >= 0 && value.node % 1 === 0 &&
+            !!node && value.offset < node.length &&
+            !(value.offset > 0 && /[\uDC00-\uDFFF]/.test(node.data.charAt(value.offset)));
+    }
+    function exportReadingAnchor() {
+        if (!readingIdentity || !_didFinishInitialPagination || destroyed) return null;
+        var value = sessionOpen ? sessionAnchor : anchor;
+        if (!validAnchor(value)) return null;
+        return JSON.stringify({ version: 1, itemId: readingIdentity.itemId,
+            contentRevision: readingIdentity.contentRevision,
+            documentFingerprint: readingIdentity.documentFingerprint, anchor: value });
+    }
+    function publishReadingAnchor() {
+        var json = exportReadingAnchor();
+        if (json) try { Android.onReadingAnchor(window._inkreadGeneration,
+            readingIdentity.itemId, readingIdentity.contentRevision, json); } catch (ignored) {}
+        return json;
+    }
+    function initialReadingAnchor() {
+        var raw = window._inkreadInitialReadingAnchor, status = 'new', value = null;
+        if (readingIdentity && raw) {
+            try {
+                var saved = JSON.parse(raw);
+                if (saved.version !== 1 || saved.itemId !== readingIdentity.itemId ||
+                    saved.contentRevision !== readingIdentity.contentRevision ||
+                    saved.documentFingerprint !== readingIdentity.documentFingerprint) status = 'changed';
+                else if (validAnchor(saved.anchor)) { value = saved.anchor; status = 'restored'; }
+                else status = 'invalid';
+            } catch (ignored) { status = 'invalid'; }
+        }
+        if (readingIdentity) try { Android.onReadingAnchorRestore(window._inkreadGeneration, status); } catch (ignored) {}
+        return value;
     }
     function textRange(node, start, end) {
         var range = document.createRange();
@@ -89,7 +130,10 @@ var _didFinishInitialPagination = false;
         placePage(n);
         // Native onRepaginated echoes the same page. It must not replace the
         // canonical anchor with a different first word on that reflowed page.
-        if (previous !== _currentPage || !anchor) anchor = captureAnchor();
+        if (previous !== _currentPage || !anchor) {
+            anchor = captureAnchor();
+            publishReadingAnchor();
+        }
     };
     function layoutViewport() {
         // Never round the CSS viewport: integer innerWidth drifts at 420dpi.
@@ -170,6 +214,7 @@ var _didFinishInitialPagination = false;
         placePage(rect ? Math.floor(Math.max(0, rect.left - margins.left + .5) / _pageStride) : _currentPage);
         anchor = value || captureAnchor();
         notify(reason || 'reflow');
+        publishReadingAnchor();
     }
     function scheduleReflow() {
         if (!_didFinishInitialPagination || destroyed) return;
@@ -215,6 +260,16 @@ var _didFinishInitialPagination = false;
         documentId: window._inkreadGeneration,
         captureAnchor: captureAnchor,
         currentAnchor: function () { return anchor; },
+        exportReadingAnchor: exportReadingAnchor,
+        refreshLocalImages: function (token) {
+            if (!frame || destroyed) return;
+            var images = frame.querySelectorAll('img[src^="https://inkread.local/saved-library-assets/"]');
+            for (var i = 0; i < images.length; i++) {
+                var src = images[i].getAttribute('src').split('?')[0];
+                images[i].setAttribute('src', src + '?revision=' + encodeURIComponent(token));
+            }
+        },
+        publishReadingAnchor: publishReadingAnchor,
         effectiveMargins: function () { return margins; },
         beginSession: function () {
             if (!sessionOpen) {
@@ -239,8 +294,12 @@ var _didFinishInitialPagination = false;
         _didFinishInitialPagination = true;
         layoutViewport();
         recountPages();
-        placePage(0);
-        anchor = captureAnchor();
+        var restored = initialReadingAnchor();
+        var rect = anchorRect(restored);
+        placePage(rect ? Math.floor(Math.max(0, rect.left - margins.left + .5) / _pageStride) : 0);
+        anchor = restored || captureAnchor();
+        // Do not emit a transient initial page-zero anchor before restore. Native
+        // initializes its controller from this already-restored page.
         frame.style.visibility = 'visible';
         notify('ready');
     }
@@ -273,7 +332,11 @@ var _didFinishInitialPagination = false;
         resizeTimer = setTimeout(scheduleReflow, 80);
     }
     window.addEventListener('resize', onResize);
+    document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'hidden') publishReadingAnchor();
+    });
     window.addEventListener('pagehide', function () {
+        publishReadingAnchor();
         destroyed = true;
         clearTimeout(resizeTimer);
         if (reflowFrame) cancelAnimationFrame(reflowFrame);

@@ -6,6 +6,10 @@ import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.platform.testTag
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -104,6 +108,7 @@ fun FeedsPage(
     navigationToFlow: () -> Unit,
     navigateToAccountList: () -> Unit,
     navigateToAccountDetail: (Int) -> Unit,
+    navigateToSavedLibrary: () -> Unit = {},
 ) {
     var accountTabVisible by remember { mutableStateOf(false) }
 
@@ -236,6 +241,13 @@ fun FeedsPage(
                     }
                 },
                 actions = {
+                    Box(
+                        Modifier.heightIn(min = 48.dp).testTag("feeds-open-saved")
+                            .clickable(role = Role.Button, indication = null,
+                                interactionSource = remember { MutableInteractionSource() },
+                                onClick = navigateToSavedLibrary).padding(horizontal = 16.dp),
+                        contentAlignment = Alignment.Center,
+                    ) { Text("Saved", style = MaterialTheme.typography.labelLarge) }
                     if (subscribeViewModel.rssService.get().addSubscription) {
                         FeedbackIconButton(
                             imageVector = Icons.Rounded.Add,

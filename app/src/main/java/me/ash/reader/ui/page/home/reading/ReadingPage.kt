@@ -12,6 +12,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -61,6 +62,8 @@ import me.ash.reader.ui.ext.openURL
 import me.ash.reader.ui.ext.showToast
 import me.ash.reader.ui.page.adaptive.ArticleListReaderViewModel
 import me.ash.reader.ui.page.adaptive.NavigationAction
+import me.ash.reader.ui.page.library.RssLibrarySnapshot
+import me.ash.reader.ui.page.library.SaveRssToLibraryViewModel
 import me.ash.reader.ui.page.adaptive.ReaderState
 import me.ash.reader.ui.page.home.reading.tts.TtsButton
 import me.ash.reader.ui.theme.isEInkMode
@@ -77,6 +80,7 @@ fun ReadingPage(
     onLoadArticle: (String, Int) -> Unit,
     onNavAction: (NavigationAction) -> Unit,
     onNavigateToStylePage: () -> Unit,
+    saveToLibraryViewModel: SaveRssToLibraryViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
     val hapticFeedback = LocalHapticFeedback.current
@@ -85,6 +89,31 @@ fun ReadingPage(
     val isPullToSwitchArticleEnabled = LocalPullToSwitchArticle.current.value
     val readingUiState = viewModel.readingUiState.collectAsStateValue()
     val readerState = viewModel.readerStateStateFlow.collectAsStateValue()
+    LaunchedEffect(saveToLibraryViewModel) {
+        saveToLibraryViewModel.events.collect { result ->
+            context.showToast(context.getString(
+                if (result.saved) R.string.saved_rss_save_success else R.string.saved_rss_save_failed
+            ))
+        }
+    }
+    val saveArticle: (() -> Unit)? = readerState.link?.takeIf(String::isNotBlank)?.let { url ->
+        {
+            // Error messages are never stored as article HTML. A loading/failed
+            // article can still be captured as a URL for the durable download queue.
+            val html = when (val content = readerState.content) {
+                is ReaderState.FullContent -> content.content
+                is ReaderState.Description -> content.content
+                else -> null
+            }
+            saveToLibraryViewModel.save(RssLibrarySnapshot(
+                url = url,
+                title = readerState.title.orEmpty(),
+                author = readerState.author,
+                sourceName = readerState.feedName,
+                html = html,
+            ))
+        }
+    }
     // Keep reader ownership during loading, so keys cannot turn or mark the list
     // underneath it. The ready content collects without a second registration.
     val volumeKeyOwner = remember(readerState.articleId) { Any() }
@@ -128,6 +157,7 @@ fun ReadingPage(
                         navigationAction = navigationAction,
                         onNavButtonClick = onNavAction,
                         onNavigateToStylePage = onNavigateToStylePage,
+                        onSaveArticle = saveArticle,
                     )
                 }
 
@@ -189,6 +219,7 @@ fun ReadingPage(
                                     }
                                 } else null,
                                 onNavigateToStylePage = onNavigateToStylePage,
+                                onSaveArticle = saveArticle,
                                 onBack = { onNavAction(NavigationAction.Close) },
                                 currentArticleIndex = readerState.articleOrdinal,
                                 totalArticleCount = readerState.totalArticleCount,
