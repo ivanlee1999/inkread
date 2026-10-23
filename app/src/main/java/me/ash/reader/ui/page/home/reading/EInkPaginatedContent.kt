@@ -120,7 +120,8 @@ fun EInkPaginatedContent(
     volumeKeyOwner: Any? = null,
     onBack: (() -> Unit)? = null,
     onSaveArticle: (() -> Unit)? = null,
-    onContentSource: (() -> Unit)? = null,
+    onContentSource: ((canReplaceDocument: () -> Boolean) -> Unit)? = null,
+    onDocumentInteractionStarted: (() -> Unit)? = null,
     onLibraryActions: (() -> Unit)? = null,
     readingContentRevision: String? = null,
     initialReadingAnchor: String? = null,
@@ -174,6 +175,7 @@ fun EInkPaginatedContent(
     val currentSelectionMode by rememberUpdatedState(selectionActive)
     val currentAnnotationEditing by rememberUpdatedState(annotationEditing)
     val currentOnSelectionModeChange by rememberUpdatedState(onSelectionModeChange)
+    val currentOnDocumentInteractionStarted by rememberUpdatedState(onDocumentInteractionStarted)
     val currentOnCreateAnnotation by rememberUpdatedState(onCreateAnnotation)
     val currentOnAnnotationLocationsChanged by rememberUpdatedState(onAnnotationLocationsChanged)
     val currentOnAnnotationJumpResult by rememberUpdatedState(onAnnotationJumpResult)
@@ -385,6 +387,10 @@ fun EInkPaginatedContent(
     fun selectionOwnsInput(): Boolean = annotationCapture.hasPending || nativeSelectionActive || currentSelectionMode ||
         (webViewRef.value as? EInkAnnotationWebView)?.hasActiveSelection == true
 
+    fun canReplaceDocument(): Boolean = isInitialPaginationReadyState.value && !selectionOwnsInput() &&
+        !annotationCapturePending && !formattingOpening && formattingDraft == null &&
+        !currentEditingFormatting && !currentAnnotationEditing
+
     fun finishReaderSelection() {
         nativeSelectionActive = false
         annotationCapture.onEvent(EInkAnnotationCapture.Event.EXPLICIT_DISMISSAL)
@@ -492,6 +498,7 @@ fun EInkPaginatedContent(
         val view = webViewRef.value ?: return
         val generation = documentGeneration
         val snapshot = committedFormatting ?: persistedFormatting
+        currentOnDocumentInteractionStarted?.invoke()
         formattingOpening = true
         // Capture the anchor before reserving panel space changes the viewport.
         view.evaluateJavascript("window.InkReadFormatting && InkReadFormatting.beginSession()") { result ->
@@ -602,6 +609,7 @@ fun EInkPaginatedContent(
                                 }
                             }
                             onSelectionStarted = {
+                                currentOnDocumentInteractionStarted?.invoke()
                                 nativeSelectionActive = true
                                 currentOnSelectionModeChange?.invoke(true)
                                 // Queue this before any possible menu action. Capture also
@@ -628,6 +636,7 @@ fun EInkPaginatedContent(
                                 if (currentOnCreateAnnotation == null || !selectionOwnsInput()) return@annotation
                                 val view = this
                                 val ticket = annotationCapture.begin(currentGeneration.value, view, addNote) ?: return@annotation
+                                currentOnDocumentInteractionStarted?.invoke()
                                 annotationCapturePending = true
                                 val generation = ticket.generation
                                 val timeout = coroutineScope.launch {
@@ -898,14 +907,27 @@ fun EInkPaginatedContent(
                         currentArticleIndex = currentArticleIndex,
                         totalArticleCount = totalArticleCount,
                         onBack = onBack?.let { { if (selectionOwnsInput()) finishReaderSelection() else exitReader() } },
-                        onContentSource = onContentSource?.let { action -> { if (!selectionOwnsInput() && !annotationCapturePending) action() } },
+                        onContentSource = onContentSource?.let { action -> {
+                            if (canReplaceDocument()) {
+                                val generation = currentGeneration.value
+                                currentOnDocumentInteractionStarted?.invoke()
+                                // Recheck live ownership when a dialog choice is clicked as well.
+                                action { generation == currentGeneration.value && canReplaceDocument() }
+                            }
+                        } },
                         onSaveArticle = onSaveArticle?.let { action -> { if (!selectionOwnsInput() && !annotationCapturePending) action() } },
-                        onLibraryActions = onLibraryActions?.let { action -> { if (!selectionOwnsInput() && !annotationCapturePending) action() } },
+                        onLibraryActions = onLibraryActions?.let { action -> { if (canReplaceDocument()) {
+                            currentOnDocumentInteractionStarted?.invoke(); action()
+                        } } },
                         onFormattingClick = if (isInitialPaginationReady) ::openFormatting else null,
                         onSelectText = if (isInitialPaginationReady && onCreateAnnotation != null && onSelectionModeChange != null) {
-                            { if (!selectionOwnsInput() && !annotationCapturePending) onSelectionModeChange(true) }
+                            { if (!selectionOwnsInput() && !annotationCapturePending) {
+                                currentOnDocumentInteractionStarted?.invoke(); onSelectionModeChange(true)
+                            } }
                         } else null,
-                        onAnnotationsClick = onAnnotationsClick?.let { action -> { if (!selectionOwnsInput() && !annotationCapturePending) { bottomBarVisible = false; action() } } },
+                        onAnnotationsClick = onAnnotationsClick?.let { action -> { if (canReplaceDocument()) {
+                            currentOnDocumentInteractionStarted?.invoke(); bottomBarVisible = false; action()
+                        } } },
                     )
                     // Reuse only an already-open control bar's measured space.
                     // Default selection adds no bar and covers no article text.

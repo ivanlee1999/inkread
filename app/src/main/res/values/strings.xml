@@ -428,4 +428,5 @@
     <string name="reader_content_try_full">Use full article (keep feed if better)</string>
     <string name="reader_content_refresh">Fetch full article again</string>
     <string name="reader_content_previous_kept">Refresh failed. Kept the already-open article.</string>
+    <string name="reader_content_update_ready">New content is ready. Choose a source below to update the article.</string>
 </resources>

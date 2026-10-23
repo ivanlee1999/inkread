@@ -36,7 +36,7 @@ class ReaderCacheHelperTest {
         } finally { executor.shutdownNow() }
     }
 
-    @Test fun `switching accounts during fetch keeps content in its original account`() = runBlocking {
+    @Test fun `switching accounts during fetch keeps content in its original account`() = runBlocking<Unit> {
         val accounts: AccountService = mock()
         var current = 1
         whenever(accounts.getCurrentAccountId()).thenAnswer { current }
@@ -49,7 +49,7 @@ class ReaderCacheHelperTest {
         assertEquals(0, temporary.root.walk().count { it.extension == "tmp" })
     }
 
-    @Test fun `concurrent requests fetch once and never publish partial content`() = runBlocking {
+    @Test fun `concurrent requests fetch once and never publish partial content`() = runBlocking<Unit> {
         val rss: RssHelper = mock()
         val content = "<p>${"x".repeat(200_000)}</p>"
         whenever(rss.parseFullContent(any(), any())).thenReturn(content)
@@ -60,7 +60,7 @@ class ReaderCacheHelperTest {
         assertEquals(content, cache.readFullContent("1:article", 1).getOrThrow())
     }
 
-    @Test fun `explicit refresh replaces a cached extraction only on success`() = runBlocking {
+    @Test fun `explicit refresh replaces a cached extraction only on success`() = runBlocking<Unit> {
         val rss: RssHelper = mock()
         whenever(rss.parseFullContent(any(), any())).thenReturn("old content", "new content")
         val cache = helper(rss)
@@ -70,7 +70,7 @@ class ReaderCacheHelperTest {
         verify(rss, times(2)).parseFullContent(any(), any())
     }
 
-    @Test fun `worse refresh does not overwrite useful offline extraction`() = runBlocking {
+    @Test fun `worse refresh does not overwrite useful offline extraction`() = runBlocking<Unit> {
         val rss: RssHelper = mock()
         val previous = "A complete offline article with useful content and details."
         whenever(rss.parseFullContent(any(), any())).thenReturn(previous, "Oops")
@@ -80,7 +80,7 @@ class ReaderCacheHelperTest {
         assertEquals(previous, cache.readFullContent("1:article", 1).getOrThrow())
     }
 
-    @Test fun `failed explicit refresh retains offline cache`() = runBlocking {
+    @Test fun `failed explicit refresh retains offline cache`() = runBlocking<Unit> {
         val rss: RssHelper = mock()
         whenever(rss.parseFullContent(any(), any())).thenReturn("offline article")
         val cache = helper(rss)
@@ -90,7 +90,7 @@ class ReaderCacheHelperTest {
         assertEquals("offline article", cache.readFullContent("1:article", 1).getOrThrow())
     }
 
-    @Test fun `empty cache is refetched and deletion returns the actual result`() = runBlocking {
+    @Test fun `empty cache is refetched and deletion returns the actual result`() = runBlocking<Unit> {
         val rss: RssHelper = mock()
         whenever(rss.parseFullContent(any(), any())).thenReturn("content")
         val file = temporary.root.resolve("readability/1/${readerCacheFileName("1:article")}")
@@ -103,7 +103,7 @@ class ReaderCacheHelperTest {
         assertFalse(cache.deleteCacheFor("1:article", 1))
     }
 
-    @Test fun `cancellation propagates instead of becoming a cached error`() = runBlocking {
+    @Test fun `cancellation propagates instead of becoming a cached error`() = runBlocking<Unit> {
         val rss: RssHelper = mock()
         whenever(rss.parseFullContent(any(), any())).thenThrow(CancellationException("navigation"))
         val cache = helper(rss)

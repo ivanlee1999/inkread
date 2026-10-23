@@ -251,6 +251,17 @@ class ArticleListReaderViewModelTest {
         assertEquals(ReaderState.FullContent(body, refreshFailed = true), fixture.viewModel.readerStateStateFlow.value.content)
     }
 
+    @Test fun `fallback and refresh notices do not change annotation document identity`() {
+        val body = "<p>The same mounted article.</p>"
+        assertEquals(ReaderState.FullContent(body).documentBody,
+            ReaderState.FullContent(body, refreshFailed = true).documentBody)
+        assertEquals(ReaderState.Description(body).documentBody,
+            ReaderState.Description(body, fallback = true).documentBody)
+        assertEquals(ReaderState.Description(body).documentBody, ReaderState.FullContent(body).documentBody)
+        assertNull(ReaderState.Loading.documentBody)
+        assertNull(ReaderState.Error("unavailable").documentBody)
+    }
+
     @Test fun `star action retains the article selected when tapped`() = runTest(dispatcher) {
         val a = article("A")
         val b = article("B")

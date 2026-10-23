@@ -554,6 +554,14 @@ data class ReaderState(
     data class PrefetchResult(val articleId: String, val index: Int)
 
     sealed interface ContentState {
+        /** Semantic DOM identity: status-only notices must not revoke annotation drafts. */
+        val documentBody: String?
+            get() = when (this) {
+                is Description -> content
+                is FullContent -> content
+                is Error, Loading -> null
+            }
+
         val text: String?
             get() {
                 return when (this) {
