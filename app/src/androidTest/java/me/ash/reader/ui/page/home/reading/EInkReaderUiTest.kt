@@ -27,6 +27,7 @@ import me.ash.reader.ui.page.home.NativePageDensityCapture
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
+import org.json.JSONTokener
 
 class EInkReaderUiTest {
     @get:Rule val compose = createComposeRule()
@@ -82,6 +83,9 @@ class EInkReaderUiTest {
             compose.waitUntil(5_000) { page.get() == 2 }
             // Controls fit without overlap on both 320dp phone and tablet layouts.
             compose.onRoot().performTouchInput { click(Offset(width * .5f, height * .9f)) }
+            compose.waitUntil(5_000) {
+                runCatching { compose.onNodeWithContentDescription("Next page").assertIsDisplayed() }.isSuccess
+            }
             compose.onNodeWithContentDescription("Next page").assertIsDisplayed().performClick()
             compose.waitUntil(5_000) { page.get() == 3 }
             compose.onNodeWithText("A↑").assertIsDisplayed()
@@ -111,15 +115,50 @@ class EInkReaderUiTest {
                     EInkPaginatedContent(articleId = identity.value, content = "<p>Identical content</p>",
                         title = "Identical title", feedName = "Identical feed", publishedDate = Date(0),
                         onPageChanged = { _, total -> count.set(total) },
-                        onNextArticle = { identity.value = "article-${navigations.incrementAndGet()}" })
+                        onNextArticle = {
+                            count.set(0)
+                            identity.value = "article-${navigations.incrementAndGet()}"
+                        })
                 }
             }
         }
         compose.waitUntil(15_000) { count.get() == 1 }
+        var visibleGeneration: String? = null
         for (expected in 1..3) {
+            // A page-count callback precedes initial rendering. Each native tap must target
+            // the next visible document, not the transparent document-loading interval.
+            visibleGeneration = awaitVisibleSinglePageDocument(visibleGeneration)
             compose.onRoot().performTouchInput { click(Offset(width * .8f, height * .5f)) }
             compose.waitUntil(5_000) { navigations.get() == expected }
         }
+    }
+
+    private fun awaitVisibleSinglePageDocument(previousGeneration: String?): String {
+        var generation: String? = null
+        compose.waitUntil(15_000) {
+            val value = AtomicReference<String>()
+            val callback = CountDownLatch(1)
+            InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                val activity = ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED).first()
+                findWebView(activity.window.decorView)!!.evaluateJavascript("""
+                    (function() {
+                        var frame = document.getElementById('eink-content');
+                        var bounds = frame && frame.getBoundingClientRect();
+                        return document.readyState === 'complete' && frame && bounds.width > 0 && bounds.height > 0 &&
+                            getComputedStyle(frame).visibility === 'visible' &&
+                            window.InkReadFormatting && InkReadFormatting.documentId === window._inkreadGeneration &&
+                            window._didFinishInitialPagination === true && window._totalPages === 1
+                            ? window._inkreadGeneration : null;
+                    })()
+                """.trimIndent()) { value.set(it); callback.countDown() }
+            }
+            assertTrue("The active reader must answer its readiness query", callback.await(5, TimeUnit.SECONDS))
+            generation = JSONTokener(value.get()).nextValue() as? String
+            generation != null && generation != previousGeneration
+        }
+        compose.waitForIdle()
+        awaitDocumentFrame()
+        return requireNotNull(generation)
     }
 
     private fun awaitDocumentFrame() {

@@ -25,8 +25,8 @@ function allText(root) {return root.nodeType===3?[root]:root.childNodes.flatMap(
 function fixture(children, {custom=false, generation='doc-1', captureBudget=null}={}) {
     const metadata=element('DIV',element('H1','Header not article'),element('P','Byline not article'));
     metadata.classList={contains:name=>name==='eink-metadata'};
-    const frame=element('MAIN',metadata,...children),head=element('HEAD'),body=element('BODY',frame);
-    const documentListeners=new Map(),windowListeners=new Map(),fontListeners=new Map(),queue=new Map();
+    const frame=element('MAIN',metadata,...children),head=element('HEAD'),body=element('BODY',frame),html=element('HTML',head,body);
+    const documentListeners=new Map(),documentListenerOptions=new Map(),windowListeners=new Map(),fontListeners=new Map(),queue=new Map();
     const calls=[],observers=[],highlights=new Map();let sequence=0,selection=null,scale=1,rafRequests=0;
     const nodes=allText(frame), original=nodes.map(n=>({node:n,data:n.data,parent:n.parentElement}));
     // Any attempt to mutate/split indexed article text fails the test immediately.
@@ -41,9 +41,10 @@ function fixture(children, {custom=false, generation='doc-1', captureBudget=null
         setStart(n,o){this.startContainer=n;this.startOffset=o;},setEnd(n,o){this.endContainer=n;this.endOffset=o;},
         intersectsNode(n){return nodes.indexOf(n)>=nodes.indexOf(this.startContainer)&&nodes.indexOf(n)<=nodes.indexOf(this.endContainer);},
         getClientRects(){return [geometry(this.startContainer,this.startOffset),geometry(this.endContainer,Math.max(0,this.endOffset-1))];}};}
-    const document={readyState:'complete',head,body,fonts:{addEventListener:(n,f)=>fontListeners.set(n,f),removeEventListener:n=>fontListeners.delete(n)},
+    const document={readyState:'complete',head,body,documentElement:html,fonts:{addEventListener:(n,f)=>fontListeners.set(n,f),removeEventListener:n=>fontListeners.delete(n)},
         getElementById:id=>id==='eink-content'?frame:null,createElement:tag=>element(tag.toUpperCase()),createRange,
-        addEventListener:(n,f)=>documentListeners.set(n,f),removeEventListener:n=>documentListeners.delete(n)};
+        addEventListener:(n,f,options)=>{documentListeners.set(n,f);documentListenerOptions.set(n,options);},
+        removeEventListener:n=>{documentListeners.delete(n);documentListenerOptions.delete(n);}};
     const context={console,Math,document,innerWidth:400,innerHeight:440,_inkreadGeneration:generation,_pageStride:400,_currentPage:0,
         InkReadFormatting:{effectiveMargins:()=>({left:20,right:20,top:20,bottom:20})},
         Android:{onAnnotationLocations:(...args)=>calls.push(args)},
@@ -72,7 +73,7 @@ function fixture(children, {custom=false, generation='doc-1', captureBudget=null
     function immutable(){assert.deepEqual(allText(frame),nodes);original.forEach(o=>{assert.equal(o.node.data,o.data);assert.equal(o.node.parentElement,o.parent);});}
     api.setSelectionMode(true,generation);
     function traversalReads(root=frame){return (root.firstChildReads||0)+(root.childNodes||[]).reduce((sum,n)=>sum+traversalReads(n),0);}
-    return {api,context,frame,body,head,nodes,select,capture,set,statuses,flush,immutable,calls,highlights,observers,documentListeners,windowListeners,fontListeners,
+    return {api,context,frame,body,head,html,nodes,select,capture,set,statuses,flush,immutable,calls,highlights,observers,documentListeners,documentListenerOptions,windowListeners,fontListeners,
         traversalReads,rafRequests:()=>rafRequests,setScale:s=>scale=s};
 }
 
@@ -104,6 +105,90 @@ test('capture requires active selection mode, live document generation and nonem
     assert.equal(f.api.captureSelection('old-doc'),null);f.api.setSelectionMode(false,'doc-1');assert.equal(f.capture(),null);
     f.api.setSelectionMode(true,'doc-1');f.select(a,2,a,2);assert.equal(f.capture(),null);
     assert.equal(f.api.setAnnotations([], 'old-doc'),false);f.windowListeners.get('pagehide')();assert.equal(f.api.setSelectionMode(true,'doc-1'),false);
+});
+
+test('state-only selection mode sync disables capture without mutating the native Copy range',()=>{
+    const a=text('Native Copy keeps its exact quote'),f=fixture([element('P',a)]);f.select(a,7,a,11);
+    const selection=f.context.getSelection(),range=selection.getRangeAt(0),saved=f.capture();
+    let clears=0;const remove=selection.removeAllRanges;
+    selection.removeAllRanges=function(){clears++;return remove.call(this);};
+    // Both the native completion and its later reactive sync are state-only.
+    for(let repeat=0;repeat<2;repeat++) {
+        assert.equal(f.api.setSelectionMode(false,'doc-1',false),true);
+        assert.equal(f.api.captureSelection('doc-1'),null);
+        assert.equal(f.context.getSelection(),selection);assert.equal(selection.getRangeAt(0),range);
+        assert.equal(selection.rangeCount,1);assert.equal(selection.isCollapsed,false);
+        assert.equal(range.startContainer,a);assert.equal(range.startOffset,7);
+        assert.equal(range.endContainer,a);assert.equal(range.endOffset,11);
+        assert.equal(selection.toString(),'Copy');assert.equal(clears,0);
+    }
+    assert.equal(f.api.setSelectionMode(true,'doc-1',false),true);
+    assert.deepEqual(f.capture(),saved);assert.equal(clears,0);f.immutable();
+});
+
+test('explicit selection dismissal still clears by default and with clearRange true',()=>{
+    const a=text('Explicit dismissal'),f=fixture([element('P',a)]);
+    for(const explicitFlag of [false,true]) {
+        f.api.setSelectionMode(true,'doc-1');f.select(a,0,a,8);
+        const selection=f.context.getSelection();let clears=0;const remove=selection.removeAllRanges;
+        selection.removeAllRanges=function(){clears++;return remove.call(this);};
+        const result=explicitFlag?f.api.setSelectionMode(false,'doc-1',true):f.api.setSelectionMode(false,'doc-1');
+        assert.equal(result,true);assert.equal(clears,1);
+        assert.equal(selection.rangeCount,0);assert.equal(selection.isCollapsed,true);
+        f.select(a,0,a,8);assert.equal(f.api.captureSelection('doc-1'),null,'Dismissal also disables capture');
+    }
+    f.immutable();
+});
+
+test('stale generation mode sync cannot clear a range or change capture enablement',()=>{
+    const a=text('Current document quote'),f=fixture([element('P',a)]);f.select(a,0,a,7);
+    const selection=f.context.getSelection(),range=selection.getRangeAt(0),saved=f.capture();
+    let clears=0;const remove=selection.removeAllRanges;
+    selection.removeAllRanges=function(){clears++;return remove.call(this);};
+    assert.equal(f.api.setSelectionMode(false,'old-doc'),false);
+    assert.equal(f.api.setSelectionMode(false,'old-doc',false),false);
+    assert.deepEqual(f.capture(),saved,'Stale disable must not change live capture enablement');
+    assert.equal(f.api.setSelectionMode(false,'doc-1',false),true);
+    assert.equal(f.api.setSelectionMode(true,'old-doc',false),false);
+    assert.equal(f.api.captureSelection('doc-1'),null,'Stale enable must not revive disabled capture');
+    assert.equal(f.context.getSelection(),selection);assert.equal(selection.getRangeAt(0),range);
+    assert.equal(selection.rangeCount,1);assert.equal(selection.isCollapsed,false);
+    assert.equal(selection.toString(),'Current');assert.equal(clears,0);f.immutable();
+});
+
+test('only an idle single-pointer BODY or HTML margin start cancels native default selection',()=>{
+    const a=text('Selectable article'),link=element('A','Selectable link'),img=element('IMG'),p=element('P',a);
+    const f=fixture([p,link,img]);f.api.setSelectionMode(false,'doc-1',false);
+    const handler=f.documentListeners.get('touchstart');
+    assert.equal(typeof handler,'function');assert.equal(f.documentListenerOptions.get('touchstart').passive,false);
+    function cancelled(target,extra={}) {let count=0;handler({target,cancelable:true,touches:[{}],preventDefault(){count++;},...extra});return count;}
+    assert.equal(cancelled(f.body),1);assert.equal(cancelled(f.html),1);
+    for(const target of [f.frame,p,a,link,img,f.frame.childNodes[0]]) assert.equal(cancelled(target),0);
+    assert.equal(cancelled(f.body,{touches:[]}),0);assert.equal(cancelled(f.body,{touches:[{},{}]}),0);
+    assert.equal(cancelled(f.body,{cancelable:false}),0);
+    f.immutable();
+});
+
+test('margin guard never interferes with selection mode, native range or pending Copy range',()=>{
+    const a=text('Keep native handles and Copy'),f=fixture([element('P',a)]);
+    const handler=f.documentListeners.get('touchstart');let cancelled=0;
+    const event={target:f.body,cancelable:true,touches:[{}],preventDefault(){cancelled++;}};
+    handler(event);assert.equal(cancelled,0,'Explicit selection mode stays native even before it has a range');
+    f.select(a,5,a,11);const selection=f.context.getSelection(),range=selection.getRangeAt(0);
+    let clears=0;const remove=selection.removeAllRanges;
+    selection.removeAllRanges=function(){clears++;return remove.call(this);};
+    f.api.setSelectionMode(false,'doc-1',false);handler(event);
+    assert.equal(cancelled,0);assert.equal(clears,0);assert.equal(selection.getRangeAt(0),range);
+    assert.equal(selection.toString(),'native');assert.equal(selection.isCollapsed,false);f.immutable();
+});
+
+test('pagehide removes the margin guard and an old callback cannot affect another document',()=>{
+    const f=fixture([element('P','Article')]);f.api.setSelectionMode(false,'doc-1',false);
+    const handler=f.documentListeners.get('touchstart');let cancelled=0;
+    const event={target:f.body,cancelable:true,touches:[{}],preventDefault(){cancelled++;}};
+    f.windowListeners.get('pagehide')();
+    assert.equal(f.documentListeners.has('touchstart'),false);
+    handler(event);assert.equal(cancelled,0);f.immutable();
 });
 
 test('captured JSON survives clearing selection before a note editor opens',()=>{

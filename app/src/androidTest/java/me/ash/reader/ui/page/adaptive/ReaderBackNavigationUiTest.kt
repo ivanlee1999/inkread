@@ -251,6 +251,10 @@ class ReaderBackNavigationUiTest {
         compose.waitUntil(15_000) { pages.get() > 1 }
         compose.onNodeWithContentDescription(backLabel).assertDoesNotExist()
         compose.onRoot().performTouchInput { click(Offset(width * .5f, height * .9f)) }
+        // Native tap arbitration awaits a DOM hit-test callback outside Compose's idling.
+        compose.waitUntil(5_000) {
+            runCatching { compose.onNodeWithContentDescription(backLabel).assertIsDisplayed() }.isSuccess
+        }
         compose.onNodeWithContentDescription(backLabel).assertIsDisplayed().assertHasClickAction()
         compose.onNodeWithContentDescription("Next page").assertIsDisplayed()
         compose.onNodeWithText("A↓").assertIsDisplayed()

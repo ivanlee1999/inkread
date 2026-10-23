@@ -7,7 +7,9 @@ import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import coil.decode.DataSource
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -122,7 +124,9 @@ import org.junit.Test
  * Article links are about:blank so
  * text-only fixtures never trigger external metadata fetches; photo URLs are seeded in Coil. */
 class NewspaperUiTest {
-    @get:Rule val compose = createComposeRule()
+    // Queue effects on the Compose test clock instead of resuming dialog disposal on DataStore IO.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @get:Rule val compose = createComposeRule(effectContext = StandardTestDispatcher())
 
     @Test fun publicationsRenderAndKeepActionsAtEveryWidth() {
         val opened = AtomicInteger()
@@ -482,8 +486,12 @@ class NewspaperUiTest {
                 assertEquals((12 until 24).map { "a-$it" }, marked)
             }
             compose.onNodeWithTag("effects-fixture").performScrollToIndex(2)
-            val oldList = currentList.get()
-            val oldIndex = oldList.firstVisibleItemIndex
+            val (oldList, oldIndex) = compose.runOnIdle {
+                val list = currentList.get()
+                assertTrue("Capture the old filter only after its requested scroll settles",
+                    list.firstVisibleItemIndex > 0)
+                list to list.firstVisibleItemIndex
+            }
             compose.runOnIdle { selected.value = "b" }
             compose.waitUntil(5_000) { page.value == 0 && currentList.get() !== oldList }
             compose.onNodeWithText(data.getValue("b")[0].articleWithFeed.article.title).assertIsDisplayed()
