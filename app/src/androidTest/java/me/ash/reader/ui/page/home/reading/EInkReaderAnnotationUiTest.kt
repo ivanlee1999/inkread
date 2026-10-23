@@ -432,7 +432,7 @@ class EInkReaderAnnotationUiTest {
         compose.waitUntil(5_000) { locations.get()?.contains("attached") == true }
         compose.onNodeWithTag("reader_selection_done").performClick()
         compose.waitUntil(5_000) { !selecting.value }
-        listOf(12 to 48, 48 to 12).forEachIndexed { index, (english, chinese) ->
+        listOf(12 to 48, 48 to 12, 20 to 24).forEachIndexed { index, (english, chinese) ->
             compose.runOnIdle { testFormatting.value = ReaderFormatting(fontSize = english, chineseFontSize = chinese) }
             compose.waitUntil(10_000) {
                 js("Math.abs(parseFloat(getComputedStyle(document.querySelector('#select-target .eink-script-cjk')).fontSize) - " +
@@ -459,6 +459,26 @@ class EInkReaderAnnotationUiTest {
                 textPoint("select-target", 10, 19, "end"))
             awaitHandleSelection("Selection preserves", "independent-$english-$chinese")
             assertNativeSelectionRetained("Selection preserves", "independent sizes $english/$chinese")
+            if (english == 20 && chinese == 24) {
+                // This moderate pair keeps the CJK endpoint visible on the
+                // narrowest profile while exercising a real cross-script drag.
+                dragSelectionHandle(textPoint("select-target", 0, 19, "end"),
+                    textPoint("select-target", 32, 34, "end"))
+                val expected = "Selection preserves exact text, 中文"
+                awaitHandleSelection(expected, "independent-cross-script")
+                assertNativeSelectionRetained(expected, "native drag across unequal script sizes")
+                val captured = JSONObject(js("InkReadAnnotations.captureSelection(window._inkreadGeneration)") as String)
+                assertEquals(original.getString("documentFingerprint"), captured.getString("documentFingerprint"))
+                assertEquals(original.getInt("start"), captured.getInt("start"))
+                assertEquals(original.getInt("startNode"), captured.getInt("startNode"))
+                assertEquals(original.getInt("endNode"), captured.getInt("endNode"))
+                assertEquals(original.getInt("startOffset"), captured.getInt("startOffset"))
+                assertEquals(original.getInt("startOffset") + captured.getString("rangeQuote").length,
+                    captured.getInt("endOffset"))
+                assertEquals(expected, captured.getString("rangeQuote").trim())
+                assertEquals(original.getString("rangeQuote").substring(0, captured.getInt("end") - original.getInt("start")),
+                    captured.getString("rangeQuote"))
+            }
             pressBack()
             compose.waitUntil(5_000) { !selecting.value }
             assertNull("Unequal-size handle gestures cannot overwrite the existing annotation", resized.get())

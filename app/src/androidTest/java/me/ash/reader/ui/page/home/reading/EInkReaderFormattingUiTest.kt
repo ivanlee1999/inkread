@@ -147,6 +147,8 @@ class EInkReaderFormattingUiTest {
                 chinese:parseFloat(getComputedStyle(c).fontSize),englishGlyph:width(latin,offset),chineseGlyph:width(c.firstChild,0)});
         })()""".trimIndent()) as String)
         val initialGlyphs = renderedSizes()
+        assertTrue("English glyph must render", initialGlyphs.getDouble("englishGlyph") > 0)
+        assertTrue("Chinese glyph must render", initialGlyphs.getDouble("chineseGlyph") > 0)
         fun assertSizes(english: Int, chinese: Int) {
             val scale = context.resources.configuration.fontScale.toDouble()
             val sizes = renderedSizes()
