@@ -399,19 +399,14 @@ class EInkReaderAlignmentUiTest {
                     // measure the real glyph with Range; do not trust a runtime
                     // visibility flag or merely compare page numbers.
                     if (anchor && typeof anchor.node === 'number') {
-                        var walker = document.createTreeWalker(frame, NodeFilter.SHOW_TEXT, {
-                            acceptNode:function(node) {
-                                return node.parentElement && !/^(SCRIPT|STYLE|NOSCRIPT)$/.test(node.parentElement.tagName) && /\S/.test(node.data)
-                                    ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
-                            }
-                        });
-                        var textNodes = [], textNode;
-                        while ((textNode = walker.nextNode())) textNodes.push(textNode);
+                        var model = InkReadScriptFonts.install(frame), textNodes = model.readingNodes;
                         var anchoredNode = textNodes[anchor.node];
                         if (anchoredNode && anchor.offset >= 0 && anchor.offset < anchoredNode.length) {
                             var range = document.createRange();
-                            range.setStart(anchoredNode, anchor.offset);
-                            range.setEnd(anchoredNode, anchor.offset + 1);
+                            var startPoint = model.point(anchoredNode, anchor.offset, false);
+                            var endPoint = model.point(anchoredNode, anchor.offset + 1, true);
+                            range.setStart(startPoint.node, startPoint.offset);
+                            range.setEnd(endPoint.node, endPoint.offset);
                             var glyph = range.getBoundingClientRect();
                             anchorGlyph = rect(glyph); anchorGlyph.height = glyph.height;
                             anchorText = anchoredNode.data.slice(anchor.offset, anchor.offset + 24);

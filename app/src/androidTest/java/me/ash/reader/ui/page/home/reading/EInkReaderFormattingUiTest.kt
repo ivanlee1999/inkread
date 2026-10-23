@@ -130,6 +130,61 @@ class EInkReaderFormattingUiTest {
         VolumeKeyEventBus.resetForTest()
     }
 
+    @Test fun independentScriptSizesPreviewWithoutChangingTextNodesOrLogicalAnchor() {
+        reportName = "reader-formatting-script-sizes"
+        releaseLate.countDown()
+        startReader()
+        goToMiddlePage()
+        rememberAnchor()
+        val textBefore = js("document.getElementById('eink-content').textContent")
+        val runsBefore = js("document.querySelectorAll('.eink-script-cjk').length")
+        fun assertSizes(english: Int, chinese: Int) {
+            val scale = context.resources.configuration.fontScale.toDouble()
+            val sizes = JSONObject(js("""(function(){var p=document.querySelector('p.format-text');
+                return JSON.stringify({english:parseFloat(getComputedStyle(p).fontSize),
+                    chinese:parseFloat(getComputedStyle(p.querySelector('.eink-script-cjk')).fontSize)});})()""") as String)
+            assertEquals(english * scale, sizes.getDouble("english"), .1)
+            assertEquals(chinese * scale, sizes.getDouble("chinese"), .1)
+            assertEquals(textBefore, js("document.getElementById('eink-content').textContent"))
+            assertEquals(runsBefore, js("document.querySelectorAll('.eink-script-cjk').length"))
+        }
+        openPanel()
+        section("text")
+        step("chinese_font_size", increase = true, times = 6)
+        assertSizes(18, 24)
+        assertEquals(ReaderFormatting.Default, readPersisted())
+        assertAnchor("chinese-size-preview-anchor")
+        step("font_size", increase = true, times = 2)
+        assertSizes(20, 24)
+        assertAnchor("english-size-preview-anchor")
+        setControlValue("font_size", 12f)
+        setControlValue("chinese_font_size", 48f)
+        settled("large-chinese-small-english")
+        assertSizes(12, 48)
+        assertAnchor("large-chinese-anchor")
+        setControlValue("font_size", 48f)
+        setControlValue("chinese_font_size", 12f)
+        settled("large-english-small-chinese")
+        assertSizes(48, 12)
+        assertAnchor("large-english-anchor")
+        setControlValue("font_size", 20f)
+        setControlValue("chinese_font_size", 24f)
+        settled("restore-independent-draft")
+        clickTag("reader_formatting_apply")
+        panelClosed()
+        val applied = awaitPersisted { it.fontSize == 20 && it.chineseFontSize == 24 }
+        assertSizes(20, 24)
+        openPanel()
+        clickTag("reader_formatting_reset")
+        settled("script-size-reset")
+        assertSizes(18, 18)
+        clickTag("reader_formatting_cancel")
+        panelClosed()
+        assertSizes(20, 24)
+        assertEquals(applied, readPersisted())
+        assertEquals("Live size preview must never reload article HTML", 1, htmlRequests.get())
+    }
+
     @Test fun liveDraftKeepsTextAnchorMarginsAndDocumentThroughApplyCancelAndReset() {
         reportName = "reader-formatting-live"
         startReader()
@@ -431,17 +486,20 @@ class EInkReaderFormattingUiTest {
             assertTrue("The settings file survives process death", readPersisted().fontSize > ReaderFormatting.Default.fontSize)
             val loaded = settled("fresh-process-restored")
             assertEquals(expected.getInt("fontSize"), readPersisted().fontSize)
+            assertEquals(expected.getInt("chineseFontSize"), readPersisted().chineseFontSize)
             assertEquals(expected.getInt("marginLeft"), readPersisted().marginLeft)
             assertStyleMatches(readPersisted(), loaded)
             openPanel()
             clickTag("reader_formatting_cancel")
             panelClosed()
             assertEquals(expected.getInt("fontSize"), readPersisted().fontSize)
+            assertEquals(expected.getInt("chineseFontSize"), readPersisted().chineseFontSize)
             check(File(context.filesDir, PERSISTENCE_MARKER).delete())
         } else {
             openPanel()
             section("text")
             step("font_size", increase = true)
+            step("chinese_font_size", increase = true, times = 3)
             section("layout")
             step("margin_left", increase = true, times = 2)
             clickTag("reader_formatting_apply")
@@ -449,7 +507,7 @@ class EInkReaderFormattingUiTest {
             val saved = awaitPersisted { it.fontSize > ReaderFormatting.Default.fontSize && it.marginLeft > 24 }
             assertStyleMatches(saved, settled("persisted-before-restart"))
             if (phase == "seed") File(context.filesDir, PERSISTENCE_MARKER).writeText(JSONObject()
-                .put("pid", android.os.Process.myPid()).put("fontSize", saved.fontSize).put("marginLeft", saved.marginLeft).toString())
+                .put("pid", android.os.Process.myPid()).put("fontSize", saved.fontSize).put("chineseFontSize", saved.chineseFontSize).put("marginLeft", saved.marginLeft).toString())
         }
     }
 
@@ -764,7 +822,7 @@ class EInkReaderFormattingUiTest {
     private fun section(name: String) { clickTag("reader_formatting_section_$name"); activeSection = name }
     private fun verifyPanelScrollReachability() {
         val sections = mapOf(
-            "text" to listOf("font_size", "line_height", "text_darkness", "text_weight", "letter_spacing", "word_spacing", "image_contrast"),
+            "text" to listOf("font_size", "chinese_font_size", "line_height", "text_darkness", "text_weight", "letter_spacing", "word_spacing", "image_contrast"),
             "layout" to listOf("margin_left", "margin_right", "margin_top", "margin_bottom", "paragraph_gap", "paragraph_indent"))
         sections.forEach { (name, controls) ->
             section(name)
@@ -874,6 +932,7 @@ class EInkReaderFormattingUiTest {
         openPanel()
         section("text")
         setMaximum("font_size", 48f)
+        setMaximum("chinese_font_size", 48f)
         setMaximum("line_height", 2.5f)
         section("layout")
         for (edge in listOf("left", "right", "top", "bottom")) setMaximum("margin_$edge", 96f)
@@ -1009,6 +1068,8 @@ class EInkReaderFormattingUiTest {
             actual.getDouble("specifiedFontSize"), .1)
         assertEquals("Android accessibility font scaling remains effective", expected.fontSize.toDouble() *
             context.resources.configuration.fontScale, actual.getDouble("fontSize"), .1)
+        assertEquals("Chinese size remains independently restored", expected.chineseFontSize.toDouble() *
+            context.resources.configuration.fontScale, actual.getDouble("chineseFontSize"), .1)
         assertEquals(expected.lineHeight.toDouble(), actual.getDouble("lineHeight") / actual.getDouble("fontSize"), .02)
         assertEquals(expected.textWeight, actual.getInt("fontWeight"))
         assertEquals(expected.marginLeft.toDouble(), actual.getDouble("marginLeft"), .1)
@@ -1192,29 +1253,30 @@ class EInkReaderFormattingUiTest {
         private val INK_REFERENCE_PROBE = """
             (function(){
                 var frame=document.getElementById('eink-content'), expected=window.__formattingExpectedAnchor;
-                var nodes=[], walker=document.createTreeWalker(frame,NodeFilter.SHOW_TEXT), n;
-                while(n=walker.nextNode()) if(n.textContent.trim()&&!/^(STYLE|SCRIPT|NOSCRIPT)$/.test(n.parentElement.tagName)) nodes.push(n);
+                var model=InkReadScriptFonts.install(frame), nodes=model.readingNodes, n;
+                function nativeRange(node,start,end){var a=model.point(node,start,false), b=model.point(node,end,true), r=document.createRange();
+                    r.setStart(a.node,a.offset);r.setEnd(b.node,b.offset);return r;}
                 n=nodes[expected.node];
-                var character=n.textContent.slice(expected.offset,expected.offset+1);
-                function style(node){var c=getComputedStyle(node.parentElement), result={};
+                var character=n.data.slice(expected.offset,expected.offset+1);
+                function style(node,offset){var c=getComputedStyle(model.point(node,offset||0,false).node.parentElement), result={};
                     ['fontFamily','fontSize','fontWeight','fontStyle','fontStretch','fontVariant','fontFeatureSettings',
                      'fontVariationSettings','fontKerning','fontSynthesis','textRendering','lineHeight','letterSpacing','wordSpacing','color','opacity','filter',
                      'textShadow','textTransform','textIndent','whiteSpace','writingMode','direction'].forEach(function(key){result[key]=c[key];});
                     return result;}
-                function glyph(node,offset){var r=document.createRange();r.setStart(node,offset);r.setEnd(node,offset+1);
+                function glyph(node,offset){var r=nativeRange(node,offset,offset+1);
                     var rects=Array.from(r.getClientRects());if(rects.length!==1)return null;
                     var r=rects[0];return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height};}
-                var source=glyph(n,expected.offset), selectedStyle=style(n), references=[], width=innerWidth,height=innerHeight;
+                var source=glyph(n,expected.offset), selectedStyle=style(n,expected.offset), references=[], width=innerWidth,height=innerHeight;
                 nodes.forEach(function(candidate,index){
-                    if(candidate===n||!candidate.parentElement.matches('p.format-text')||!/^第 [0-9]+ 段/.test(candidate.textContent))return;
+                    if(candidate===n||!candidate.parentElement.matches('p.format-text')||!/^第 [0-9]+ 段/.test(candidate.data))return;
                     if(JSON.stringify(style(candidate))!==JSON.stringify(selectedStyle))return;
                     var r=glyph(candidate,0);
                     if(r&&r.left>=0&&r.top>=0&&r.right<=width&&r.bottom<=height&&
                         Math.abs(r.width-source.width)<.001&&Math.abs(r.height-source.height)<.001){
-                        r.node=index;r.text=candidate.textContent.slice(0,32);references.push(r);}
+                        r.node=index;r.text=candidate.data.slice(0,32);references.push(r);}
                 });
-                return JSON.stringify({character:character,sourceValid:expected.offset===0&&n.parentElement.matches('p.format-text')&&/^第 [0-9]+ 段/.test(n.textContent),
-                    source:source,sourceText:n.textContent.slice(0,64),expectedAnchor:expected,style:selectedStyle,references:references,
+                return JSON.stringify({character:character,sourceValid:expected.offset===0&&n.parentElement.matches('p.format-text')&&/^第 [0-9]+ 段/.test(n.data),
+                    source:source,sourceText:n.data.slice(0,64),expectedAnchor:expected,style:selectedStyle,references:references,
                     fontsReady:document.fonts.status==='loaded',faces:Array.from(document.fonts).map(function(f){return {family:f.family,status:f.status,range:f.unicodeRange};})});
             })()
         """.trimIndent()
@@ -1226,12 +1288,12 @@ class EInkReaderFormattingUiTest {
                 function visible(r){return r.width>0&&r.height>0&&r.right>1&&r.left<w-1&&r.bottom>0&&r.top<h;}
                 function rect(r){return {left:r.left,right:r.right,top:r.top,bottom:r.bottom};}
                 var anchor=InkReadFormatting.currentAnchor(), expected=window.__formattingExpectedAnchor;
-                var nodes=[], walker=document.createTreeWalker(frame,NodeFilter.SHOW_TEXT), n;
-                while(n=walker.nextNode()) if(n.textContent.trim()&&!/^(STYLE|SCRIPT|NOSCRIPT)$/.test(n.parentElement.tagName)) nodes.push(n);
+                var model=InkReadScriptFonts.install(frame), nodes=model.readingNodes, n;
+                function nativeRange(node,start,end){var a=model.point(node,start,false), b=model.point(node,end,true), r=document.createRange();
+                    r.setStart(a.node,a.offset);r.setEnd(b.node,b.offset);return r;}
                 var anchorVisible=false, anchorText='', anchorGlyph=null;
                 if(expected&&nodes[expected.node]){
-                    n=nodes[expected.node]; var r=document.createRange(), offset=Math.min(expected.offset,n.length-1);
-                    r.setStart(n,offset);r.setEnd(n,offset+1);anchorText=n.textContent.slice(Math.max(0,offset-10),offset+30);
+                    n=nodes[expected.node]; var offset=Math.min(expected.offset,n.length-1), r=nativeRange(n,offset,offset+1);anchorText=n.data.slice(Math.max(0,offset-10),offset+30);
                     var glyphs=Array.from(r.getClientRects()).filter(visible);anchorVisible=glyphs.length>0;
                     anchorGlyph=glyphs.length?rect(glyphs[0]):null;
                 }
@@ -1244,6 +1306,7 @@ class EInkReaderFormattingUiTest {
                 return JSON.stringify({ready:_didFinishInitialPagination,currentPage:_currentPage,totalPages:_totalPages,stride:_pageStride,
                     viewportWidth:w,viewportHeight:h,frameWidth:parseFloat(c.width),frameHeight:parseFloat(c.height),
                     marginLeft:parseFloat(c.left),marginRight:w-parseFloat(c.left)-parseFloat(c.width),marginTop:parseFloat(c.top),marginBottom:h-parseFloat(c.top)-parseFloat(c.height),
+                    chineseFontSize:parseFloat(getComputedStyle(p.querySelector('.eink-script-cjk')).fontSize),
                     fontSize:parseFloat(pc.fontSize),specifiedFontSize:parseFloat(document.documentElement.style.getPropertyValue('--reader-font-size')),
                     lineHeight:parseFloat(pc.lineHeight),fontWeight:parseInt(pc.fontWeight),color:pc.color,fontFamily:pc.fontFamily,
                     textFilter:pc.filter,frameFilter:c.filter,bodyFilter:b.filter,imageFilter:image?getComputedStyle(image).filter:'',scrollX:scrollX,scrollY:scrollY,

@@ -123,7 +123,7 @@ jobs:
           for path in reports:
               suite = ET.parse(path).getroot()
               for key in totals: totals[key] += int(suite.get(key, 0))
-          expected = 58 if "${{ matrix.name }}" == "phone" and os.environ["ANNOTATION_FONT_SCALE"] == "1.0" else 52
+          expected = 59 if "${{ matrix.name }}" == "phone" and os.environ["ANNOTATION_FONT_SCALE"] == "1.0" else 53
           assert totals == dict(tests=expected, failures=0, errors=0, skipped=0), totals
           for name in ("native-selection", "native-adjusted-selection", "rendered-highlight", "note-editor", "readwise-settings", "notebook", "resize-selection", "auto-highlight-undo"):
               images = list(root.rglob(f"newspaper-annotation-{name}-*.png"))

@@ -52,11 +52,12 @@ class EInkReaderFormattingTest {
 
     @Test fun payloadClampsBeforeCrossingTheJavascriptBoundary() {
         val payload = EInkReaderFormatting.payload(ReaderFormatting(
-            fontSize = Int.MAX_VALUE, lineHeight = Float.NaN, marginLeft = -50,
+            fontSize = Int.MAX_VALUE, chineseFontSize = -1, lineHeight = Float.NaN, marginLeft = -50,
             marginRight = 900, textWeight = 9000, textDarkness = Float.POSITIVE_INFINITY,
             alignment = ReaderTextAlignment.Justify, imageContrast = Float.NaN,
         ), "")
         assertTrue(payload.contains("\"fontSize\":48"))
+        assertTrue(payload.contains("\"chineseFontSize\":12"))
         assertTrue(payload.contains("\"marginLeft\":0"))
         assertTrue(payload.contains("\"marginRight\":96"))
         assertTrue(payload.contains("\"textWeight\":900"))

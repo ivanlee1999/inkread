@@ -343,7 +343,8 @@ fun EInkPaginatedContent(
         val document = withContext(Dispatchers.IO + NonCancellable) {
             buildArticleHtmlDocument(context.cacheDir, content, formattingPayload,
                 title, feedName, author, publishedDate, documentGeneration,
-                context.assets.open("eink-formatting.js").bufferedReader().use { it.readText() },
+                context.assets.open("eink-script-fonts.js").bufferedReader().use { it.readText() } + "\n" +
+                    context.assets.open("eink-formatting.js").bufferedReader().use { it.readText() },
                 articleId, readingContentRevision, initialReadingAnchor, dateLabel,
                 context.assets.open("eink-annotations.js").bufferedReader().use { it.readText() })
         }

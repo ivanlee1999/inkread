@@ -85,14 +85,12 @@ jobs:
           cat > release-notes.md <<EOF_NOTES
           Built by GitHub Actions from commit ${{ github.sha }}.
 
-          InkRead $VERSION improves article extraction without replacing the current Readability4J engine. Usable feed/server content is retained when extraction fails or is clearly less complete. The Source control offers feed/server content, the available full article, or an explicit fresh fetch. A failed or worse refresh does not destroy a useful offline extraction.
+          InkRead $VERSION adds independent Chinese and English font sizes in the article reader's live Text settings. Change either size while previewing the actual article; Apply saves both, Cancel restores the previous values, and Reset previews the defaults. Existing common-size preferences migrate without changing their appearance. Quick A controls adjust both scripts together while retaining their size difference within the supported range.
 
-          Full-text HTML now uses consistent bounded character decoding for RSS and Saved articles, including Chinese pages with HTML charset metadata. Relative images and links use the final redirected page URL and effective HTML base, preserving non-default ports and parent-directory references. Existing absolute proxy URLs are kept unchanged.
+          Chinese/CJK characters and full-width punctuation use the Chinese size. English, ASCII numbers and punctuation retain the base size. Relative headings, selected fonts, line spacing and margins remain in effect; specialized code and math typography stays unchanged. System fallback fonts also respect the independent sizes. There is no new permanent bar or animation.
 
-          Saved articles choose useful responsive image sizes and try a bounded set of alternatives when an image is unavailable or too large. Existing image/storage limits remain in force; text survives partial image failure, retained images remain usable offline, and retries skip assets already stored successfully.
+          One-time presentation runs retain original logical text coordinates. Existing reading positions, annotation fingerprints, exact quotes, links and text selection remain compatible across formatting changes. Highlight redraw avoids painting identical inline rectangles twice. The source-selection safeguards and full-content improvements from 0.16.19 remain included.
 
-          Source changes do not replace the visible body after selection, annotation capture/editing or formatting begins during a background fetch. Download/cache work can finish, and the Source dialog explains that new content is ready for a later explicit choice. Status-only refresh notices do not reset annotation drafts. The existing annotation notebook, highlight editing and separately opt-in Readwise export remain supported.
-
-          Uses the existing application ID, signing identity and database schemas. This app release does not change FreshRSS server configuration, bypass login/paywalls or change the sanitizer. Native Android validation is required before publication; physical BOOX behavior remains unverified. No private article content, credentials or real Readwise exports are used in validation.
+          Uses the existing application ID, signing identity and database schemas. Native phone/tablet and process-restart validation is required before publication; physical BOOX behavior remains unverified. This release does not include the separately prepared RSS action, resume-storage or page-key replacements, and does not change FreshRSS or account credentials.
           EOF_NOTES
           gh release create "$TAG" --target "${{ github.sha }}" --title "InkRead $VERSION ($COMMIT)" --notes-file release-notes.md ./apk/*.apk ./apk/*.sha256

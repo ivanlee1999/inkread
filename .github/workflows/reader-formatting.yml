@@ -5,6 +5,7 @@ on:
     paths:
       - 'app/src/main/java/me/ash/reader/ui/page/home/reading/**'
       - 'app/src/main/assets/**'
+      - 'app/src/test/js/**'
       - 'app/src/main/res/**'
       - 'app/src/main/java/me/ash/reader/infrastructure/preference/**'
       - 'app/src/main/java/me/ash/reader/ui/ext/DataStore*'
@@ -44,7 +45,8 @@ jobs:
       - name: Validate deterministic live-formatting runtime
         run: |
           node --check app/src/main/assets/eink-formatting.js
-          node --test app/src/test/js/eink-formatting.test.cjs
+          node --check app/src/main/assets/eink-script-fonts.js
+          node --test app/src/test/js/eink-formatting.test.cjs app/src/test/js/eink-annotations.test.cjs app/src/test/js/eink-script-fonts.test.cjs
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -123,9 +125,16 @@ jobs:
             preserve "font-$scale"
             validation=0
             python3 - <<'PYTHON' || validation=$?
-          import json, os, pathlib, struct
+          import json, os, pathlib, struct, xml.etree.ElementTree as ET
           root = pathlib.Path("reader-formatting-evidence") / f"font-{os.environ['FORMATTING_FONT_SCALE']}"
-          for name in ("live", "fonts-modal", "persistence-same-process"):
+          results = list((root / "androidTest-results").rglob("TEST-*.xml"))
+          assert results, "No formatting instrumentation results"
+          totals = {key: 0 for key in ("tests", "failures", "errors", "skipped")}
+          for path in results:
+              suite = ET.parse(path).getroot()
+              for key in totals: totals[key] += int(suite.get(key, 0))
+          assert totals == dict(tests=4, failures=0, errors=0, skipped=0), totals
+          for name in ("live", "fonts-modal", "script-sizes", "persistence-same-process"):
               reports = list(root.rglob(f"reader-formatting-{name}.json"))
               assert len(reports) == 1, f"Missing/duplicate {name} report: {reports}"
               report = json.loads(reports[0].read_text())
@@ -152,6 +161,18 @@ jobs:
                   assert {"latin-face-ready", "cjk-face-ready", "offline-script-faces", "modal-volume-and-swipe", "back-cancels-draft", "reader-reopened"} <= labels
                   fonts = next(s for s in samples if s["label"] == "offline-script-faces")
                   assert all(fonts[key] for key in ("latinFaceLoaded", "cjkFaceLoaded", "latinPaintMatchesFace", "cjkPaintMatchesFace", "latinPaintDiffersFromSans"))
+              elif name == "script-sizes":
+                  required = {"chinese-size-preview-anchor", "english-size-preview-anchor", "script-size-reset"}
+                  assert required <= labels, f"Missing script-size assertions: {required-labels}"
+                  assert report["htmlRequests"] == 1, "Independent size preview unexpectedly reloaded its article HTML"
+                  scale = float(os.environ["FORMATTING_FONT_SCALE"])
+                  for label, english, chinese in (("chinese-size-preview-anchor", 18, 24),
+                                                  ("english-size-preview-anchor", 20, 24),
+                                                  ("script-size-reset", 18, 18)):
+                      sample = next(s for s in samples if s["label"] == label)
+                      assert sample["sameAnchor"] and sample["sameDocument"] and sample["anchorVisible"] and sample["documentSentinel"], sample
+                      assert abs(sample["fontSize"] - english * scale) < .1, sample
+                      assert abs(sample["chineseFontSize"] - chinese * scale) < .1, sample
               else:
                   assert "persisted-before-restart" in labels
               if ${{ matrix.density }} == 420:

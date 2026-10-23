@@ -606,3 +606,11 @@ test('legacy plain-tap exclusions preserve standalone labels, options, contented
     f.setHitTarget(null);assert.deepEqual(target(f),{kind:'blocked'},'No hit must not turn the page or open a highlight');
     f.setHitTarget(f.frame);assert.deepEqual(target(f),{kind:'annotation',id:'highlight'});f.immutable();
 });
+
+test('inline script element and text duplicate rectangles do not darken fallback highlights twice',()=>{
+    const node=text('English 中文 text'), f=fixture([element('P',node)]);
+    f.setRects(()=>[fixedRect(),fixedRect()]);
+    const saved=saveRange(f,node,0,node.length);f.set([saved]);
+    const overlay=f.body.childNodes.find(n=>n.id==='inkread-annotation-overlay');
+    assert.ok(overlay);assert.equal(overlay.childNodes.length,1);
+});

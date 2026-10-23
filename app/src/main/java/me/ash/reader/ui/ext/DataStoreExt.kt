@@ -208,6 +208,7 @@ sealed interface PreferencesKey {
         // E-Ink
         const val einkMode = "einkMode"
         const val einkFontSize = "einkFontSize"
+        const val einkChineseFontSize = "einkChineseFontSize"
         const val einkEnglishFont = "einkEnglishFont"
         const val einkChineseFont = "einkChineseFont"
         const val einkWordSpacing = "einkWordSpacing"
@@ -303,6 +304,7 @@ sealed interface PreferencesKey {
                 // E-Ink
                 IntKey(einkMode),
                 IntKey(einkFontSize),
+                IntKey(einkChineseFontSize),
                 IntKey(einkEnglishFont),
                 IntKey(einkChineseFont),
                 FloatKey(einkWordSpacing),
@@ -411,6 +413,7 @@ data class DataStoreKey<T>(val key: Preferences.Key<T>, val type: Class<T>) {
         // E-Ink
         const val einkMode = "einkMode"
         const val einkFontSize = "einkFontSize"
+        const val einkChineseFontSize = "einkChineseFontSize"
         const val einkEnglishFont = "einkEnglishFont"
         const val einkChineseFont = "einkChineseFont"
         const val einkWordSpacing = "einkWordSpacing"
@@ -586,6 +589,7 @@ data class DataStoreKey<T>(val key: Preferences.Key<T>, val type: Class<T>) {
                 // E-Ink
                 einkMode to DataStoreKey(intPreferencesKey(einkMode), Int::class.java),
                 einkFontSize to DataStoreKey(intPreferencesKey(einkFontSize), Int::class.java),
+                einkChineseFontSize to DataStoreKey(intPreferencesKey(einkChineseFontSize), Int::class.java),
                 einkEnglishFont to DataStoreKey(intPreferencesKey(einkEnglishFont), Int::class.java),
                 einkChineseFont to DataStoreKey(intPreferencesKey(einkChineseFont), Int::class.java),
                 einkWordSpacing to DataStoreKey(floatPreferencesKey(einkWordSpacing), Float::class.java),

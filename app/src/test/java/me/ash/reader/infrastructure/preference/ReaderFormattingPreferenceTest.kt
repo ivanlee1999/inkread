@@ -33,6 +33,8 @@ class ReaderFormattingPreferenceTest {
         val before = preferences.asMap().toMap()
         val format = ReaderFormattingPreference.fromPreferences(preferences)
         assertEquals(28, format.fontSize)
+        assertEquals(28, format.chineseFontSize)
+        assertNull(preferences[intPreferencesKey(DataStoreKey.einkChineseFontSize)])
         assertEquals(7, format.englishFont)
         assertEquals(3, format.chineseFont)
         assertEquals(1.7f, format.lineHeight)
@@ -71,7 +73,7 @@ class ReaderFormattingPreferenceTest {
         val original = preferencesOf(unrelated to 81, oldBold to true, oldPadding to 27)
         val store = RecordingDataStore(original)
         val format = ReaderFormatting(
-            fontSize = 30, englishFont = 6, chineseFont = 4, lineHeight = 1.9f,
+            fontSize = 30, chineseFontSize = 36, englishFont = 6, chineseFont = 4, lineHeight = 1.9f,
             marginLeft = 12, marginRight = 40, marginTop = 18, marginBottom = 30,
             textDarkness = 0.7f, textWeight = 600, letterSpacing = 1.25f, wordSpacing = 0.35f,
             paragraphGap = 1.8f, paragraphIndent = 2f, alignment = ReaderTextAlignment.Justify,
@@ -86,6 +88,18 @@ class ReaderFormattingPreferenceTest {
         assertEquals(27, store.current[oldPadding])
         assertEquals(original, store.snapshotsBeforeUpdate.single())
         assertNull(original[intPreferencesKey(DataStoreKey.einkMarginLeft)])
+    }
+
+    @Test fun combinedQuickSizeMovesBothScriptsInOneTransaction() = runBlocking {
+        val store = RecordingDataStore(emptyPreferences())
+        store.saveReaderFormatting(ReaderFormatting(fontSize = 20, chineseFontSize = 27))
+        store.saveCombinedReaderFontSize(22)
+        val format = ReaderFormattingPreference.fromPreferences(store.current)
+        assertEquals(22, format.fontSize)
+        assertEquals(29, format.chineseFontSize)
+        store.saveCombinedReaderFontSize(48)
+        assertEquals(48, ReaderFormattingPreference.fromPreferences(store.current).chineseFontSize)
+        assertEquals(3, store.updateCalls)
     }
 
     @Test fun symmetricApplyCanUpdateLegacyHorizontalSettingWithoutUsingVerticalMargin() = runBlocking {

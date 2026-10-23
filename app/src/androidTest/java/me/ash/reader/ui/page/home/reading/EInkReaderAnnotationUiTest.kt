@@ -111,6 +111,7 @@ class EInkReaderAnnotationUiTest {
     private val incomingContent = mutableStateOf<String?>(null)
     private val contentPresentation = ReaderContentPresentationGate<String, String> { it }
     private val nextDocumentInteraction = AtomicReference<(() -> Unit)?>(null)
+    private val testFormatting = mutableStateOf(ReaderFormatting.Default)
     private var nativeOverflowOpen = false
     private var originalAccessibilityFlags: Int? = null
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
@@ -131,9 +132,10 @@ class EInkReaderAnnotationUiTest {
     }
 
     private fun startReader(fontSize: Int = ReaderFormatting.Default.fontSize, annotationsAvailable: Boolean = true) {
+        testFormatting.value = ReaderFormatting(fontSize = fontSize)
         compose.setContent {
             CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON,
-                LocalReaderFormatting provides ReaderFormatting.Default.copy(fontSize = fontSize)) {
+                LocalReaderFormatting provides testFormatting.value) {
                 AppTheme(useDarkTheme = false) {
                     val initialContent = buildString {
                         append("<p id='select-target'>Selection preserves exact text, 中文 and emoji 😀.</p>")
@@ -409,6 +411,45 @@ class EInkReaderAnnotationUiTest {
         assertEquals(exact, JSONObject(created.get()!!).getString("quote"))
         assertEquals(generation, js("window._inkreadGeneration"))
         assertEquals(false, js("!!document.getElementById('replacement-body')"))
+    }
+
+    @Test fun mixedScriptHighlightRetainsExactAnchorAcrossIndependentSizesAndResize() {
+        startReader()
+        openSelection()
+        val original = JSONObject(js("""(function(){
+            var model=InkReadScriptFonts.install(document.getElementById('eink-content'));
+            var n=model.annotationNodes.find(function(n){return n.parentElement.id==='select-target';});
+            var range=model.range(n,0,n.length), selection=getSelection();
+            selection.removeAllRanges();selection.addRange(range);
+            return InkReadAnnotations.captureSelection(window._inkreadGeneration);
+        })()""") as String)
+        assertTrue(original.getString("rangeQuote").contains("中文"))
+        val html = js("document.getElementById('eink-content').innerHTML")
+        compose.runOnIdle { annotationJson.value = JSONArray().put(JSONObject().put("id", "mixed-script")
+            .put("anchor", original)).toString() }
+        compose.waitUntil(5_000) { locations.get()?.contains("attached") == true }
+        compose.onNodeWithTag("reader_selection_done").performClick()
+        compose.waitUntil(5_000) { !selecting.value }
+        listOf(12 to 48, 48 to 12).forEachIndexed { index, (english, chinese) ->
+            compose.runOnIdle { testFormatting.value = ReaderFormatting(fontSize = english, chineseFontSize = chinese) }
+            compose.waitUntil(10_000) {
+                js("Math.abs(parseFloat(getComputedStyle(document.querySelector('#select-target .eink-script-cjk')).fontSize) - " +
+                    (chinese * instrumentation.targetContext.resources.configuration.fontScale) + ") < .1") == true
+            }
+            assertEquals("Formatting must not rewrite the indexed article", html,
+                js("document.getElementById('eink-content').innerHTML"))
+            resizeRestored.set(null)
+            compose.runOnIdle { resizeRequest.value = "mixed-script" to (index + 1L) }
+            compose.waitUntil(5_000) { resizeRestored.get() == ("mixed-script" to true) && selecting.value }
+            val restored = JSONObject(js("InkReadAnnotations.captureSelection(window._inkreadGeneration)") as String)
+            listOf("documentFingerprint", "rangeQuote", "prefix", "suffix", "start", "end",
+                "startNode", "endNode", "startOffset", "endOffset").forEach { key ->
+                assertEquals("Independent sizing must preserve $key", original.get(key), restored.get(key))
+            }
+            pressBack()
+            compose.waitUntil(5_000) { !selecting.value }
+            assertNull("Reflow/cancel cannot commit a resized highlight", resized.get())
+        }
     }
 
     @Test fun nativeHighlightRendersWithoutEditingBodyTextAndDoneRestoresPaging() {
@@ -865,9 +906,11 @@ class EInkReaderAnnotationUiTest {
         // Use real DOM Range/Selection objects in the device WebView to exercise
         // its layout-generated paragraph separators, in addition to gesture tests.
         val snapshot = JSONObject(js("""
-            (function(){var first=document.getElementById('select-target').firstChild;
-            var next=document.getElementById('paragraph-0').firstChild;
-            var range=document.createRange();range.setStart(first,0);range.setEnd(next,12);
+            (function(){var model=InkReadScriptFonts.install(document.getElementById('eink-content'));
+            var first=model.nodes.find(function(n){return n.parentElement===document.getElementById('select-target');});
+            var next=model.nodes.find(function(n){return n.parentElement===document.getElementById('paragraph-0');});
+            var a=model.point(first,0,false),b=model.point(next,12,true);
+            var range=document.createRange();range.setStart(a.node,a.offset);range.setEnd(b.node,b.offset);
             var selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);
             return JSON.stringify({display:selection.toString(),raw:range.toString(),
                 anchor:JSON.parse(InkReadAnnotations.captureSelection(window._inkreadGeneration))});})()
@@ -881,8 +924,11 @@ class EInkReaderAnnotationUiTest {
 
     private fun textPoint(id: String, start: Int, end: Int, edge: String = "center"): PointF {
         val geometry = JSONObject(js("""
-            (function(){var target=document.getElementById(${JSONObject.quote(id)}),t=target.firstChild;
-            var r=document.createRange();r.setStart(t,$start);r.setEnd(t,$end);
+            (function(){var target=document.getElementById(${JSONObject.quote(id)});
+            var model=InkReadScriptFonts.install(document.getElementById('eink-content'));
+            var t=model.nodes.find(function(n){return n.parentElement===target;});
+            var a=model.point(t,$start,false),b=model.point(t,$end,true);
+            var r=document.createRange();r.setStart(a.node,a.offset);r.setEnd(b.node,b.offset);
             var rects=r.getClientRects(),b=rects[${if (edge == "end") "rects.length-1" else "0"}];
             var x=(b.left+b.right)/2,y=(b.top+b.bottom)/2;
             return JSON.stringify({x:x,y:y,left:b.left,right:b.right,bottom:b.bottom,

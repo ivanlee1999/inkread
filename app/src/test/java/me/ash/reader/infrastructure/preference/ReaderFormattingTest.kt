@@ -9,6 +9,7 @@ class ReaderFormattingTest {
     @Test fun defaultsMatchReleasedReaderAppearance() {
         val value = ReaderFormatting.Default
         assertEquals(18, value.fontSize)
+        assertEquals(18, value.chineseFontSize)
         assertEquals(1f, value.lineHeight)
         assertEquals(0.5f, value.letterSpacing)
         assertEquals(0f, value.wordSpacing)
@@ -20,6 +21,15 @@ class ReaderFormattingTest {
         assertEquals(1f, value.imageContrast)
         assertEquals(false, value.imageGrayscale)
         assertEquals(value, value.clamped())
+    }
+
+    @Test fun scriptSizesClampIndependentlyAndCopiesPreserveTheOtherScript() {
+        val format = ReaderFormatting(fontSize = 20, chineseFontSize = 26)
+        assertEquals(26, format.copy(fontSize = 22).chineseFontSize)
+        assertEquals(20, format.copy(chineseFontSize = 30).fontSize)
+        assertEquals(12, format.copy(chineseFontSize = -1).clamped().chineseFontSize)
+        assertEquals(48, format.copy(chineseFontSize = Int.MAX_VALUE).clamped().chineseFontSize)
+        assertEquals(32, ReaderFormatting(fontSize = 32).chineseFontSize)
     }
 
     @Test fun validCustomSettingsAreNotRoundedOrReset() {

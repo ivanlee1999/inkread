@@ -443,3 +443,28 @@ test('new offline image mappings refresh existing media elements without a docum
     assert.deepEqual(f.anchor(),anchor);assertAnchorVisible(f);
     assert.equal(f.context.InkReadFormatting.documentId,'unchanged-document');
 });
+
+test('independent script sizes update CSS without changing logical anchors or the other size', async()=>{
+    const f=fixture(); await f.flush(); f.context.goToPage(4);
+    const before=f.anchor(), nodes=[...f.nodes]; f.context.InkReadFormatting.beginSession();
+    f.context.InkReadFormatting.apply({...defaults,fontSize:18,chineseFontSize:30}); await f.flush();
+    assert.equal(f.variables['--reader-font-size'],'18px');
+    assert.equal(f.variables['--reader-cjk-scale'],(30/18)+'em');
+    assert.deepEqual(f.anchor(),before); assertAnchorVisible(f);
+    f.context.InkReadFormatting.apply({...defaults,fontSize:24,chineseFontSize:30}); await f.flush();
+    assert.equal(f.variables['--reader-font-size'],'24px');
+    assert.equal(f.variables['--reader-cjk-scale'],'1.25em');
+    assert.deepEqual(f.anchor(),before); assert.deepEqual(f.nodes,nodes);
+    f.context.InkReadFormatting.endSession(true,defaults); await f.flush();
+    assert.equal(f.variables['--reader-cjk-scale'],'1em');
+    assert.deepEqual(f.anchor(),before); assertAnchorVisible(f);
+});
+
+test('largest script reserves a complete line in a short viewport', async()=>{
+    const f=fixture(); await f.flush(); f.fireResize(200,120); await f.flush();
+    f.context.InkReadFormatting.apply({...defaults,fontSize:12,chineseFontSize:48,lineHeight:2.5,
+        marginLeft:96,marginRight:96,marginTop:96,marginBottom:96}); await f.flush();
+    const margins=f.context.InkReadFormatting.effectiveMargins();
+    assert.ok(200-margins.left-margins.right >= 48*1.5-0.01);
+    assert.ok(120-margins.top-margins.bottom >= 120-0.01);
+});

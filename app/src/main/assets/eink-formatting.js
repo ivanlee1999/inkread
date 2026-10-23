@@ -1,4 +1,4 @@
-/* InkRead's live, no-reload paginated layout. The article DOM stays immutable. */
+/* Live paginated layout. Logical article nodes stay immutable across script-size reflow. */
 var _vw = 0, _pageStride = 0, _totalPages = 1, _currentPage = 0;
 var _didFinishInitialPagination = false;
 (function () {
@@ -9,7 +9,7 @@ var _didFinishInitialPagination = false;
     var margins = { left: 0, right: 0, top: 0, bottom: 0 };
     var fontCss = '', pendingAnchor = null, columnProbe = null;
     var readingIdentity = window._inkreadReadingIdentity || null;
-    var lastAppliedCommandId = 0;
+    var lastAppliedCommandId = 0, scriptFonts = null;
 
     function notify(name) {
         try {
@@ -58,6 +58,8 @@ var _didFinishInitialPagination = false;
         return value;
     }
     function textRange(node, start, end) {
+        if (scriptFonts) return scriptFonts.range(node, Math.min(node.length, Math.max(0, start)),
+            Math.min(node.length, Math.max(start, end)));
         var range = document.createRange();
         range.setStart(node, Math.min(node.length, Math.max(0, start)));
         range.setEnd(node, Math.min(node.length, Math.max(start, end)));
@@ -166,6 +168,10 @@ var _didFinishInitialPagination = false;
         var typography = window.getComputedStyle(frame);
         var effectiveFontSize = parseFloat(typography.fontSize) || settings.fontSize;
         var effectiveLineHeight = parseFloat(typography.lineHeight) || effectiveFontSize * settings.lineHeight;
+        // CJK may be larger than the English base even when system text zoom is active.
+        var largestScriptScale = Math.max(1, (settings.chineseFontSize || settings.fontSize) / settings.fontSize);
+        effectiveFontSize *= largestScriptScale;
+        effectiveLineHeight *= largestScriptScale;
         var minimumWidth = Math.max(32, effectiveFontSize * 1.5);
         var horizontalScale = Math.min(1, Math.max(0, _vw - minimumWidth) / Math.max(1, settings.marginLeft + settings.marginRight));
         var minimumLine = Math.max(32, Math.max(effectiveLineHeight, effectiveFontSize * 1.4) + 8);
@@ -252,6 +258,7 @@ var _didFinishInitialPagination = false;
         var style = document.documentElement.style;
         var variables = {
             'font-size': value.fontSize + 'px', 'line-height': value.lineHeight,
+            'cjk-scale': ((value.chineseFontSize || value.fontSize) / value.fontSize) + 'em',
             'letter-spacing': value.letterSpacing + 'px', 'word-spacing': value.wordSpacing + 'em',
             'text-color': 'rgb(' + Math.round(255 * (1 - value.textDarkness)) + ',' + Math.round(255 * (1 - value.textDarkness)) + ',' + Math.round(255 * (1 - value.textDarkness)) + ')',
             'text-weight': value.textWeight, 'paragraph-gap': value.paragraphGap + 'em',
@@ -325,15 +332,19 @@ var _didFinishInitialPagination = false;
     }
     function initialize() {
         frame = document.getElementById('eink-content');
-        var walker = document.createTreeWalker(frame, NodeFilter.SHOW_TEXT, {
-            acceptNode: function (node) {
-                var parent = node.parentElement;
-                return parent && !/^(SCRIPT|STYLE|NOSCRIPT)$/.test(parent.tagName) && /\S/.test(node.data) ?
-                    NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
-            }
-        });
-        var node;
-        while ((node = walker.nextNode())) nodes.push(node);
+        scriptFonts = window.InkReadScriptFonts && InkReadScriptFonts.install(frame);
+        if (scriptFonts) nodes = scriptFonts.readingNodes;
+        else {
+            var walker = document.createTreeWalker(frame, NodeFilter.SHOW_TEXT, {
+                acceptNode: function (node) {
+                    var parent = node.parentElement;
+                    return parent && !/^(SCRIPT|STYLE|NOSCRIPT)$/.test(parent.tagName) && /\S/.test(node.data) ?
+                        NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+                }
+            });
+            var node;
+            while ((node = walker.nextNode())) nodes.push(node);
+        }
         media = Array.prototype.slice.call(frame.querySelectorAll('img,svg,video,table'));
         setStyle(settings);
         layoutViewport();
