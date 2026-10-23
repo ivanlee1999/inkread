@@ -66,6 +66,7 @@ fun EInkPaginationBar(
     onBack: (() -> Unit)? = null,
     onFormattingClick: (() -> Unit)? = null,
     onSaveArticle: (() -> Unit)? = null,
+    onContentSource: (() -> Unit)? = null,
     onLibraryActions: (() -> Unit)? = null,
     onSelectText: (() -> Unit)? = null,
     onAnnotationsClick: (() -> Unit)? = null,
@@ -121,7 +122,7 @@ fun EInkPaginationBar(
                 Icon(Icons.AutoMirrored.Rounded.ArrowForward, stringResource(R.string.next_page), tint = Color.Black)
             }
         }
-        if (onBack != null || onPrevArticle != null || onNextArticle != null || canDecreaseFontSize || canIncreaseFontSize || onFormattingClick != null || onSaveArticle != null || onLibraryActions != null || onSelectText != null || onAnnotationsClick != null) {
+        if (onContentSource != null || onBack != null || onPrevArticle != null || onNextArticle != null || canDecreaseFontSize || canIncreaseFontSize || onFormattingClick != null || onSaveArticle != null || onLibraryActions != null || onSelectText != null || onAnnotationsClick != null) {
             // Keep all 48dp targets intact in narrow split-screen windows.
             // Only this on-demand action row grows; reading space is never
             // reserved when controls are hidden.
@@ -158,12 +159,13 @@ fun EInkPaginationBar(
                     ) { Text("Aa", color = Color.Black, fontSize = 18.sp) }
                 }
                 listOf(
+                    Triple("Source", "Article content source", onContentSource),
                     Triple("Save", "Save to library", onSaveArticle),
                     Triple("Saved", "Saved article actions", onLibraryActions),
                 ).forEach { (label, description, action) ->
                     if (action != null) Box(
                         modifier = Modifier.size(64.dp, 48.dp)
-                            .testTag(if (label == "Save") "reader_save_article" else "reader_library_actions")
+                            .testTag(when (label) { "Source" -> "reader_content_source"; "Save" -> "reader_save_article"; else -> "reader_library_actions" })
                             .semantics { contentDescription = description }
                             .clickable(interactionSource = remember { MutableInteractionSource() },
                                 indication = null, role = Role.Button, onClick = action),

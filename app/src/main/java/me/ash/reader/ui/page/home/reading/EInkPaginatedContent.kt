@@ -123,6 +123,8 @@ fun EInkPaginatedContent(
     volumeKeyOwner: Any? = null,
     onBack: (() -> Unit)? = null,
     onSaveArticle: (() -> Unit)? = null,
+    onContentSource: ((canReplaceDocument: () -> Boolean) -> Unit)? = null,
+    onDocumentInteractionStarted: (() -> Unit)? = null,
     onLibraryActions: (() -> Unit)? = null,
     readingContentRevision: String? = null,
     initialReadingAnchor: String? = null,
@@ -184,11 +186,13 @@ fun EInkPaginatedContent(
     val currentSelectionMode by rememberUpdatedState(selectionActive)
     val currentAnnotationEditing by rememberUpdatedState(annotationEditing)
     val currentOnSelectionModeChange by rememberUpdatedState(onSelectionModeChange)
+    val currentOnDocumentInteractionStarted by rememberUpdatedState(onDocumentInteractionStarted)
     val currentOnCreateAnnotation by rememberUpdatedState(onCreateAnnotation)
     val currentOnAnnotationLocationsChanged by rememberUpdatedState(onAnnotationLocationsChanged)
     val currentOnAnnotationJumpResult by rememberUpdatedState(onAnnotationJumpResult)
     val currentAnnotationJumpRequest by rememberUpdatedState(annotationJumpRequest)
     val currentOnAnnotationClick by rememberUpdatedState(onAnnotationClick)
+    val currentAnnotationResizeRequest by rememberUpdatedState(annotationResizeRequest)
     val currentOnAnnotationResizeResult by rememberUpdatedState(onAnnotationResizeResult)
     val currentOnResizeSelection by rememberUpdatedState(onResizeSelection)
     val currentAutoHighlightEnabled by rememberUpdatedState(autoHighlightEnabled)
@@ -244,6 +248,7 @@ fun EInkPaginatedContent(
     }
     val currentGeneration = rememberUpdatedState(documentGeneration)
     var resizeSession by remember { mutableStateOf<Pair<String, Long>?>(null) }
+    var handledAnnotationResize by remember { mutableStateOf<Pair<String, Long>?>(null) }
     val currentResizeSession by rememberUpdatedState(resizeSession)
     // Extracted navigation controller — keeps page-state decisions testable
     // and queues volume key events received while pagination is resetting.
@@ -405,6 +410,11 @@ fun EInkPaginatedContent(
     fun selectionOwnsInput(): Boolean = annotationCapture.hasPending || nativeSelectionActive || currentSelectionMode ||
         (webViewRef.value as? EInkAnnotationWebView)?.hasActiveSelection == true
 
+    fun canReplaceDocument(): Boolean = isInitialPaginationReadyState.value && !selectionOwnsInput() &&
+        !annotationCapturePending && !formattingOpening && formattingDraft == null &&
+        !currentEditingFormatting && !currentAnnotationEditing && currentResizeSession == null &&
+        (currentAnnotationResizeRequest == null || currentAnnotationResizeRequest == handledAnnotationResize)
+
     // The hidden controls still measure beneath Done during selection. Freeze
     // only their annotation rows at the last idle frame: an automatic save,
     // status refresh or Undo must not resize the WebView under native handles.
@@ -485,7 +495,6 @@ fun EInkPaginatedContent(
         }
     }
 
-    var handledAnnotationResize by remember { mutableStateOf<Pair<String, Long>?>(null) }
     LaunchedEffect(documentGeneration, annotationResizeRequest, isInitialPaginationReady, annotationEditing, editingFormatting) {
         val request = annotationResizeRequest ?: return@LaunchedEffect
         if (!isInitialPaginationReady || annotationEditing || editingFormatting || handledAnnotationResize == request) return@LaunchedEffect
@@ -496,6 +505,7 @@ fun EInkPaginatedContent(
             currentOnAnnotationResizeResult?.invoke(request.first, false)
             return@LaunchedEffect
         }
+        currentOnDocumentInteractionStarted?.invoke()
         val generation = documentGeneration
         val commandAtRequest = navController.lastIssuedCommandId
         resizeSession = request
@@ -583,6 +593,7 @@ fun EInkPaginatedContent(
         val view = webViewRef.value ?: return
         val generation = documentGeneration
         val snapshot = committedFormatting ?: persistedFormatting
+        currentOnDocumentInteractionStarted?.invoke()
         formattingOpening = true
         // Capture the anchor before reserving panel space changes the viewport.
         view.evaluateJavascript("window.InkReadFormatting && InkReadFormatting.beginSession()") { result ->
@@ -682,6 +693,7 @@ fun EInkPaginatedContent(
                             onCancelResize = ::finishReaderSelection
                             onAnnotationTapped = { id ->
                                 if (!selectionOwnsInput() && !currentAnnotationEditing && !currentEditingFormatting) {
+                                    if (currentOnAnnotationClick != null) currentOnDocumentInteractionStarted?.invoke()
                                     bottomBarVisible = false
                                     currentOnAnnotationClick?.invoke(id)
                                 }
@@ -706,6 +718,7 @@ fun EInkPaginatedContent(
                                 }
                             }
                             onSelectionStarted = {
+                                currentOnDocumentInteractionStarted?.invoke()
                                 nativeSelectionActive = true
                                 currentOnSelectionModeChange?.invoke(true)
                                 // Queue this before any possible menu action. Capture also
@@ -743,6 +756,7 @@ fun EInkPaginatedContent(
                                 val view = this
                                 val ticket = annotationCapture.begin(currentGeneration.value, view, addNote,
                                     annotationId = resizing?.first, resizeToken = resizing?.second?.toString()) ?: return@annotation
+                                currentOnDocumentInteractionStarted?.invoke()
                                 annotationCapturePending = true
                                 val generation = ticket.generation
                                 val timeout = coroutineScope.launch {
@@ -889,6 +903,7 @@ fun EInkPaginatedContent(
                                                 currentOnAutoCreateAnnotation == null || currentResizeSession != null ||
                                                 currentAnnotationEditing || currentEditingFormatting || annotationCapture.hasPending ||
                                                 !view.hasActiveSelection || !view.acceptAutomaticCapture(token)) return@post
+                                            currentOnDocumentInteractionStarted?.invoke()
                                             // Do not clear native handles: Undo and deliberate manual adjustment remain available.
                                             currentOnAutoCreateAnnotation?.invoke(json)
                                         }
@@ -1027,13 +1042,27 @@ fun EInkPaginatedContent(
                         currentArticleIndex = currentArticleIndex,
                         totalArticleCount = totalArticleCount,
                         onBack = onBack?.let { { if (selectionOwnsInput()) finishReaderSelection() else exitReader() } },
+                        onContentSource = onContentSource?.let { action -> {
+                            if (canReplaceDocument()) {
+                                val generation = currentGeneration.value
+                                currentOnDocumentInteractionStarted?.invoke()
+                                // Recheck live ownership when a dialog choice is clicked as well.
+                                action { generation == currentGeneration.value && canReplaceDocument() }
+                            }
+                        } },
                         onSaveArticle = onSaveArticle?.let { action -> { if (!selectionOwnsInput() && !annotationCapturePending) action() } },
-                        onLibraryActions = onLibraryActions?.let { action -> { if (!selectionOwnsInput() && !annotationCapturePending) action() } },
+                        onLibraryActions = onLibraryActions?.let { action -> { if (canReplaceDocument()) {
+                            currentOnDocumentInteractionStarted?.invoke(); action()
+                        } } },
                         onFormattingClick = if (isInitialPaginationReady) ::openFormatting else null,
                         onSelectText = if (isInitialPaginationReady && onCreateAnnotation != null && onSelectionModeChange != null) {
-                            { if (!selectionOwnsInput() && !annotationCapturePending) onSelectionModeChange(true) }
+                            { if (!selectionOwnsInput() && !annotationCapturePending) {
+                                currentOnDocumentInteractionStarted?.invoke(); onSelectionModeChange(true)
+                            } }
                         } else null,
-                        onAnnotationsClick = onAnnotationsClick?.let { action -> { if (!selectionOwnsInput() && !annotationCapturePending) { bottomBarVisible = false; action() } } },
+                        onAnnotationsClick = onAnnotationsClick?.let { action -> { if (canReplaceDocument()) {
+                            currentOnDocumentInteractionStarted?.invoke(); bottomBarVisible = false; action()
+                        } } },
                         annotationStatus = settledBarAnnotations.first,
                         onUndoAutoHighlight = if (settledBarAnnotations.second) ::undoAutomaticHighlight else null,
                     )

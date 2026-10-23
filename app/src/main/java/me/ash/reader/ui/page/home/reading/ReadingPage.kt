@@ -23,6 +23,10 @@ import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.foundation.layout.Column
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -71,6 +75,7 @@ import me.ash.reader.ui.page.adaptive.NavigationAction
 import me.ash.reader.ui.page.library.RssLibrarySnapshot
 import me.ash.reader.ui.page.library.SaveRssToLibraryViewModel
 import me.ash.reader.ui.page.adaptive.ReaderState
+import me.ash.reader.ui.page.adaptive.ReaderContentPresentationGate
 import me.ash.reader.ui.page.home.reading.tts.TtsButton
 import me.ash.reader.ui.theme.isEInkMode
 
@@ -99,7 +104,60 @@ fun ReadingPage(
     val openLinkSpecificBrowser = LocalOpenLinkSpecificBrowser.current
     val isPullToSwitchArticleEnabled = requestedAnnotationId == null && LocalPullToSwitchArticle.current.value
     val readingUiState = viewModel.readingUiState.collectAsStateValue()
-    val readerState = viewModel.readerStateStateFlow.collectAsStateValue()
+    val incomingReaderState = viewModel.readerStateStateFlow.collectAsStateValue()
+    val contentPresentation = remember {
+        ReaderContentPresentationGate<Pair<Int?, String?>, ReaderState.ContentState> { it.documentBody }
+    }
+    // Derive both annotation and WebView state from the last presented body. A result may have
+    // arrived before a native selection callback but not yet reached this composition.
+    val readerState = incomingReaderState.copy(content = contentPresentation.present(
+        incomingReaderState.sourceAccountId to incomingReaderState.articleId, incomingReaderState.content))
+    // Do not restore a dialog without its live WebView ownership guard after recreation.
+    var showContentSource by remember(readerState.articleId, readerState.sourceAccountId) { mutableStateOf(false) }
+    var contentSourceGuard by remember(readerState.articleId, readerState.sourceAccountId) {
+        mutableStateOf<(() -> Boolean)?>(null)
+    }
+    fun chooseContentSource(action: () -> Unit) {
+        val canReplace = contentPresentation.onExplicitSourceChoice { contentSourceGuard?.invoke() == true }
+        showContentSource = false
+        contentSourceGuard = null
+        if (canReplace) {
+            action()
+        }
+    }
+    val feedFallback = (readerState.content as? ReaderState.Description)?.fallback == true
+    val refreshFailed = (readerState.content as? ReaderState.FullContent)?.refreshFailed == true
+    val postponedContentReady = incomingReaderState.content.documentBody?.let {
+        it != readerState.content.documentBody
+    } == true
+    val fallbackMessage = stringResource(if (refreshFailed) R.string.reader_content_previous_kept else R.string.reader_content_feed_kept)
+    LaunchedEffect(readerState.articleId, readerState.sourceAccountId, feedFallback, refreshFailed) {
+        if (feedFallback || refreshFailed) context.showToast(fallbackMessage)
+    }
+    if (showContentSource) {
+        AlertDialog(
+            onDismissRequest = { showContentSource = false; contentSourceGuard = null },
+            title = { Text(stringResource(R.string.reader_content_source)) },
+            text = {
+                Column {
+                    Text(stringResource(if (readerState.content is ReaderState.FullContent)
+                        R.string.reader_content_extracted_current else R.string.reader_content_feed_current))
+                    if (feedFallback || refreshFailed) Text(fallbackMessage)
+                    if (postponedContentReady) Text(stringResource(R.string.reader_content_update_ready))
+                    TextButton(onClick = { chooseContentSource { viewModel.renderDescriptionContent() } }) {
+                        Text(stringResource(R.string.reader_content_use_feed))
+                    }
+                    TextButton(onClick = { chooseContentSource { viewModel.renderFullContent() } }) {
+                        Text(stringResource(R.string.reader_content_try_full))
+                    }
+                    TextButton(onClick = { chooseContentSource { viewModel.renderFullContent(forceRefresh = true) } }) {
+                        Text(stringResource(R.string.reader_content_refresh))
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showContentSource = false; contentSourceGuard = null }) { Text(stringResource(R.string.close)) } },
+        )
+    }
     val annotationSource = if (usePaginatedReader && readerState.articleId != null && readerState.sourceAccountId != null &&
         (readerState.content is ReaderState.FullContent || readerState.content is ReaderState.Description)) {
         AnnotationSource(
@@ -116,7 +174,9 @@ fun ReadingPage(
         annotationSource != null && annotationSource.sourceId == expectedAnnotationSourceId &&
             annotationSource.accountId == expectedAnnotationAccountId
     }
-    val annotations = rememberAnnotationReaderUi(annotationSource, readerState.content, annotationViewModel, matchingRequestedAnnotation)
+    val annotations = rememberAnnotationReaderUi(annotationSource,
+        readerState.content.documentBody ?: readerState.content, annotationViewModel, matchingRequestedAnnotation,
+        onDocumentInteractionStarted = contentPresentation::onInteractionStarted)
 
     val savedSuccessMessage by rememberUpdatedState(stringResource(R.string.saved_rss_save_success))
     val savedFailureMessage by rememberUpdatedState(stringResource(R.string.saved_rss_save_failed))
@@ -266,6 +326,13 @@ fun ReadingPage(
                                 } else null,
                                 onNavigateToStylePage = onNavigateToStylePage,
                                 onSaveArticle = saveArticle,
+                                onDocumentInteractionStarted = contentPresentation::onInteractionStarted,
+                                onContentSource = { guard ->
+                                    if (annotations.canReplaceDocument()) {
+                                        contentSourceGuard = { annotations.canReplaceDocument() && guard() }
+                                        showContentSource = true
+                                    }
+                                },
                                 onBack = { onNavAction(NavigationAction.Close) },
                                 currentArticleIndex = readerState.articleOrdinal.takeIf { requestedAnnotationId == null },
                                 totalArticleCount = readerState.totalArticleCount.takeIf { requestedAnnotationId == null },
@@ -455,8 +522,10 @@ fun ReadingPage(
                             }
                         },
                         onFullContent = {
-                            if (it) viewModel.renderFullContent()
-                            else viewModel.renderDescriptionContent()
+                            // The ordinary reader has no E-Ink native capture/editor ownership.
+                            contentSourceGuard = { true }
+                            contentPresentation.onInteractionStarted()
+                            showContentSource = true
                         },
                         onBoldCharacters = { (!boldCharacters).put(context, coroutineScope) },
                         onReadAloud = {

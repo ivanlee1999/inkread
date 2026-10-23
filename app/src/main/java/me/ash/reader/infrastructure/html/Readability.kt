@@ -2,7 +2,6 @@ package me.ash.reader.infrastructure.html
 
 import android.util.Log
 import net.dankito.readability4j.extended.Readability4JExtended
-import net.dankito.readability4j.extended.processor.PostprocessorExtended
 import net.dankito.readability4j.extended.util.RegExUtilExtended
 import net.dankito.readability4j.model.ReadabilityOptions
 import net.dankito.readability4j.processor.MetadataParser
@@ -37,7 +36,7 @@ object Readability {
             preprocessor = Preprocessor(regExUtil),
             metadataParser = MetadataParser(regExUtil),
             articleGrabber = RYArticleGrabberExtended(options, regExUtil),
-            postprocessor = PostprocessorExtended(),
+            postprocessor = ArticleUrlPostprocessor(),
         )
     }
 }

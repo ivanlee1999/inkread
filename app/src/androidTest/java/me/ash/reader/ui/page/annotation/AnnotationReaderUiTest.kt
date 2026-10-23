@@ -27,6 +27,96 @@ class AnnotationReaderUiTest {
     @Before fun resetKeys() = VolumeKeyEventBus.resetForTest()
     @After fun releaseKeys() = VolumeKeyEventBus.resetForTest()
 
+    @Test fun sourceGuardReadsSelectionModalAndSaveOwnershipBeforeRecomposition() {
+        val fixture = Fixture()
+        fixture.actions.state.value = AnnotationDocumentState(loading = false, annotations = listOf(annotation()))
+        compose.setContent { fixture.Screen() }
+        awaitReady(fixture)
+        compose.runOnIdle {
+            val guard = fixture.ui.canReplaceDocument
+            assertTrue(guard())
+            fixture.ui.onAnnotationClick("highlight-one")
+            assertEquals("An accepted annotation tap pins immediately", 1, fixture.interactions)
+            assertFalse(guard())
+            fixture.ui.close()
+            assertTrue(guard())
+            fixture.ui.onSelectionModeChange(true)
+            assertFalse("Native selection owns input immediately", guard())
+            fixture.ui.onSelectionModeChange(false)
+            assertTrue(guard())
+            fixture.ui.onCreateAnnotation(ANCHOR, true)
+            assertFalse("An accepted note owns input before its dialog recomposes", guard())
+            fixture.ui.close()
+            assertTrue(guard())
+            fixture.ui.onCreateAnnotation(ANCHOR, false)
+            assertFalse("An accepted save owns input before its busy state recomposes", guard())
+            fixture.actions.pending!!.invoke(null)
+            assertTrue(guard())
+        }
+    }
+
+    @Test fun interactionHookIgnoresRejectedAndRevokedCallbacksButPinsAcceptedRequests() {
+        val fixture = Fixture()
+        compose.setContent { fixture.Screen() }
+        awaitReady(fixture)
+        lateinit var previous: AnnotationReaderUi
+        compose.runOnIdle {
+            fixture.ui.onCreateAnnotation("{}", false)
+            fixture.ui.onAnnotationClick("unknown-highlight")
+            assertEquals(0, fixture.interactions)
+            fixture.ui.onCreateAnnotation(ANCHOR, false)
+            assertEquals(1, fixture.interactions)
+            fixture.ui.onCreateAnnotation(ANCHOR, false) // Rejected while this manual save is busy.
+            assertEquals(1, fixture.interactions)
+            fixture.actions.pending!!.invoke(null)
+            fixture.ui.resize(annotation())
+            assertEquals("Pin synchronously at resize request, before the reader effect", 2, fixture.interactions)
+            assertFalse("A queued resize owns input before the reader recomposes", fixture.ui.canReplaceDocument())
+            fixture.ui.onResizeResult("unrelated-highlight", false)
+            assertFalse("Unrelated results cannot release a queued resize", fixture.ui.canReplaceDocument())
+            fixture.ui.onResizeResult("highlight-one", false)
+            assertTrue("A failed matching resize releases pending ownership", fixture.ui.canReplaceDocument())
+            fixture.ui.resize(annotation())
+            assertFalse(fixture.ui.canReplaceDocument())
+            fixture.ui.onSelectionModeChange(true)
+            assertFalse("The native selection now owns the acknowledged resize", fixture.ui.canReplaceDocument())
+            fixture.ui.onSelectionModeChange(false)
+            assertTrue("Native cancellation must not permanently disable Source", fixture.ui.canReplaceDocument())
+            previous = fixture.ui
+            fixture.source = null
+            fixture.revision = "unavailable"
+        }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            previous.onCreateAnnotation(ANCHOR, true)
+            previous.resize(annotation())
+            assertEquals(3, fixture.interactions)
+            assertFalse("An obsolete document cannot authorize a source change", previous.canReplaceDocument())
+            assertFalse(fixture.ui.available)
+            assertTrue("Annotation availability is not required for ordinary source choices", fixture.ui.canReplaceDocument())
+        }
+    }
+
+    @Test fun automaticSavePinsImmediatelyAndBlocksSourceUntilItSettles() {
+        val fixture = Fixture()
+        fixture.actions.autoHighlight.value = true
+        compose.setContent { fixture.Screen() }
+        awaitReady(fixture)
+        compose.waitUntil(5_000) { fixture.ui.autoHighlightEnabled }
+        compose.runOnIdle {
+            val guard = fixture.ui.canReplaceDocument
+            fixture.ui.onAutoCreateAnnotation(ANCHOR)
+            assertEquals(1, fixture.interactions)
+            assertFalse(guard())
+            fixture.ui.onAutoCreateAnnotation(ANCHOR)
+            assertEquals("Rejected duplicate saves do not acquire new ownership", 1, fixture.interactions)
+            fixture.actions.automaticPending!!("auto-one", null)
+            assertTrue(guard())
+            fixture.ui.onAutoCreateAnnotation(ANCHOR)
+            assertEquals("An already accepted anchor is not saved twice", 1, fixture.interactions)
+        }
+    }
+
     @Test fun noteBackClosesModalFirstAndNeverCreatesOrMovesReader() {
         val fixture = Fixture()
         compose.setContent { fixture.Screen() }
@@ -265,7 +355,11 @@ class AnnotationReaderUiTest {
         compose.runOnIdle { fixture.ui.onAutoCreateAnnotation(ANCHOR) }
         compose.runOnIdle { fixture.ui.onCreateAnnotation(ANCHOR, true) }
         compose.onNodeWithTag("annotation_note_editor").assertDoesNotExist()
-        compose.runOnIdle { fixture.actions.automaticPending!!("auto-delayed", null) }
+        compose.runOnIdle {
+            val guard = fixture.ui.canReplaceDocument
+            fixture.actions.automaticPending!!("auto-delayed", null)
+            assertFalse("The accepted note handoff owns input before its Compose effect runs", guard())
+        }
         compose.waitUntil { fixture.ui.dialog is AnnotationDialogState.Note }
         compose.onNodeWithTag("annotation_note_input").performTextInput("Keep this explicit action")
         compose.onNodeWithTag("annotation_note_save").performScrollTo().performClick()
@@ -285,12 +379,14 @@ class AnnotationReaderUiTest {
         val actions = Actions()
         val readerOwner = Any()
         var exits = 0
+        var interactions = 0
         lateinit var ui: AnnotationReaderUi
         @Composable fun Screen() {
             MaterialTheme {
                 EInkReaderVolumeReservation(true, readerOwner)
                 BackHandler { exits += 1 }
-                ui = rememberAnnotationReaderUi(source, revision, actions, requested)
+                ui = rememberAnnotationReaderUi(source, revision, actions, requested,
+                    onDocumentInteractionStarted = { interactions += 1 })
                 AnnotationReaderDialogs(ui)
             }
         }

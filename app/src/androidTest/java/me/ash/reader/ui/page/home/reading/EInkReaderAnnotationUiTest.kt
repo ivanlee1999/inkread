@@ -67,6 +67,7 @@ import me.ash.reader.infrastructure.preference.EInkModePreference
 import me.ash.reader.infrastructure.preference.LocalEInkMode
 import me.ash.reader.infrastructure.preference.LocalReaderFormatting
 import me.ash.reader.infrastructure.preference.ReaderFormatting
+import me.ash.reader.ui.page.adaptive.ReaderContentPresentationGate
 import me.ash.reader.ui.theme.AppTheme
 import org.hamcrest.Description
 import org.hamcrest.Matcher
@@ -107,6 +108,9 @@ class EInkReaderAnnotationUiTest {
     private val automaticAnchor = AtomicReference<String?>()
     private val undoAvailable = mutableStateOf(false)
     private val undoCount = AtomicInteger()
+    private val incomingContent = mutableStateOf<String?>(null)
+    private val contentPresentation = ReaderContentPresentationGate<String, String> { it }
+    private val nextDocumentInteraction = AtomicReference<(() -> Unit)?>(null)
     private var nativeOverflowOpen = false
     private var originalAccessibilityFlags: Int? = null
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
@@ -131,12 +135,18 @@ class EInkReaderAnnotationUiTest {
             CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON,
                 LocalReaderFormatting provides ReaderFormatting.Default.copy(fontSize = fontSize)) {
                 AppTheme(useDarkTheme = false) {
+                    val initialContent = buildString {
+                        append("<p id='select-target'>Selection preserves exact text, 中文 and emoji 😀.</p>")
+                        append("<p><a id='link-target' href='https://example.invalid/annotation-fixture'>Fixture link</a></p>")
+                        repeat(140) { append("<p id='paragraph-$it'>Paragraph $it. Long article text exercises native paging and annotation ownership.</p>") }
+                    }
                     EInkPaginatedContent(modifier = Modifier.testTag("annotation-reader"),
                         articleId = "annotation-fixture", title = "Annotation fixture", feedName = "Local fixture",
-                        publishedDate = Date(0), content = buildString {
-                            append("<p id='select-target'>Selection preserves exact text, 中文 and emoji 😀.</p>")
-                            append("<p><a id='link-target' href='https://example.invalid/annotation-fixture'>Fixture link</a></p>")
-                            repeat(140) { append("<p id='paragraph-$it'>Paragraph $it. Long article text exercises native paging and annotation ownership.</p>") }
+                        publishedDate = Date(0),
+                        content = contentPresentation.present("annotation-fixture", incomingContent.value ?: initialContent),
+                        onDocumentInteractionStarted = {
+                            contentPresentation.onInteractionStarted()
+                            nextDocumentInteraction.getAndSet(null)?.invoke()
                         },
                         selectionMode = selecting.value, onSelectionModeChange = { selecting.value = it },
                         annotationEditing = editing.value, annotationsJson = annotationJson.value,
@@ -359,6 +369,46 @@ class EInkReaderAnnotationUiTest {
         // otherwise the still-active editing guard correctly consumes that press.
         compose.onNodeWithTag("reader_controls_toggle").assertIsDisplayed()
         assertReadingNavigationRestored()
+    }
+
+    @Test fun incomingArticleKeepsNativeSelectionEvenWhenAnnotationsAreUnavailable() {
+        startReader(annotationsAvailable = false)
+        val generation = js("window._inkreadGeneration")
+        longPressFirstWord()
+        val exact = js("window.getSelection().toString()") as String
+        compose.runOnIdle { incomingContent.value = "<p id='replacement-body'>Newly extracted article.</p>" }
+        assertNativeSelectionRetained(exact, "after an incoming full article")
+        assertEquals(generation, js("window._inkreadGeneration"))
+        assertEquals(false, js("!!document.getElementById('replacement-body')"))
+        pressBack()
+        compose.waitUntil(5_000) { !selecting.value }
+        settle()
+        assertEquals("Ending selection is not permission to replace its document", generation, js("window._inkreadGeneration"))
+        assertEquals(false, js("!!document.getElementById('replacement-body')"))
+    }
+
+    @Test fun incomingArticleAtNativeCapturePreservesTheNoteHandoff() {
+        startReader()
+        val generation = js("window._inkreadGeneration")
+        longPressFirstWord()
+        val exact = js("window.getSelection().toString()") as String
+        // Complete a background fetch on the synchronous capture-entry callback. The real
+        // Chromium selection and capture still run normally, without JS Selection mocks.
+        nextDocumentInteraction.set {
+            incomingContent.value = "<p id='replacement-body'>Article fetched while capture starts.</p>"
+        }
+        clickNativeAction("Add note")
+        compose.waitUntil(5_000) { created.get() != null && editing.value }
+        assertNull("The native interaction hook must consume the queued fetch", nextDocumentInteraction.get())
+        assertEquals(exact, JSONObject(created.get()!!).getString("quote"))
+        assertEquals(true, note.get())
+        assertEquals(generation, js("window._inkreadGeneration"))
+        compose.runOnIdle { incomingContent.value = "<p id='replacement-body'>Another result while editing the note.</p>" }
+        settle()
+        assertTrue("A new body cannot dismiss the accepted note editor", editing.value)
+        assertEquals(exact, JSONObject(created.get()!!).getString("quote"))
+        assertEquals(generation, js("window._inkreadGeneration"))
+        assertEquals(false, js("!!document.getElementById('replacement-body')"))
     }
 
     @Test fun nativeHighlightRendersWithoutEditingBodyTextAndDoneRestoresPaging() {
@@ -598,6 +648,27 @@ class EInkReaderAnnotationUiTest {
         assertEquals("Selection preserves", JSONObject(resized.get()!!.second).getString("quote").trim())
         assertEquals("Selection", JSONObject(created.get()!!).getString("quote"))
         assertEquals(0, exits.get())
+    }
+
+    @Test fun incomingArticleKeepsRestoredResizeBeforeItsNativeToolbarExists() {
+        startReader()
+        saveFirstWordHighlight()
+        // Do not let the previous creation's pin mask a missing resize-start hook.
+        compose.runOnIdle { assertTrue(contentPresentation.onExplicitSourceChoice { true }) }
+        val generation = js("window._inkreadGeneration")
+        requestResize("saved-highlight", 1)
+        compose.runOnIdle { incomingContent.value = "<p id='replacement-body'>New full article during resize.</p>" }
+        settle()
+        assertTrue(selecting.value)
+        assertEquals("Selection", (js("window.getSelection().toString()") as String).trim())
+        assertEquals(generation, js("window._inkreadGeneration"))
+        assertEquals(false, js("!!document.getElementById('replacement-body')"))
+        assertNull("Content arrival cannot commit a resize", resized.get())
+        pressBack()
+        compose.waitUntil(5_000) { !selecting.value }
+        settle()
+        assertEquals(generation, js("window._inkreadGeneration"))
+        assertNull(resized.get())
     }
 
     @Test fun resizeBackBeforeToolbarAndCancelAfterHandleDragNeverSave() {

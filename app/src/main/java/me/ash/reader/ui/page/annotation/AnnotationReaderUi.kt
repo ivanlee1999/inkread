@@ -58,6 +58,8 @@ class AnnotationReaderUi internal constructor(
     val available: Boolean,
     val selectionMode: Boolean,
     val annotationEditing: Boolean,
+    /** Read live state so a Source click cannot race an accepted save or modal entry. */
+    val canReplaceDocument: () -> Boolean,
     val annotationsJson: String,
     val jumpRequest: Pair<String, Long>?,
     val onSelectionModeChange: (Boolean) -> Unit,
@@ -107,11 +109,13 @@ fun rememberAnnotationReaderUi(
     documentRevision: Any?,
     viewModel: AnnotationReaderActions,
     requestedAnnotationId: String? = null,
+    onDocumentInteractionStarted: (() -> Unit)? = null,
 ): AnnotationReaderUi {
     // Loading/error and any content replacement revoke all previous selection callbacks.
     val session = remember(source, documentRevision) { AnnotationUiSession() }
     DisposableEffect(session) { onDispose { session.active = false } }
     val currentSession by rememberUpdatedState(session)
+    val currentOnDocumentInteractionStarted by rememberUpdatedState(onDocumentInteractionStarted)
     val document by key(source) {
         remember(source) { viewModel.observe(source) }.collectAsState(AnnotationDocumentState())
     }
@@ -124,6 +128,7 @@ fun rememberAnnotationReaderUi(
     var jumpRequest by remember(session) { mutableStateOf<Pair<String, Long>?>(null) }
     var jumpSerial by remember(session) { mutableStateOf(0L) }
     var resizeRequest by remember(session) { mutableStateOf<Pair<String, Long>?>(null) }
+    var pendingResizeRequest by remember(session) { mutableStateOf<Pair<String, Long>?>(null) }
     var resizeSerial by remember(session) { mutableStateOf(0L) }
     var resizingId by remember(session) { mutableStateOf<String?>(null) }
     var undoId by remember(session) { mutableStateOf<String?>(null) }
@@ -188,15 +193,27 @@ fun rememberAnnotationReaderUi(
         available = source != null && !document.loading && document.error == null,
         selectionMode = selectionMode,
         annotationEditing = dialog != null,
+        canReplaceDocument = {
+            currentSession === session && session.active && !busy && dialog == null &&
+                !selectionMode && pendingResizeRequest == null && deferredManual == null
+        },
         annotationsJson = annotationsJson,
         jumpRequest = jumpRequest,
-        onSelectionModeChange = { if (currentSession === session && session.active && source != null) selectionMode = it },
+        onSelectionModeChange = { if (currentSession === session && session.active && source != null) {
+            // The reader sets native ownership before this synchronous acknowledgment. Keep
+            // resizingId for save validation, but do not let it block Source after Back/Copy.
+            if (it) pendingResizeRequest = null
+            selectionMode = it
+        } },
         onCreateAnnotation = create@{ json, addNote ->
             if ((currentSession !== session || !session.active) || source == null || document.loading || document.error != null) return@create
             if (busy) {
                 // A native explicit click while the accepted automatic save is committing
                 // must not vanish after the WebView closes its selection toolbar.
-                if (automaticSaving && deferredManual == null) deferredManual = json to addNote
+                if (automaticSaving && deferredManual == null) {
+                    currentOnDocumentInteractionStarted?.invoke()
+                    deferredManual = json to addNote
+                }
                 return@create
             }
             val selection = runCatching { JSONObject(json) }.getOrNull()
@@ -208,6 +225,7 @@ fun rememberAnnotationReaderUi(
             }
             val quote = runCatching { selection?.getString("quote") }.getOrNull()
             if (quote.isNullOrBlank()) { notice = "Select article text before adding a highlight."; return@create }
+            currentOnDocumentInteractionStarted?.invoke()
             val automaticId = undoId.takeIf { sameAnnotationSelection(automaticAnchor, json) }
             if (automaticId != null) {
                 selectionMode = false
@@ -240,10 +258,14 @@ fun rememberAnnotationReaderUi(
         resizeRequest = resizeRequest,
         onAnnotationClick = { id ->
             if (currentSession === session && session.active && !busy && document.annotations.any { it.id == id }) {
+                currentOnDocumentInteractionStarted?.invoke()
                 selectionMode = false; error = null; dialog = AnnotationDialogState.Detail(id)
             }
         },
         onResizeResult = { id, attached ->
+            if (currentSession === session && session.active && pendingResizeRequest?.first == id) {
+                pendingResizeRequest = null
+            }
             if (currentSession === session && session.active && resizingId == id && !attached) {
                 resizingId = null
                 notice = "This highlight could not be located. Its quote and note are unchanged."
@@ -253,7 +275,8 @@ fun rememberAnnotationReaderUi(
             if (currentSession !== session || !session.active || busy || resizingId != id) return@resize
             val quote = runCatching { JSONObject(json).getString("quote") }.getOrNull()
             if (quote.isNullOrBlank()) { notice = "Select a passage before saving the resized highlight."; return@resize }
-            busy = true; resizingId = null
+            currentOnDocumentInteractionStarted?.invoke()
+            busy = true; resizingId = null; pendingResizeRequest = null
             viewModel.updateSelection(id, quote, json) { failure ->
                 result(failure)
                 if (currentSession === session && session.active && failure == null) {
@@ -269,6 +292,7 @@ fun rememberAnnotationReaderUi(
             if (quote.isNullOrBlank()) return@automatic
             if ((undoId != null && sameAnnotationSelection(automaticAnchor, json)) ||
                 document.annotations.any { sameAnnotationSelection(it.anchorJson, json) }) return@automatic
+            currentOnDocumentInteractionStarted?.invoke()
             busy = true
             automaticSaving = true
             viewModel.createAutomatic(AnnotationDraft(source, quote, json)) { id, failure ->
@@ -278,7 +302,10 @@ fun rememberAnnotationReaderUi(
                 }
             }
         },
-        onAnnotationsClick = { if (currentSession === session && session.active && !busy) { selectionMode = false; error = null; notice = null; dialog = AnnotationDialogState.List } },
+        onAnnotationsClick = { if (currentSession === session && session.active && !busy) {
+            currentOnDocumentInteractionStarted?.invoke()
+            selectionMode = false; error = null; notice = null; dialog = AnnotationDialogState.List
+        } },
         onAnnotationJumpResult = { id, attached -> if (currentSession === session && session.active && jumpRequest?.first == id && !attached) notice = "This highlight could not be located in the current text. Its quote and note are still saved." },
         document = document,
         dialog = dialog,
@@ -289,17 +316,27 @@ fun rememberAnnotationReaderUi(
         close = { if (!busy) { dialog = null; error = null; notice = null } },
         resize = { annotation ->
             if (!busy && currentSession === session && session.active) {
+                // Pin before publishing the resize request, not in its later Compose effect.
+                currentOnDocumentInteractionStarted?.invoke()
                 dialog = null; selectionMode = false; error = null
                 resizingId = annotation.id; resizeSerial += 1
                 resizeRequest = annotation.id to resizeSerial
+                pendingResizeRequest = resizeRequest
             }
         },
-        edit = { if (!busy && currentSession === session && session.active) { dialog = AnnotationDialogState.Note(existing = it); error = null } },
-        delete = { if (!busy && currentSession === session && session.active) { dialog = AnnotationDialogState.Delete(it); error = null } },
+        edit = { if (!busy && currentSession === session && session.active) {
+            currentOnDocumentInteractionStarted?.invoke()
+            dialog = AnnotationDialogState.Note(existing = it); error = null
+        } },
+        delete = { if (!busy && currentSession === session && session.active) {
+            currentOnDocumentInteractionStarted?.invoke()
+            dialog = AnnotationDialogState.Delete(it); error = null
+        } },
         saveNote = { note ->
             if (!busy && currentSession === session && session.active) {
                 val editor = dialog as? AnnotationDialogState.Note
                 if (editor != null) {
+                    currentOnDocumentInteractionStarted?.invoke()
                     busy = true
                     editor.draft?.let { viewModel.create(it.copy(note = note), result) }
                         ?: (editor.existing?.id ?: editor.existingId)?.let { viewModel.updateNote(it, note, result) }
