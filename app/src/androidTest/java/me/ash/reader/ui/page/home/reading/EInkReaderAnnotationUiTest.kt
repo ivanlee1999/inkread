@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.PointF
 import android.graphics.Region
 import android.os.SystemClock
@@ -54,6 +55,7 @@ import androidx.test.espresso.matcher.ViewMatchers.withText
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
 import androidx.test.runner.lifecycle.Stage
+import java.io.File
 import java.util.Date
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -511,7 +513,7 @@ class EInkReaderAnnotationUiTest {
         nativeHandleAt(originalStart).check(matches(isDisplayed()))
         nativeHandleAt(originalEnd).check(matches(isDisplayed()))
         dragSelectionHandle(originalEnd, textPoint("select-target", 10, 19, edge = "end"))
-        compose.waitUntil(5_000) { js("window.getSelection().toString().trim()") == "Selection preserves" }
+        awaitHandleSelection("Selection preserves", "default-selection")
         assertTrue("Handle adjustment must keep native selection ownership", selecting.value)
         assertEquals("A handle drag must not turn pages", before, page.get())
         assertEquals("A handle drag must not trigger the article swipe", 0, nextArticles.get())
@@ -671,7 +673,7 @@ class EInkReaderAnnotationUiTest {
         assertTrue(nativeActionAvailable("Cancel")); closeNativeOverflow()
         assertTrue(nativeActionAvailable("Copy")); closeNativeOverflow()
         dragSelectionHandle(textPoint("select-target", 0, 9, "end"), textPoint("select-target", 10, 19, "end"))
-        compose.waitUntil(5_000) { js("window.getSelection().toString().trim()") == "Selection preserves" }
+        awaitHandleSelection("Selection preserves", "resize-explicit-save")
         assertNull("Handle motion/release cannot persist a resize", resized.get())
         assertEquals(0, automaticCount.get())
         assertTrue(nativeActionAvailable("Save highlight"))
@@ -729,7 +731,7 @@ class EInkReaderAnnotationUiTest {
         tapText("select-target", 0, 9)
         awaitVisualFrame()
         dragSelectionHandle(textPoint("select-target", 0, 9, "end"), textPoint("select-target", 10, 19, "end"))
-        compose.waitUntil(5_000) { js("window.getSelection().toString().trim()") == "Selection preserves" }
+        awaitHandleSelection("Selection preserves", "resize-cancel")
         clickNativeAction("Cancel")
         compose.waitUntil(5_000) { !selecting.value }
         settle()
@@ -804,7 +806,7 @@ class EInkReaderAnnotationUiTest {
             beforeCaptureFrame = ::awaitVisualFrame)
         closeNativeOverflow()
         dragSelectionHandle(textPoint("select-target", 0, 9, "end"), textPoint("select-target", 10, 19, "end"))
-        compose.waitUntil(5_000) { js("window.getSelection().toString().trim()") == "Selection preserves" }
+        awaitHandleSelection("Selection preserves", "automatic-highlight")
         settle()
         assertEquals("Adjusting the same session cannot save a second highlight", 1, automaticCount.get())
         assertEquals(before, page.get())
@@ -883,7 +885,7 @@ class EInkReaderAnnotationUiTest {
         nativeHandleAt(textPoint("select-target", 0, 9, "start")).check(matches(isDisplayed()))
         nativeHandleAt(textPoint("select-target", 0, 9, "end")).check(matches(isDisplayed()))
         dragSelectionHandle(textPoint("select-target", 0, 9, "end"), textPoint("select-target", 10, 19, "end"))
-        compose.waitUntil(5_000) { js("window.getSelection().toString().trim()") == "Selection preserves" }
+        awaitHandleSelection("Selection preserves", "controls-open-automatic-highlight")
         assertEquals(viewport, js("JSON.stringify([innerWidth,innerHeight])"))
         clickNativeAction("Undo highlight")
         compose.waitUntil(5_000) { undoCount.get() == 1 }
@@ -987,6 +989,60 @@ class EInkReaderAnnotationUiTest {
             start = { view -> screenPoint(view, .5f, .5f) },
             end = { _, start -> PointF(to.x + start.x - from.x, to.y + start.y - from.y) },
         ))
+        logNativeHandleState("after-drag", from = from, to = to)
+    }
+
+    private fun awaitHandleSelection(expected: String, context: String) {
+        try {
+            compose.waitUntil(5_000) { js("window.getSelection().toString().trim()") == expected }
+        } catch (timeout: ComposeTimeoutException) {
+            // Observe the failed gesture, never repeat it or manufacture a range.
+            // Diagnostic failures must not replace the original exact-text timeout.
+            logNativeHandleState("timeout-$context", expected = expected)
+            runCatching {
+                val output = InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")
+                val directory = output?.takeIf { it.isNotBlank() }?.let(::File)
+                    ?: File(instrumentation.targetContext.getExternalFilesDir(null), "annotation-diagnostics")
+                check(directory.isDirectory || directory.mkdirs())
+                val screenshot = File(directory, "annotation-handle-timeout-$context.png")
+                val bitmap = checkNotNull(instrumentation.uiAutomation.takeScreenshot())
+                try {
+                    screenshot.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+                } finally { bitmap.recycle() }
+                Log.i("InkReadAnnotationTest", "Native handle timeout screenshot: ${screenshot.name}")
+            }.onFailure { Log.w("InkReadAnnotationTest", "Native handle timeout screenshot unavailable", it) }
+            throw timeout
+        }
+    }
+
+    private fun logNativeHandleState(phase: String, expected: String? = null, from: PointF? = null, to: PointF? = null) {
+        runCatching {
+            val state = JSONObject().put("phase", phase).put("uptimeMs", SystemClock.uptimeMillis())
+                .put("expected", expected ?: JSONObject.NULL)
+                .put("from", from?.let { JSONArray(listOf(it.x, it.y)) } ?: JSONObject.NULL)
+                .put("to", to?.let { JSONArray(listOf(it.x, it.y)) } ?: JSONObject.NULL)
+            instrumentation.runOnMainSync {
+                val view = reader() as EInkAnnotationWebView
+                state.put("host", JSONObject().put("selecting", selecting.value)
+                    .put("hasActiveSelection", view.hasActiveSelection).put("hasFocus", view.hasFocus())
+                    .put("hasWindowFocus", view.hasWindowFocus()).put("attached", view.isAttachedToWindow)
+                    .put("width", view.width).put("height", view.height).put("page", page.get()))
+            }
+            state.put("dom", JSONObject(js("""
+                (function(){
+                    var s=getSelection(),r=s&&s.rangeCount?s.getRangeAt(0):null;
+                    function node(n){return n?{type:n.nodeType,name:n.nodeName,text:(n.textContent||'').slice(0,256),
+                        parentId:n.parentElement&&n.parentElement.id,parentClass:n.parentElement&&n.parentElement.className}:null;}
+                    return JSON.stringify({text:s?s.toString():null,collapsed:s?s.isCollapsed:null,rangeCount:s?s.rangeCount:0,
+                        raw:r?r.toString():null,start:node(r&&r.startContainer),startOffset:r?r.startOffset:null,
+                        end:node(r&&r.endContainer),endOffset:r?r.endOffset:null,
+                        anchor:node(s&&s.anchorNode),anchorOffset:s?s.anchorOffset:null,
+                        focus:node(s&&s.focusNode),focusOffset:s?s.focusOffset:null,
+                        generation:window._inkreadGeneration,viewport:[innerWidth,innerHeight]});
+                })()
+            """.trimIndent()) as String))
+            Log.i("InkReadAnnotationTest", "Native handle state: $state")
+        }.onFailure { Log.w("InkReadAnnotationTest", "Native handle state unavailable: $phase", it) }
     }
 
     private fun screenPoint(view: View, x: Float, y: Float): PointF {
