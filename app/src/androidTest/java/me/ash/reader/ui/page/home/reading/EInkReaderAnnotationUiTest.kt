@@ -260,7 +260,13 @@ class EInkReaderAnnotationUiTest {
         val trace = NativeTouchTrace(downAt.get(), heldFor.get(), touchEvents.toString())
         if (awaitSelection) {
             trace.assertDelivered()
-            compose.waitUntil(5_000) { selecting.value && js("window.getSelection().toString().length > 0") == true }
+            try {
+                compose.waitUntil(5_000) { selecting.value && js("window.getSelection().toString().length > 0") == true }
+            } catch (timeout: ComposeTimeoutException) {
+                logNativeHandleState("timeout-long-press", expected = "Selection", from = point)
+                recordNativeFailureScreenshot("long-press")
+                throw timeout
+            }
             assertEquals("Selection", js("window.getSelection().toString()"))
             instrumentation.runOnMainSync {
                 assertTrue("Native selection must own WebView focus", reader().hasFocus() && reader().hasWindowFocus())
@@ -465,15 +471,37 @@ class EInkReaderAnnotationUiTest {
             // while the existing mixed-script annotation remains attached.
             longPressFirstWord()
             closeNativeOverflow()
-            dragSelectionHandle(textPoint("select-target", 0, 9, "end"),
-                textPoint("select-target", 10, 19, "end"))
-            awaitHandleSelection("Selection preserves", "independent-$english-$chinese")
-            assertNativeSelectionRetained("Selection preserves", "independent sizes $english/$chinese")
+            // Exercise both handle directions inside the visible first word at
+            // every size pair, without assuming the next word fits on this page.
+            val wordEnd = textPoint("select-target", 0, 9, "end")
+            val shortenedEnd = textPoint("select-target", 0, 8, "end")
+            assertEquals("Adjacent final letters must share a visible line", wordEnd.y, shortenedEnd.y, 1f)
+            dragSelectionHandle(wordEnd, shortenedEnd)
+            awaitHandleSelection("Selectio", "independent-shrink-$english-$chinese")
+            assertNativeSelectionRetained("Selectio", "shrink at independent sizes $english/$chinese")
+            dragSelectionHandle(textPoint("select-target", 0, 8, "end"),
+                textPoint("select-target", 0, 9, "end"))
+            awaitHandleSelection("Selection", "independent-expand-$english-$chinese")
+            assertNativeSelectionRetained("Selection", "expand at independent sizes $english/$chinese")
             if (english == 20 && chinese == 24) {
-                // This moderate pair keeps the CJK endpoint visible on the
-                // narrowest profile while exercising a real cross-script drag.
-                dragSelectionHandle(textPoint("select-target", 0, 19, "end"),
-                    textPoint("select-target", 32, 34, "end"))
+                pressBack()
+                compose.waitUntil(5_000) { !selecting.value }
+                assertNull("Native long-press cannot commit a resized highlight", resized.get())
+                // Restore the existing highlight through the real resize action,
+                // then genuinely SHRINK its native END handle across scripts.
+                // Chromium expands by word with a history-dependent pointer
+                // offset; shrinking tests an exact character boundary instead.
+                // This fresh gesture does not manufacture a JS Selection.
+                resizeRestored.set(null)
+                compose.runOnIdle { resizeRequest.value = "mixed-script" to (index + 101L) }
+                compose.waitUntil(5_000) { resizeRestored.get() == ("mixed-script" to true) && selecting.value }
+                val fullQuote = original.getString("rangeQuote")
+                // Both real handles and the entire restored range must be
+                // visible before injecting the one cross-script native drag.
+                assertNativeSelectionRetained(fullQuote, "before cross-script native resize")
+                val fullEnd = textPoint("select-target", 0, fullQuote.length, "end")
+                val chineseEnd = textPoint("select-target", 32, 34, "end")
+                dragSelectionHandle(fullEnd, chineseEnd)
                 val expected = "Selection preserves exact text, 中文"
                 awaitHandleSelection(expected, "independent-cross-script")
                 assertNativeSelectionRetained(expected, "native drag across unequal script sizes")
@@ -1070,20 +1098,24 @@ class EInkReaderAnnotationUiTest {
             // Observe the failed gesture, never repeat it or manufacture a range.
             // Diagnostic failures must not replace the original exact-text timeout.
             logNativeHandleState("timeout-$context", expected = expected)
-            runCatching {
-                val output = InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")
-                val directory = output?.takeIf { it.isNotBlank() }?.let(::File)
-                    ?: File(instrumentation.targetContext.getExternalFilesDir(null), "annotation-diagnostics")
-                check(directory.isDirectory || directory.mkdirs())
-                val screenshot = File(directory, "annotation-handle-timeout-$context.png")
-                val bitmap = checkNotNull(instrumentation.uiAutomation.takeScreenshot())
-                try {
-                    screenshot.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
-                } finally { bitmap.recycle() }
-                Log.i("InkReadAnnotationTest", "Native handle timeout screenshot: ${screenshot.name}")
-            }.onFailure { Log.w("InkReadAnnotationTest", "Native handle timeout screenshot unavailable", it) }
+            recordNativeFailureScreenshot(context)
             throw timeout
         }
+    }
+
+    private fun recordNativeFailureScreenshot(context: String) {
+        runCatching {
+            val output = InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")
+            val directory = output?.takeIf { it.isNotBlank() }?.let(::File)
+                ?: File(instrumentation.targetContext.getExternalFilesDir(null), "annotation-diagnostics")
+            check(directory.isDirectory || directory.mkdirs())
+            val screenshot = File(directory, "annotation-handle-timeout-$context.png")
+            val bitmap = checkNotNull(instrumentation.uiAutomation.takeScreenshot())
+            try {
+                screenshot.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+            } finally { bitmap.recycle() }
+            Log.i("InkReadAnnotationTest", "Native handle timeout screenshot: ${screenshot.name}")
+        }.onFailure { Log.w("InkReadAnnotationTest", "Native handle timeout screenshot unavailable", it) }
     }
 
     private fun logNativeHandleState(phase: String, expected: String? = null, from: PointF? = null, to: PointF? = null) {
@@ -1097,7 +1129,8 @@ class EInkReaderAnnotationUiTest {
                 state.put("host", JSONObject().put("selecting", selecting.value)
                     .put("hasActiveSelection", view.hasActiveSelection).put("hasFocus", view.hasFocus())
                     .put("hasWindowFocus", view.hasWindowFocus()).put("attached", view.isAttachedToWindow)
-                    .put("width", view.width).put("height", view.height).put("page", page.get()))
+                    .put("width", view.width).put("height", view.height).put("page", page.get())
+                    .put("automaticCount", automaticCount.get()).put("automaticAnchor", automaticAnchor.get() ?: JSONObject.NULL))
             }
             state.put("dom", JSONObject(js("""
                 (function(){
