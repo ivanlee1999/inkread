@@ -33,6 +33,7 @@ internal object NativePageDensityCapture {
         recordDensity: Boolean = true,
         contentBoundsOnScreen: (() -> Rect)? = null,
         beforeCaptureFrame: (() -> Unit)? = null,
+        contentRegionsOnScreen: (() -> List<Rect>)? = null,
     ) {
         compose.waitForIdle()
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -50,7 +51,11 @@ internal object NativePageDensityCapture {
             awaitCommittedFrames(compose)
             val candidate = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
             val explicitBounds = contentBoundsOnScreen?.invoke()
-            val rendered = if (explicitBounds == null) containsRenderedContent(compose, candidate)
+            val explicitRegions = contentRegionsOnScreen?.invoke()
+            // Test-specific body regions stay separate so unrelated ink between them
+            // cannot satisfy the same contrast threshold used by a single region.
+            val rendered = if (explicitRegions != null) explicitRegions.any { regionHasRenderedContrast(candidate, it) }
+                else if (explicitBounds == null) containsRenderedContent(compose, candidate)
                 else regionHasRenderedContrast(candidate, explicitBounds)
             if (rendered) {
                 captured = candidate

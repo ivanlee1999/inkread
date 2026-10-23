@@ -15,7 +15,9 @@ import android.view.MenuItem
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.view.ViewConfiguration
+import android.view.inspector.WindowInspector
 import android.webkit.WebView
 import android.widget.ListView
 import android.widget.TextView
@@ -115,6 +117,7 @@ class EInkReaderAnnotationUiTest {
     private val nextDocumentInteraction = AtomicReference<(() -> Unit)?>(null)
     private val testFormatting = mutableStateOf(ReaderFormatting.Default)
     private var nativeOverflowOpen = false
+    private val endpointAvailableLeading = mutableMapOf<PointF, Float>()
     private var originalAccessibilityFlags: Int? = null
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
 
@@ -133,14 +136,21 @@ class EInkReaderAnnotationUiTest {
         }
     }
 
-    private fun startReader(fontSize: Int = ReaderFormatting.Default.fontSize, annotationsAvailable: Boolean = true) {
+    private fun startReader(fontSize: Int = ReaderFormatting.Default.fontSize, annotationsAvailable: Boolean = true,
+        authoredTightLineHeight: Boolean = false) {
         testFormatting.value = ReaderFormatting(fontSize = fontSize)
         compose.setContent {
             CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON,
                 LocalReaderFormatting provides testFormatting.value) {
                 AppTheme(useDarkTheme = false) {
                     val initialContent = buildString {
-                        append("<p id='select-target'>Selection preserves exact text, 中文 and emoji 😀.</p>")
+                        if (authoredTightLineHeight) {
+                            // Author-important declarations cannot bypass the measured selection floor.
+                            append("<p style='line-height:1!important'><span id='select-target' style='line-height:.75!important'>" +
+                                "Selection preserves exact text, 中文 and emoji 😀.</span></p>")
+                        } else {
+                            append("<p id='select-target'>Selection preserves exact text, 中文 and emoji 😀.</p>")
+                        }
                         append("<p><a id='link-target' href='https://example.invalid/annotation-fixture'>Fixture link</a></p>")
                         repeat(140) { append("<p id='paragraph-$it'>Paragraph $it. Long article text exercises native paging and annotation ownership.</p>") }
                     }
@@ -416,7 +426,7 @@ class EInkReaderAnnotationUiTest {
     }
 
     @Test fun mixedScriptHighlightRetainsExactAnchorAcrossIndependentSizesAndResize() {
-        startReader()
+        startReader(authoredTightLineHeight = true)
         openSelection()
         val original = JSONObject(js("""(function(){
             var model=InkReadScriptFonts.install(document.getElementById('eink-content'));
@@ -966,6 +976,7 @@ class EInkReaderAnnotationUiTest {
             var x=(b.left+b.right)/2,y=(b.top+b.bottom)/2;
             return JSON.stringify({x:x,y:y,left:b.left,right:b.right,bottom:b.bottom,
                 width:document.documentElement.getBoundingClientRect().width,height:innerHeight,
+                lineHeight:parseFloat(getComputedStyle(target.closest('p')||target).lineHeight),glyphHeight:b.height,
                 word:r.toString(),hit:target.contains(document.elementFromPoint(x,y)),
                 ready:document.readyState==='complete' && window._didFinishInitialPagination &&
                     InkReadAnnotations.documentId===window._inkreadGeneration});})()
@@ -983,7 +994,12 @@ class EInkReaderAnnotationUiTest {
             val x = geometry.getDouble(when (edge) { "start" -> "left"; "end" -> "right"; else -> "x" }).toFloat() * scale
             val y = geometry.getDouble(if (edge == "center") "y" else "bottom").toFloat() * scale
             assertTrue("Text must stay inside the reader: $geometry", x > 0 && x < view.width && y > 0 && y < view.height)
-            result.set(PointF(origin[0] + x, origin[1] + y))
+            val point = PointF(origin[0] + x, origin[1] + y)
+            val lineHeight = geometry.getDouble("lineHeight").toFloat() * scale
+            assertTrue("Native handle lookup requires measured finite leading: $geometry",
+                lineHeight.isFinite() && lineHeight > 0)
+            endpointAvailableLeading[point] = maxOf(0f, lineHeight - geometry.getDouble("glyphHeight").toFloat() * scale)
+            result.set(point)
         }
         return result.get()
     }
@@ -998,24 +1014,48 @@ class EInkReaderAnnotationUiTest {
         }
     }
 
-    private fun nativeHandleAt(endpoint: PointF) = onView(isRoot()).inRoot(withDecorView(
-        object : TypeSafeMatcher<View>() {
+    private fun nativeHandleAt(endpoint: PointF): androidx.test.espresso.ViewInteraction {
+        val matcher = object : TypeSafeMatcher<View>() {
             override fun describeTo(description: Description) {
                 description.appendText("native selection-handle popup at ").appendValue(endpoint)
+                    .appendText(" with available measured leading ").appendValue(endpointAvailableLeading[endpoint])
             }
             override fun matchesSafely(view: View): Boolean {
                 val density = view.resources.displayMetrics.density
+                val params = view.layoutParams as? WindowManager.LayoutParams
+                if (params?.type != WindowManager.LayoutParams.TYPE_APPLICATION_SUB_PANEL) return false
                 if (!view.isShown || view.width !in 1..(64 * density).toInt() ||
                     view.height !in 1..(96 * density).toInt()) return false
                 val origin = IntArray(2)
                 view.getLocationOnScreen(origin)
+                // A native handle is attached to the line box, not the smaller
+                // English glyph's bottom in a Chinese-dominant line. Use the
+                // actual leading beyond the glyph height, not an arbitrary pixel radius.
+                // Root size/X remain constrained; uniqueness is checked below.
+                val belowGlyph = maxOf(32 * density, endpointAvailableLeading[endpoint] ?: 0f)
+                Log.i("InkReadAnnotationTest", "Native handle candidate: x=${origin[0]}, y=${origin[1]}, " +
+                    "width=${view.width}, height=${view.height}, endpoint=$endpoint, belowGlyph=$belowGlyph")
                 return abs(origin[0] + view.width / 2f - endpoint.x) <= 32 * density &&
-                    abs(origin[1] - endpoint.y) <= 32 * density
+                    origin[1] >= endpoint.y - 32 * density && origin[1] <= endpoint.y + belowGlyph
             }
-        },
-    ))
+        }
+        val selectedRoot = AtomicReference<View?>()
+        compose.waitUntil(5_000) {
+            instrumentation.runOnMainSync {
+                val candidates = WindowInspector.getGlobalWindowViews().filter { matcher.matches(it) }
+                assertTrue("Native handle targeting must be unambiguous at $endpoint; candidates=${candidates.size}",
+                    candidates.size <= 1)
+                selectedRoot.set(candidates.singleOrNull())
+            }
+            selectedRoot.get() != null
+        }
+        // Espresso may choose one of several matching roots. Pin the explicitly
+        // unique native popup instead of relying on its root-picker ordering.
+        return onView(isRoot()).inRoot(withDecorView(equalTo(checkNotNull(selectedRoot.get()))))
+    }
 
     private fun dragSelectionHandle(from: PointF, to: PointF) {
+        logNativeHandleState("before-drag", from = from, to = to)
         nativeHandleAt(from).perform(realTimeDrag(
             start = { view -> screenPoint(view, .5f, .5f) },
             end = { _, start -> PointF(to.x + start.x - from.x, to.y + start.y - from.y) },
@@ -1062,6 +1102,11 @@ class EInkReaderAnnotationUiTest {
             state.put("dom", JSONObject(js("""
                 (function(){
                     var s=getSelection(),r=s&&s.rangeCount?s.getRangeAt(0):null;
+                    function rect(r){return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};}
+                    var target=document.getElementById('select-target'),block=target&&target.closest('p');
+                    function layout(e){if(!e)return null;var c=getComputedStyle(e);return {tag:e.tagName,
+                        fontSize:c.fontSize,lineHeight:c.lineHeight,padding:[c.paddingTop,c.paddingBottom],
+                        border:[c.borderTopWidth,c.borderBottomWidth],rects:Array.from(e.getClientRects()).map(rect)};}
                     function node(n){return n?{type:n.nodeType,name:n.nodeName,text:(n.textContent||'').slice(0,256),
                         parentId:n.parentElement&&n.parentElement.id,parentClass:n.parentElement&&n.parentElement.className}:null;}
                     return JSON.stringify({text:s?s.toString():null,collapsed:s?s.isCollapsed:null,rangeCount:s?s.rangeCount:0,
@@ -1069,7 +1114,8 @@ class EInkReaderAnnotationUiTest {
                         end:node(r&&r.endContainer),endOffset:r?r.endOffset:null,
                         anchor:node(s&&s.anchorNode),anchorOffset:s?s.anchorOffset:null,
                         focus:node(s&&s.focusNode),focusOffset:s?s.focusOffset:null,
-                        generation:window._inkreadGeneration,viewport:[innerWidth,innerHeight]});
+                        generation:window._inkreadGeneration,viewport:[innerWidth,innerHeight],
+                        rangeRects:r?Array.from(r.getClientRects()).map(rect):[],target:layout(target),block:layout(block)});
                 })()
             """.trimIndent()) as String))
             Log.i("InkReadAnnotationTest", "Native handle state: $state")

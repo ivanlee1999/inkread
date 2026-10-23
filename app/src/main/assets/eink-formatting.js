@@ -12,6 +12,10 @@
         'fontKerning','fontVariationSettings','letterSpacing','wordSpacing','textTransform','verticalAlign','direction'];
     function tag(node) { return String(node.tagName || '').toUpperCase(); }
     function number(value, fallback) { var result = parseFloat(value); return isFinite(result) ? result : fallback; }
+    function probeStyle(element, name, value) {
+        element.style.setProperty(name.replace(/[A-Z]/g, function (letter) { return '-' + letter.toLowerCase(); }), value, 'important');
+    }
+    function probeCss(value) { return value.replace(/;/g, '!important;'); }
     function eligible(element, root) {
         for (var n = element; n && n !== root; n = n.parentElement) {
             if (EXCLUDE.test(tag(n)) || (n.classList && n.classList.contains('eink-metadata')) ||
@@ -29,6 +33,49 @@
     }
     function create(root, model) {
         var document = root.ownerDocument || window.document, blocks = [], boundaries = [], seen = new WeakMap(), boundarySeen = new WeakMap();
+        var bindingFor = new WeakMap(), blockBindings = new WeakMap(), bindingCount = 0;
+        function bindImportant(element) {
+            if (bindingFor.has(element)) return bindingFor.get(element);
+            if (element.style.getPropertyPriority('line-height') !== 'important') return null;
+            var binding = { element: element, original: element.style.getPropertyValue('line-height'), id: String(bindingCount++) };
+            binding.property = '--inkread-line-' + binding.id;
+            element.setAttribute('data-inkread-line-binding', binding.id);
+            // One initial binding lets external rules raise an inline-important
+            // declaration without mutating the article on every preview. With
+            // those rules cleared, the exact authored expression is the fallback.
+            element.style.setProperty('line-height', 'var(' + binding.property + ', ' + binding.original + ')', 'important');
+            bindingFor.set(element, binding);
+            return binding;
+        }
+        function bindingRule(binding, leading) {
+            var selector = '#eink-content' + (binding.element === root ? '' : ' ') +
+                '[data-inkread-line-binding="' + binding.id + '"]';
+            return selector + '{' + binding.property + ':' + leading + ';}';
+        }
+        function inheritedLeading(element, computed, size, fallback) {
+            if (computed.lineHeight === 'normal') return 'normal';
+            var ratio = number(computed.lineHeight, size * fallback) / size;
+            // Typed OM keeps computed numbers distinct from lengths; legacy
+            // getComputedStyle resolves both to pixels. Preserve the distinction
+            // so differently sized nested runs inherit the original semantics.
+            try {
+                var typed = element.computedStyleMap && element.computedStyleMap().get('line-height');
+                if (typed && typed.unit === 'number') return String(typed.value);
+                if (typed && typed.unit === 'px') return ratio + 'em';
+            } catch (ignored) {}
+            // Older WebViews: cover explicit inline ancestry without inspecting
+            // arbitrary author stylesheets. Ordinary reader leading is unitless.
+            for (var ancestor = element; ancestor; ancestor = ancestor.parentElement) {
+                var binding = bindingFor.get(ancestor);
+                var declared = binding ? binding.original : ancestor.style.lineHeight;
+                if (!declared || /^(inherit|unset)$/.test(declared)) continue;
+                if (declared === 'normal') return 'normal';
+                if (/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(declared)) return declared;
+                if (/^(?:\d+(?:\.\d*)?|\.\d+)(?:px|em|rem|%|pt|pc|in|cm|mm|ex|ch|lh|rlh|vw|vh|vmin|vmax)$/.test(declared)) return ratio + 'em';
+                break;
+            }
+            return String(ratio);
+        }
         model.nodes.forEach(function (record) {
             if (!eligible(record.parentElement, root) || !record.fragments.some(function (piece) {
                 var p = piece.node.parentElement;
@@ -40,10 +87,17 @@
             // Assigned once, before pagination is ready. Previews change only the
             // separate stylesheet, never article attributes or text nodes.
             block.setAttribute('data-inkread-line-block', String(blocks.length));
+            var bindings = [], blockBinding = bindImportant(block);
+            if (blockBinding) bindings.push(blockBinding);
+            blockBindings.set(block, bindings);
             function markInline(parent) {
                 for (var child = parent.firstChild; child; child = child.nextSibling) {
                     if (child.nodeType !== 1 || EXCLUDE.test(tag(child)) || isBlock(child) || !eligible(child, root)) continue;
-                    if (INLINE.split(',').indexOf(tag(child).toLowerCase()) !== -1) child.setAttribute('data-inkread-line-inline', '');
+                    if (INLINE.split(',').indexOf(tag(child).toLowerCase()) !== -1) {
+                        child.setAttribute('data-inkread-line-inline', '');
+                        var binding = bindImportant(child);
+                        if (binding) bindings.push(binding);
+                    }
                     markInline(child);
                 }
             }
@@ -59,6 +113,7 @@
                             boundarySeen.set(child, true);
                             child.setAttribute('data-inkread-line-boundary', String(boundaries.length));
                             boundaries.push(child);
+                            bindImportant(child);
                         }
                     } else findBoundaries(child);
                 }
@@ -89,43 +144,45 @@
             style.textContent = '';
             var host = document.createElement('div'), rules = [], maximum = 0;
             host.setAttribute('aria-hidden', 'true'); host.setAttribute('inert', '');
-            host.style.cssText = 'position:fixed;left:-100000px;top:0;visibility:hidden;pointer-events:none;' +
-                'width:max-content;max-width:none;height:auto;margin:0;padding:0;border:0;contain:layout style;';
+            host.style.cssText = probeCss('display:block;position:fixed;left:-100000px;top:0;visibility:hidden;pointer-events:none;' +
+                'width:max-content;max-width:none;height:auto;margin:0;padding:0;border:0;contain:layout style;transition:none;animation:none;');
             document.body.appendChild(host);
             try {
                 var frameSize = number(window.getComputedStyle(root).fontSize, settings.fontSize);
                 boundaries.forEach(function (boundary) {
                     var computed = window.getComputedStyle(boundary), size = number(computed.fontSize, frameSize);
-                    var declared = boundary.style.lineHeight;
+                    var binding = bindingFor.get(boundary), declared = binding ? binding.original : boundary.style.lineHeight;
                     if (/^(inherit|unset|revert|revert-layer)$/.test(declared)) declared = '';
-                    var leading = declared || (computed.lineHeight === 'normal' ? 'normal' : String(number(computed.lineHeight, size * settings.lineHeight) / size));
+                    var leading = declared || inheritedLeading(boundary, computed, size, settings.lineHeight);
                     rules.push('#eink-content [data-inkread-line-boundary="' + boundary.getAttribute('data-inkread-line-boundary') +
                         '"]{line-height:' + leading + '!important;}');
+                    if (binding) rules.push(bindingRule(binding, leading));
                 });
                 blocks.forEach(function (block) {
                     var sourceStyle = window.getComputedStyle(block), blockSize = number(sourceStyle.fontSize, frameSize);
                     if (!(blockSize > 0) || sourceStyle.display === 'none') return;
                     var requested = number(sourceStyle.lineHeight, blockSize * settings.lineHeight);
-                    var probe = document.createElement(block.tagName), textCount = 0;
+                    var probe = document.createElement(block.tagName), textCount = 0, cloneElements = [];
                     for (var ancestor = block; ancestor; ancestor = ancestor.parentElement) {
                         var language = ancestor.getAttribute('lang') || ancestor.getAttribute('xml:lang');
                         if (language) { probe.setAttribute('lang', language); break; }
                     }
-                    probe.style.cssText = 'display:block;position:relative;width:max-content;max-width:none;min-width:0;' +
+                    probe.style.cssText = probeCss('display:block;position:relative;width:max-content;max-width:none;min-width:0;' +
                         'height:auto;min-height:0;max-height:none;margin:0;padding:0;border:0;white-space:nowrap;' +
-                        'text-indent:0;column-count:auto;column-width:auto;overflow:visible;line-height:normal;';
+                        'text-indent:0;column-count:auto;column-width:auto;overflow:visible;line-height:normal;transition:none;animation:none;');
                     function copyType(from, to, parentSize) {
                         var computed = window.getComputedStyle(from), size = number(computed.fontSize, parentSize);
-                        TYPOGRAPHY.forEach(function (name) { if (computed[name]) to.style[name] = computed[name]; });
-                        to.style.fontSize = (size / parentSize) + 'em';
-                        to.style.lineHeight = 'normal';
+                        TYPOGRAPHY.forEach(function (name) { if (computed[name]) probeStyle(to, name, computed[name]); });
+                        probeStyle(to, 'fontSize', (size / parentSize) + 'em');
+                        probeStyle(to, 'lineHeight', 'normal');
+                        cloneElements.push(to);
                         requested = Math.max(requested, number(computed.lineHeight, size * settings.lineHeight));
                         return size;
                     }
                     copyType(block, probe, blockSize);
                     // WebView text zoom also applies to probes. Start with the
                     // authored CSS size, then verify against the live block.
-                    probe.style.fontSize = (settings.fontSize * blockSize / frameSize) + 'px';
+                    probeStyle(probe, 'fontSize', (settings.fontSize * blockSize / frameSize) + 'px');
                     function copyChildren(from, to, parentSize) {
                         for (var child = from.firstChild; child; child = child.nextSibling) {
                             if (child.nodeType === 3) {
@@ -137,7 +194,7 @@
                                 if (childStyle.display === 'none') continue;
                                 var clone = document.createElement(child.tagName);
                                 var size = copyType(child, clone, parentSize);
-                                clone.style.display = childStyle.display;
+                                probeStyle(clone, 'display', childStyle.display);
                                 if (child.getAttribute('lang')) clone.setAttribute('lang', child.getAttribute('lang'));
                                 copyChildren(child, clone, size); to.appendChild(clone);
                             }
@@ -148,26 +205,37 @@
                     host.appendChild(probe);
                     var actualSize = number(window.getComputedStyle(probe).fontSize, blockSize);
                     if (actualSize > 0 && Math.abs(actualSize - blockSize) > .01) {
-                        probe.style.fontSize = (number(probe.style.fontSize, settings.fontSize) * blockSize / actualSize) + 'px';
+                        probeStyle(probe, 'fontSize', (number(probe.style.fontSize, settings.fontSize) * blockSize / actualSize) + 'px');
                     }
                     var box = probe.getBoundingClientRect(), range = document.createRange();
                     range.selectNodeContents(probe);
                     var glyph = range.getBoundingClientRect();
                     var natural = Math.max(box.height, glyph.height, Math.max(box.bottom, glyph.bottom) - Math.min(box.top, glyph.top));
-                    // Bound duplicate text memory to one inline context, even
-                    // for articles with thousands of mixed-script paragraphs.
-                    probe.remove();
-                    if (!(natural > 0) || !isFinite(natural)) return;
+                    if (!(natural > 0) || !isFinite(natural)) { probe.remove(); return; }
                     // Round outward for native integer caret bounds. This is a
                     // measured length, not an assumed font-size multiplier.
                     var leading = Math.max(requested, Math.ceil(natural) + 1);
-                    maximum = Math.max(maximum, leading);
+                    // Different baselines can make a uniform-length line box
+                    // taller than that length. Reserve its actual envelope in
+                    // pagination, without iteratively increasing the CSS floor.
+                    cloneElements.forEach(function (clone) { probeStyle(clone, 'lineHeight', 'inherit'); });
+                    probeStyle(probe, 'lineHeight', (leading / blockSize) + 'em');
+                    var uniformBox = probe.getBoundingClientRect(), uniformGlyph = range.getBoundingClientRect();
+                    var uniform = Math.max(uniformBox.height, uniformGlyph.height,
+                        Math.max(uniformBox.bottom, uniformGlyph.bottom) - Math.min(uniformBox.top, uniformGlyph.top));
+                    maximum = Math.max(maximum, leading, isFinite(uniform) ? Math.ceil(uniform) : 0);
+                    // Bound duplicate text memory to one inline context, even
+                    // for articles with thousands of mixed-script paragraphs.
+                    probe.remove();
                     var selector = '#eink-content[data-inkread-line-block="' + block.getAttribute('data-inkread-line-block') + '"]';
                     if (block !== root) selector = '#eink-content [data-inkread-line-block="' + block.getAttribute('data-inkread-line-block') + '"]';
                     rules.push(selector + '{line-height:' + (leading / blockSize) + 'em!important;}');
                     // A length is inherited unchanged by the differently sized
                     // script runs. Unitless leading would multiply it again.
-
+                    blockBindings.get(block).forEach(function (binding) {
+                        var size = number(window.getComputedStyle(binding.element).fontSize, blockSize);
+                        if (size > 0) rules.push(bindingRule(binding, (leading / size) + 'em'));
+                    });
                 });
             } catch (error) {
                 // A metric failure must not remove the last safe layout or

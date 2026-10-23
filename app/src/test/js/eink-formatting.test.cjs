@@ -9,7 +9,7 @@ const defaults = {fontSize:18,lineHeight:1,marginLeft:24,marginRight:24,marginTo
     letterSpacing:.5,wordSpacing:0,textDarkness:1,textWeight:400,paragraphGap:1,paragraphIndent:0,
     alignment:'start',imageContrast:1,imageGrayscale:false,fontCss:''};
 
-function fixture({layoutUnit=0, layoutScale=1, nodeCount=30, serializeStyles=false, identity=null, savedAnchor=null, mediaCount=0}={}) {
+function fixture({layoutUnit=0, layoutScale=1, nodeCount=30, serializeStyles=false, identity=null, savedAnchor=null, mediaCount=0, metricHeight=null}={}) {
     const documentListeners = new Map();
     const listeners = new Map(), frameListeners = new Map(), fontListeners = new Map();
     const variables = {}, queue = new Map(), calls = [], timers = new Map(), bodyChildren = [];
@@ -101,7 +101,16 @@ function fixture({layoutUnit=0, layoutScale=1, nodeCount=30, serializeStyles=fal
         fontSize:(parseFloat(variables['--reader-font-size'])*fontScale)+'px',
         lineHeight:(parseFloat(variables['--reader-font-size'])*fontScale*Number(variables['--reader-line-height']))+'px'
     })});
-    vm.createContext(context);vm.runInContext(runtime,context);
+    vm.createContext(context);
+    let source = runtime;
+    if (metricHeight !== null) {
+        context.InkReadScriptFonts = {install:()=>({readingNodes:nodes,range(node,start,end){
+            const range=document.createRange();range.setStart(node,start);range.setEnd(node,end);return range;
+        }})};
+        source = source.replace('/* Live paginated layout.',
+            'window.InkReadLineMetrics = {create: function(){return {update: function(){return ' + metricHeight + ';}, invalidate: function(){}, deferred: function(){return false;}, destroy: function(){}};}}; /* Live paginated layout.');
+    }
+    vm.runInContext(source,context);
     async function flush() {await Promise.resolve();while(queue.size){const work=[...queue.values()];queue.clear();work.forEach(cb=>cb());await Promise.resolve();}}
     function fireResize(width,height){context.innerWidth=width;context.innerHeight=height;listeners.get('resize')();for(const cb of timers.values())cb();timers.clear();}
     return {context,frame,nodes,media,calls,documentListeners,listeners,frameListeners,fontListeners,variables,bodyChildren,actualStride,flush,fireResize,
@@ -471,19 +480,22 @@ test('largest script reserves a complete line in a short viewport', async()=>{
 
 // Focused metric-host tests use explicit fake font/line boxes. Native WebView
 // tests remain the oracle for real fallback metrics and handle hit-testing.
-function metricsFixture({zoom=1, natural=1.25, requested=1, english=18, chinese=24, tag='P', nested=true, excluded=false, boundary=false, codeInside=false, language=null, rootBlock=false, boundaryLine=null}={}) {
+function metricsFixture({zoom=1, natural=1.25, requested=1, english=18, chinese=24, tag='P', nested=true, excluded=false, boundary=false, codeInside=false, language=null, rootBlock=false, boundaryLine=null, important={}, uniformExtra=0, typed=true, boundaryChild=false, competingRules=false}={}) {
     let measures=0, selected=false, failMeasure=false, probeLanguages=[];
     const document={readyState:'loading',addEventListener(){},removeEventListener(){}};
     const camel=s=>s.replace(/-([a-z])/g,(_,c)=>c.toUpperCase());
     function style() {
-        const result={}; Object.defineProperty(result,'cssText',{set(value){
-            for(const pair of value.split(';')) {const colon=pair.indexOf(':');if(colon>0)result[camel(pair.slice(0,colon).trim())]=pair.slice(colon+1).trim();}
+        const priority={}, result={getPropertyPriority:name=>priority[name]||'', getPropertyValue:name=>result[camel(name)]||'',
+            setProperty(name,value,flag=''){result[camel(name)]=value;priority[name]=flag;}};
+        Object.defineProperty(result,'cssText',{set(value){
+            for(const pair of value.split(';')) {const colon=pair.indexOf(':');if(colon>0){const raw=pair.slice(colon+1).trim();result.setProperty(pair.slice(0,colon).trim(),raw.replace(/!important$/,''),raw.endsWith('!important')?'important':'');}}
         }});return result;
     }
     class Element {
         constructor(tag,type=1,data='') {this.tagName=tag;this.nodeType=type;this.data=data;this.children=[];this.parentElement=null;
             this.style=style();this.attributes={};this.className='';this.ownerDocument=document;
-            this.classList={contains:name=>this.className.split(' ').includes(name)};}
+            this.classList={contains:name=>this.className.split(' ').includes(name)};
+            if(typed)this.computedStyleMap=()=>({get:()=>{const line=lineSpec(this);return line.type==='normal'?{value:'normal'}:{unit:line.type==='ratio'?'number':'px',value:line.value};}});}
         get firstChild(){return this.children[0]||null;}
         get nextSibling(){const siblings=this.parentElement?.children||[];return siblings[siblings.indexOf(this)+1]||null;}
         appendChild(child){child.parentElement=this;this.children.push(child);return child;}
@@ -492,7 +504,7 @@ function metricsFixture({zoom=1, natural=1.25, requested=1, english=18, chinese=
         get textContent(){return this.nodeType===3?this.data:this.children.map(n=>n.textContent).join('');}
         set textContent(v){this.children=[];if(v)this.appendChild(new Element(null,3,v));}
         remove(){const siblings=this.parentElement?.children; if(siblings)siblings.splice(siblings.indexOf(this),1);this.parentElement=null;}
-        getBoundingClientRect(){measures++;if(failMeasure)throw Error('test metric unavailable');probeLanguages.push(this.getAttribute('lang'));const height=naturalHeight(this);return {top:0,bottom:height,height,left:0,right:100,width:100};}
+        getBoundingClientRect(){measures++;if(failMeasure)throw Error('test metric unavailable');probeLanguages.push(this.getAttribute('lang'));const line=lineSpec(this), height=line.type==='length'?Math.max(naturalHeight(this),line.value+uniformExtra):naturalHeight(this);return {top:0,bottom:height,height,left:0,right:100,width:100};}
     }
     const el=(tag,...kids)=>{const node=new Element(tag);kids.forEach(k=>node.appendChild(typeof k==='string'?new Element(null,3,k):k));return node;};
     const head=el('HEAD'),body=el('BODY'),root=el('MAIN');body.appendChild(root);
@@ -501,13 +513,16 @@ function metricsFixture({zoom=1, natural=1.25, requested=1, english=18, chinese=
     const link=el('A','linked ',cjk); if(nested)link.authored={fontWeight:'700'};
     const block=rootBlock?root:el(tag);block.appendChild(new Element(null,3,'English '));block.appendChild(nested?link:cjk);if(!rootBlock)root.appendChild(block);
     if(excluded)block.className='eink-metadata';
-    const heading=el('H2','English heading');heading.authored={fontSize:english*1.5};if(boundaryLine)heading.style.lineHeight=boundaryLine;if(boundary)block.appendChild(heading);
+    const heading=el('H2','English heading'),headingRun=el('SPAN','nested heading');headingRun.authored={fontSize:english*3};if(boundaryChild)heading.appendChild(headingRun);heading.authored={fontSize:english*1.5};if(boundaryLine)heading.style.lineHeight=boundaryLine;if(boundary)block.appendChild(heading);
     const codeSpan=el('SPAN','代码');codeSpan.authored={fontSize:100};if(codeInside)block.appendChild(el('CODE',codeSpan));
     const pre=el('PRE',el('CODE','代码'));root.appendChild(pre);
+    if(competingRules)block.style.setProperty('font-size',english+'px','important');
+    for(const [name,value] of Object.entries(important)) ({block,link,cjk,heading,codeSpan}[name]).style.setProperty('line-height',value,'important');
     const records=[{parentElement:nested?link:block,fragments:[{node:cjk.firstChild}]}];
     function authored(node,key) {for(let n=node;n;n=n.parentElement)if(n.authored?.[key]!==undefined)return n.authored[key];}
     function size(node) {
         if(node.nodeType===3)return size(node.parentElement);
+        if(competingRules&&node.tagName==='P'&&node.style.getPropertyPriority('font-size')!=='important')return 10*zoom;
         if(node.authored)return (node.authored.fontSize??authored(node.parentElement,'fontSize')??english)*zoom;
         const raw=node.style.fontSize;
         if(raw?.endsWith('em'))return parseFloat(raw)*size(node.parentElement);
@@ -515,9 +530,36 @@ function metricsFixture({zoom=1, natural=1.25, requested=1, english=18, chinese=
         if(node.parentElement)return size(node.parentElement);
         return 16*zoom;
     }
+    function sheetValue(node,property) {
+        let value='';
+        for(const sheet of head.children) for(const rule of sheet.textContent.matchAll(/([^{}]+)\{([^{}]+)\}/g)) {
+            const attr=rule[1].match(/\[([^=\]]+)(?:="([^"]*)")?\]/);
+            if(!attr || node.getAttribute(attr[1])===null || (attr[2]!==undefined&&node.getAttribute(attr[1])!==attr[2]))continue;
+            if(rule[1].includes('#eink-content ')&&node===root)continue;
+            for(const declaration of rule[2].split(';')) {
+                const colon=declaration.indexOf(':');if(declaration.slice(0,colon)===property)value=declaration.slice(colon+1).replace(/!important$/,'');
+            }
+        }
+        return value;
+    }
+    function lineSpec(node) {
+        if(!node)return {type:'ratio',value:requested};
+        let raw=node.style.lineHeight||'', rule=sheetValue(node,'line-height');
+        if(competingRules&&node.tagName==='P'&&node.style.getPropertyPriority('line-height')!=='important')raw='1px';
+        if(rule&&node.style.getPropertyPriority('line-height')!=='important')raw=rule;
+        const variable=raw.match(/^var\((--[\w-]+),\s*(.+)\)$/);
+        if(variable)raw=sheetValue(node,variable[1])||variable[2];
+        if(!raw)return node.authored?.lineRatio!==undefined?{type:'ratio',value:node.authored.lineRatio}:lineSpec(node.parentElement);
+        if(/^(inherit|unset|revert|revert-layer)$/.test(raw))return lineSpec(node.parentElement);
+        if(raw==='normal')return {type:'normal'};
+        if(raw.endsWith('em'))return {type:'length',value:parseFloat(raw)*size(node)};
+        if(raw.endsWith('px'))return {type:'length',value:parseFloat(raw)*zoom};
+        if(raw.endsWith('%'))return {type:'length',value:parseFloat(raw)*size(node)/100};
+        return {type:'ratio',value:Number(raw)};
+    }
     function computed(node) {
-        const fontSize=size(node), lineRatio=authored(node,'lineRatio')??requested;
-        return {fontSize:fontSize+'px',lineHeight:node.style.lineHeight==='normal'?'normal':fontSize*lineRatio+'px',
+        const fontSize=size(node), line=lineSpec(node);
+        return {fontSize:fontSize+'px',lineHeight:line.type==='normal'?'normal':(line.type==='length'?line.value:fontSize*line.value)+'px',
             fontFamily:node.style.fontFamily||authored(node,'fontFamily')||'customFallback',
             fontWeight:node.style.fontWeight||authored(node,'fontWeight')||'400',fontStyle:'normal',
             display:node.style.display||(node.tagName==='SPAN'?'contents':/^(A|CODE|B|STRONG|EM|I)$/.test(node.tagName)?'inline':'block'),
@@ -534,9 +576,9 @@ function metricsFixture({zoom=1, natural=1.25, requested=1, english=18, chinese=
     context.window=context;vm.createContext(context);vm.runInContext(runtime,context);
     const metrics=context.InkReadLineMetrics.create(root,{nodes:records});
     const settings={...defaults,fontSize:english,chineseFontSize:chinese,lineHeight:requested};
-    return {metrics,settings,root,block,cjk,head,body,computed,heading,codeSpan,context,probeLanguages,measures:()=>measures,setSelected:v=>selected=v,setFailure:v=>failMeasure=v,
+    return {metrics,settings,root,block,cjk,link,head,body,computed,heading,headingRun,codeSpan,context,probeLanguages,measures:()=>measures,setSelected:v=>selected=v,setFailure:v=>failMeasure=v,
         css:()=>head.children[0].textContent,html:()=>JSON.stringify(serialize(root))};
-    function serialize(n){return {tag:n.tagName,data:n.data,attrs:n.attributes,children:n.children.map(serialize)};}
+    function serialize(n){return {tag:n.tagName,data:n.data,attrs:n.attributes,lineHeight:n.style.lineHeight,priority:n.style.getPropertyPriority('line-height'),children:n.children.map(serialize)};}
 }
 
 for(const tag of ['P','H2','LI','TD']) {
@@ -652,4 +694,94 @@ test('font reflow remains deferred and resumable when no mixed-script metric rul
     const f=metricsFixture({excluded:true});f.setSelected(true);f.metrics.invalidate();
     assert.equal(f.metrics.update(f.settings),0);assert.equal(f.metrics.deferred(),true);
     f.setSelected(false);assert.equal(f.metrics.update(f.settings),0);assert.equal(f.metrics.deferred(),false);
+});
+
+
+test('inline-important block and unequal inline runs receive one common length at text zoom',()=>{
+    const f=metricsFixture({zoom:1.6,english:12,chinese:48,natural:1.4,important:{block:'1',link:'1.1',cjk:'.75'}});
+    const html=f.html(),text=f.root.textContent,originalTextNode=f.cjk.firstChild;
+    assert.equal(f.metrics.update(f.settings),109);
+    for(const node of [f.block,f.link,f.cjk]) {
+        assert.equal(node.style.getPropertyPriority('line-height'),'important');
+        assert.match(node.style.lineHeight,/^var\(--inkread-line-\d+, /);
+        assert.ok(Math.abs(parseFloat(f.computed(node).lineHeight)-109)<1e-10,'Each variable resolves against its own run size');
+    }
+    f.metrics.invalidate();assert.equal(f.metrics.update(f.settings),109,'A second measurement must read authored fallbacks, not its previous floor');
+    assert.equal(f.html(),html);assert.equal(f.root.textContent,text);assert.equal(f.cjk.firstChild,originalTextNode);
+    f.metrics.destroy();assert.equal(f.html(),html);
+    assert.ok(Math.abs(parseFloat(f.computed(f.block).lineHeight)-19.2)<1e-10);
+    assert.ok(Math.abs(parseFloat(f.computed(f.cjk).lineHeight)-57.6)<1e-10);
+});
+
+test('important relative source leading survives size previews and cancellation without accumulating floors',()=>{
+    const f=metricsFixture({important:{block:'2em',cjk:'inherit'}}),html=f.html(),node=f.cjk.firstChild;
+    assert.equal(f.metrics.update(f.settings),36);
+    f.root.authored.fontSize=12;f.cjk.authored.fontSize=48;
+    assert.equal(f.metrics.update({...f.settings,fontSize:12,chineseFontSize:48}),61);
+    f.root.authored.fontSize=18;f.cjk.authored.fontSize=24;
+    assert.equal(f.metrics.update(f.settings),36,'Restoring the original settings reads the original 2em, not the previous 61px floor');
+    assert.equal(f.computed(f.block).lineHeight,'36px');assert.equal(f.computed(f.cjk).lineHeight,'36px');
+    assert.equal(f.html(),html);assert.equal(f.cjk.firstChild,node);assert.equal(f.body.children.length,1);
+});
+
+test('important nested heading boundaries retain relative and inherited authored values',()=>{
+    for(const [value,expected] of [['1.5em','40.5px'],['140%','37.8px'],['1.4','37.8px'],['inherit','27px'],['unset','27px'],['normal','normal']]) {
+        const f=metricsFixture({tag:'DIV',boundary:true,important:{heading:value}}),html=f.html();
+        f.metrics.update(f.settings);assert.equal(f.computed(f.heading).lineHeight,expected,value);
+        f.metrics.invalidate();f.metrics.update(f.settings);assert.equal(f.computed(f.heading).lineHeight,expected,value);
+        assert.equal(f.html(),html);assert.equal(f.heading.style.lineHeight,'var(--inkread-line-'+f.heading.getAttribute('data-inkread-line-binding')+', '+value+')');
+    }
+});
+
+test('important bindings exclude code and metadata and preserve previous rules on metric failure',()=>{
+    const excluded=metricsFixture({excluded:true,important:{block:'.5'}});
+    assert.equal(excluded.block.style.lineHeight,'.5');assert.equal(excluded.block.getAttribute('data-inkread-line-binding'),null);
+    const f=metricsFixture({codeInside:true,important:{block:'.5',codeSpan:'.25'}}),html=f.html();
+    assert.equal(f.codeSpan.style.lineHeight,'.25');assert.equal(f.codeSpan.getAttribute('data-inkread-line-binding'),null);
+    assert.equal(f.cjk.getAttribute('data-inkread-line-binding'),null,'Unimportant source declarations need no binding');
+    const leading=f.metrics.update(f.settings),css=f.css();f.setFailure(true);f.metrics.invalidate();
+    assert.equal(f.metrics.update(f.settings),leading);assert.equal(f.css(),css);assert.equal(f.html(),html);
+    assert.equal(f.computed(f.block).lineHeight,'31px');assert.equal(f.body.children.length,1);
+});
+
+test('asymmetric uniform-leading envelope is reserved without iterative CSS floor growth',()=>{
+    for(const rootBlock of [false,true]) for(const zoom of [1,1.6]) {
+        const f=metricsFixture({english:12,chinese:48,natural:1.4,zoom,uniformExtra:11,rootBlock,important:{block:'.5',cjk:'.5'}});
+        const floor=zoom===1?69:109,html=f.html();
+        assert.equal(f.metrics.update(f.settings),floor+11,'Measured floor plus actual11px mixed-baseline envelope');
+        assert.ok(Math.abs(parseFloat(f.computed(f.block).lineHeight)-floor)<1e-10);
+        assert.ok(Math.abs(parseFloat(f.computed(f.cjk).lineHeight)-floor)<1e-10);
+        f.metrics.invalidate();assert.equal(f.metrics.update(f.settings),floor+11,'The measured envelope is not fed back into the CSS floor');
+        assert.equal(f.html(),html);assert.equal(f.body.children.length,1);
+    }
+});
+
+test('short viewport reserves the actual uniform envelope once and retains logical anchors',async()=>{
+    const metric=metricsFixture({english:12,chinese:48,uniformExtra:11,rootBlock:true});
+    const height=metric.metrics.update(metric.settings);assert.equal(height,72);
+    const f=fixture({metricHeight:height});await f.flush();f.context.goToPage(3);const anchor=f.anchor();
+    f.context.InkReadFormatting.beginSession();f.fireResize(400,100);await f.flush();
+    f.context.InkReadFormatting.apply({...defaults,fontSize:12,chineseFontSize:48});await f.flush();
+    const margins=f.context.InkReadFormatting.effectiveMargins();assert.equal(margins.top,10);assert.equal(margins.bottom,10);
+    assert.equal(parseFloat(f.frame.style.height),80,'72px actual envelope plus8px caret allowance, not69px or4x72px');
+    assert.deepEqual(f.anchor(),anchor);
+    f.context.InkReadFormatting.endSession(true,defaults);await f.flush();assert.deepEqual(f.anchor(),anchor);
+});
+
+
+test('boundary resets distinguish inherited authored lengths from unitless leading',()=>{
+    for(const typed of [true,false]) for(const [source,expected] of [['2em',36],['36px',36],['200%',36],['2',108]]) {
+        const f=metricsFixture({tag:'DIV',chinese:48,boundary:true,boundaryChild:true,typed,important:{block:source,heading:'inherit'}});
+        f.metrics.update(f.settings);
+        assert.ok(Math.abs(parseFloat(f.computed(f.headingRun).lineHeight)-expected)<1e-10,JSON.stringify({typed,source}));
+        f.metrics.invalidate();f.metrics.update(f.settings);
+        assert.ok(Math.abs(parseFloat(f.computed(f.headingRun).lineHeight)-expected)<1e-10);
+    }
+});
+
+test('temporary metric typography cannot be overridden by competing author important rules',()=>{
+    const f=metricsFixture({english:48,chinese:12,natural:1.4,competingRules:true,important:{block:'1',cjk:'.75'}});
+    const html=f.html();assert.equal(f.metrics.update(f.settings),69,'Probe must use the source48px, not the author P rule10px');
+    assert.equal(f.computed(f.block).fontSize,'48px');assert.equal(f.computed(f.block).lineHeight,'69px');
+    assert.equal(f.html(),html);assert.equal(f.body.children.length,1);
 });

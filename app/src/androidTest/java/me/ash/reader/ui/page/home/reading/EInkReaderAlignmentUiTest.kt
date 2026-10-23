@@ -93,6 +93,28 @@ class EInkReaderAlignmentUiTest {
         }
     }
 
+    @Test fun bodyCaptureRegionsFollowActualVisibleArticleInk() {
+        // Recorded tablet geometry after measured leading moves the photo to page two.
+        // Real body text is above the old arbitrary 25%-height crop, not missing.
+        val sparse = JSONObject("""
+            {"viewportWidth":1000,"viewportHeight":1173,
+             "bodyInkRects":[{"left":24,"right":976,"top":103.73,"bottom":211.73}],
+             "metadataFragments":[{"left":24,"right":976,"top":24,"bottom":78.55}]}
+        """.trimIndent())
+        assertEquals(listOf(Rect(24f, 103.73f, 976f, 211.73f)), bodyCaptureRegions(sparse))
+        val clipped = JSONObject("""
+            {"viewportWidth":1000,"viewportHeight":1173,"bodyInkRects":[
+             {"left":-20,"right":200,"top":-4,"bottom":40},
+             {"left":900,"right":1100,"top":1150,"bottom":1200},
+             {"left":1024,"right":1976,"top":24,"bottom":976}]}
+        """.trimIndent())
+        assertEquals(listOf(Rect(0f, 0f, 200f, 40f), Rect(900f, 1150f, 1000f, 1173f)),
+            bodyCaptureRegions(clipped))
+        // Metadata cannot make a genuinely empty article body pass the native ink guard.
+        sparse.put("bodyInkRects", JSONArray())
+        assertTrue(bodyCaptureRegions(sparse).isEmpty())
+    }
+
     @Test fun cjkPagesStayCenteredThroughRepeatedTurnsImagesAndReflow() {
         compose.setContent {
             CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON,
@@ -324,22 +346,43 @@ class EInkReaderAlignmentUiTest {
         writeReport()
         if (screenshot) {
             NativePageDensityCapture.capture(compose, "reader-alignment-$label", "", recordDensity = false,
-                contentBoundsOnScreen = ::documentBodyBounds, beforeCaptureFrame = ::awaitVisualFrame)
+                contentRegionsOnScreen = ::documentBodyRegions, beforeCaptureFrame = ::awaitVisualFrame)
         }
     }
 
-    private fun documentBodyBounds(): Rect {
-        var bounds: Rect? = null
+    private fun documentBodyRegions(): List<Rect> {
+        // DOM ranges only choose where to inspect the native bitmap. They cannot make
+        // blank pixels pass: the unchanged helper still requires contrast after drawing.
+        val value = geometry()
+        val regions = bodyCaptureRegions(value)
+        var screenRegions = emptyList<Rect>()
         instrumentation.runOnMainSync {
             val view = webView()
             val origin = IntArray(2)
             view.getLocationOnScreen(origin)
-            // Exclude metadata, native progress/system bars and paper borders. The shared
-            // native capture helper waits for committed drawing and rejects a blank body.
-            bounds = Rect(origin[0] + view.width * .08f, origin[1] + view.height * .25f,
-                origin[0] + view.width * .92f, origin[1] + view.height * .85f)
+            val scaleX = view.width / value.getDouble("viewportWidth").toFloat()
+            val scaleY = view.height / value.getDouble("viewportHeight").toFloat()
+            screenRegions = regions.map { body ->
+                Rect(origin[0] + body.left * scaleX, origin[1] + body.top * scaleY,
+                    origin[0] + body.right * scaleX, origin[1] + body.bottom * scaleY)
+            }
         }
-        return requireNotNull(bounds)
+        return screenRegions
+    }
+
+    private fun bodyCaptureRegions(value: JSONObject): List<Rect> {
+        val width = value.getDouble("viewportWidth").toFloat()
+        val height = value.getDouble("viewportHeight").toFloat()
+        val rects = value.getJSONArray("bodyInkRects")
+        // Keep regions separate: metadata, borders or other ink in the gaps must not
+        // satisfy the body check. An empty list fails all three native capture attempts.
+        return (0 until rects.length()).map { index ->
+            val rect = rects.getJSONObject(index)
+            Rect(rect.getDouble("left").toFloat().coerceIn(0f, width),
+                rect.getDouble("top").toFloat().coerceIn(0f, height),
+                rect.getDouble("right").toFloat().coerceIn(0f, width),
+                rect.getDouble("bottom").toFloat().coerceIn(0f, height))
+        }.filter { it.width > 0f && it.height > 0f }
     }
 
     private fun anchorGlyphVisible(value: JSONObject): Boolean {
@@ -393,6 +436,25 @@ class EInkReaderAlignmentUiTest {
                     var images = Array.from(document.images).filter(function(i) { return visible(i.getBoundingClientRect()); }).map(function(i) {
                         var r = rect(i.getBoundingClientRect()); r.naturalWidth = i.naturalWidth; r.complete = i.complete; return r;
                     });
+                    // Native ink checks follow actual article text/image rectangles, not
+                    // a fixed screen fraction that may contain legitimate empty paper.
+                    // Metadata and native/system furniture are deliberately never candidates.
+                    var bodyInkRects = [];
+                    function addBodyInk(r) {
+                        if (visible(r) && r.bottom > 0 && r.top < innerHeight) bodyInkRects.push(rect(r));
+                    }
+                    Array.from(document.querySelectorAll('p.alignment-text')).forEach(function(p) {
+                        if (!Array.from(p.getClientRects()).some(visible)) return;
+                        var walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT), node;
+                        while ((node = walker.nextNode())) {
+                            if (!/\S/.test(node.data)) continue;
+                            var range = document.createRange(); range.selectNodeContents(node);
+                            Array.from(range.getClientRects()).forEach(addBodyInk);
+                        }
+                    });
+                    Array.from(document.images).forEach(function(i) {
+                        if (i.complete && i.naturalWidth > 0 && !i.closest('.eink-metadata')) addBodyInk(i.getBoundingClientRect());
+                    });
                     var anchor = window.InkReadFormatting ? InkReadFormatting.currentAnchor() : null;
                     var anchorGlyph = null, anchorText = null, anchorParagraphFragment = null;
                     // Independently resolve the canonical node/UTF-16 offset and
@@ -440,7 +502,7 @@ class EInkReaderAlignmentUiTest {
                         scrollX:scrollX, scrollY:scrollY, scrollWidth:body.scrollWidth, stride:_pageStride,
                         currentPage:_currentPage, totalPages:_totalPages, ready:_didFinishInitialPagination, transform:css.transform,
                         fontSize:css.fontSize, title:document.querySelector('h1').textContent,
-                        paragraphFragments:paragraphs, metadataFragments:metadata, visibleImages:images,
+                        paragraphFragments:paragraphs, metadataFragments:metadata, visibleImages:images, bodyInkRects:bodyInkRects,
                         ordinaryImage:{complete:ordinary ? ordinary.complete : false, naturalWidth:ordinary ? ordinary.naturalWidth : 0},
                         lateImage:{complete:late ? late.complete : false, naturalWidth:late ? late.naturalWidth : 0}});
                 })()
