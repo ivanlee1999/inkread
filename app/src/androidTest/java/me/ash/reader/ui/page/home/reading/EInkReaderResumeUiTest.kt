@@ -65,7 +65,7 @@ class EInkReaderResumeUiTest {
     private val samples = JSONArray()
     private val edgeGeometry = JSONArray()
     private val body = (1..180).joinToString("") {
-        "<p>Section $it. A saved reader keeps the same logical word through reopening, font changes and late image layout. " +
+        "<p>Section $it. A saved reader keeps the same logical word 中文阅读位置 through reopening, font changes and late image layout. " +
             "閱讀位置保留完整文字 😀 café. This synthetic fixture never contacts a feed or website.</p>"
     }
     private val fixtureFile get() = File(context.filesDir, "synthetic-reader-resume-fixture.json")
@@ -98,7 +98,7 @@ class EInkReaderResumeUiTest {
         assertTrue(pageEvents.first() > 1)
         assertEquals("restored", restoreResults.last())
         assertAnchorVisible(restored)
-        js("InkReadFormatting.beginSession(); InkReadFormatting.apply(Object.assign({}, window._inkreadInitialFormatting, {fontSize:32,lineHeight:1.8}))")
+        js("InkReadFormatting.beginSession(); InkReadFormatting.apply(Object.assign({}, window._inkreadInitialFormatting, {fontSize:14,chineseFontSize:32,lineHeight:1.8}))")
         compose.waitForIdle()
         val reformatted = snapshot("restored-and-reformatted")
         assertEquals(before.getJSONObject("anchor").toString(), reformatted.getJSONObject("anchor").toString())
@@ -343,9 +343,9 @@ class EInkReaderResumeUiTest {
     private fun snapshot(label: String? = null): JSONObject {
         val raw = js("""JSON.stringify((function(){
             var a=InkReadFormatting.currentAnchor(),f=document.getElementById('eink-content');
-            var w=document.createTreeWalker(f,NodeFilter.SHOW_TEXT,{acceptNode:function(n){return n.parentElement && !/^(SCRIPT|STYLE|NOSCRIPT)$/.test(n.parentElement.tagName) && /\S/.test(n.data)?NodeFilter.FILTER_ACCEPT:NodeFilter.FILTER_REJECT;}}), ns=[],n;
-            while(n=w.nextNode())ns.push(n);
-            var r=document.createRange();r.setStart(ns[a.node],a.offset);r.setEnd(ns[a.node],Math.min(ns[a.node].length,a.offset+1));var b=r.getBoundingClientRect();
+            var model=InkReadScriptFonts.install(f), ns=model.readingNodes;
+            var start=model.point(ns[a.node],a.offset,false), end=model.point(ns[a.node],Math.min(ns[a.node].length,a.offset+1),true);
+            var r=document.createRange();r.setStart(start.node,start.offset);r.setEnd(end.node,end.offset);var b=r.getBoundingClientRect();
             return {generation:window._inkreadGeneration,ready:_didFinishInitialPagination,page:_currentPage,anchor:a,envelope:InkReadFormatting.exportReadingAnchor(),
                 rect:{left:b.left,right:b.right,top:b.top,bottom:b.bottom},margins:InkReadFormatting.effectiveMargins(),width:_vw,height:innerHeight};
         })())""")

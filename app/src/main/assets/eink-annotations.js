@@ -1,4 +1,4 @@
-/* Body-only annotation anchors. Never wraps, splits, or edits article text nodes. */
+/* Body-only annotation anchors use original logical nodes across script-size runs. */
 (function () {
     'use strict';
     var VERSION = 1, CONTEXT = 32, CAPTURE_BYTE_LIMIT = 128 * 1024, frame, map, enabled = false, destroyed = false;
@@ -6,6 +6,7 @@
     var resizeSession = null, autoEnabled = false, autoGesture = null, autoFrame = 0;
     var selectionRevision = 0, autoConsumed = false, sessionEmittedRanges = [], lastAutoEmittedKey = null;
     var generation = window._inkreadGeneration;
+    var scriptFonts = null;
     var OMIT = /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/;
     function notify(name, value) {
         try { if (window.Android && typeof Android[name] === 'function') Android[name](generation, value); } catch (ignored) {}
@@ -43,7 +44,9 @@
             segments.push({ start: length, end: length + node.data.length, node: index, offset: 0 });
             length += node.data.length;
         }
-        visit(root);
+        scriptFonts = window.InkReadScriptFonts && InkReadScriptFonts.install(root);
+        if (scriptFonts) scriptFonts.annotationNodes.forEach(visit);
+        else visit(root);
         var text = parts.join('');
         return { text: text, nodes: nodes, segments: segments, fingerprint: fingerprint(text, nodes) };
     }
@@ -122,7 +125,9 @@
         var a = pointAt(start, false), b = pointAt(end, true);
         if (!a || !b) return null;
         var range = document.createRange();
-        range.setStart(map.nodes[a.node], a.offset); range.setEnd(map.nodes[b.node], b.offset);
+        var startPoint = scriptFonts ? scriptFonts.point(map.nodes[a.node], a.offset, false) : {node: map.nodes[a.node], offset: a.offset};
+        var endPoint = scriptFonts ? scriptFonts.point(map.nodes[b.node], b.offset, true) : {node: map.nodes[b.node], offset: b.offset};
+        range.setStart(startPoint.node, startPoint.offset); range.setEnd(endPoint.node, endPoint.offset);
         return range;
     }
     function encodeCapture(value) {
@@ -149,10 +154,16 @@
         var range = selection.getRangeAt(0);
         var startNode = range.startContainer, endNode = range.endContainer;
         var startOffset = range.startOffset, endOffset = range.endOffset;
+        if (scriptFonts) {
+            var logicalStart = scriptFonts.logicalPoint(startNode, startOffset, false);
+            var logicalEnd = scriptFonts.logicalPoint(endNode, endOffset, true);
+            if (logicalStart) { startNode = logicalStart.node; startOffset = logicalStart.offset; }
+            if (logicalEnd) { endNode = logicalEnd.node; endOffset = logicalEnd.offset; }
+        }
         // Element endpoints (Select all, keyboard selection) are resolved through
         // intersecting body text only. Metadata never becomes an article quote.
         if (map.nodes.indexOf(startNode) < 0 || map.nodes.indexOf(endNode) < 0) {
-            var included = map.nodes.filter(function (n) { return n.length && range.intersectsNode(n); });
+            var included = map.nodes.filter(function (n) { return n.length && (scriptFonts ? scriptFonts.intersects(range, n) : range.intersectsNode(n)); });
             if (!included.length) return null;
             if (map.nodes.indexOf(startNode) < 0) { startNode = included[0]; startOffset = 0; }
             if (map.nodes.indexOf(endNode) < 0) { endNode = included[included.length - 1]; endOffset = endNode.length; }
@@ -230,10 +241,17 @@
         }
         while (overlay.firstChild) overlay.removeChild(overlay.firstChild);
         var margins = window.InkReadFormatting && InkReadFormatting.effectiveMargins ? InkReadFormatting.effectiveMargins() : {left:0,right:0,top:0,bottom:0};
-        ranges.forEach(function (range) { Array.prototype.forEach.call(range.getClientRects(), function (rect) {
+        ranges.forEach(function (range) {
+            var seenRects = Object.create(null);
+            Array.prototype.forEach.call(range.getClientRects(), function (rect) {
             var left = Math.max(margins.left, rect.left), right = Math.min(window.innerWidth - margins.right, rect.right);
             var top = Math.max(margins.top, rect.top), bottom = Math.min(window.innerHeight - margins.bottom, rect.bottom);
             if (right <= left || bottom <= top) return;
+            // Inline script runs can expose the same box as both element and text.
+            // Paint once rather than darkening an otherwise identical highlight.
+            var key = [left, right, top, bottom].join(',');
+            if (seenRects[key]) return;
+            seenRects[key] = true;
             var mark = document.createElement('div');
             // Monochrome underline is legible without covering the original text.
             mark.style.cssText = 'position:absolute;border-bottom:2px solid #555;background:rgba(0,0,0,.10);pointer-events:none;' +

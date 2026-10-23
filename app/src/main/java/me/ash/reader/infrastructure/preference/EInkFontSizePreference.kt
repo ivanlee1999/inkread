@@ -8,7 +8,6 @@ import kotlinx.coroutines.launch
 import me.ash.reader.ui.ext.DataStoreKey
 import me.ash.reader.ui.ext.DataStoreKey.Companion.einkFontSize
 import me.ash.reader.ui.ext.dataStore
-import me.ash.reader.ui.ext.put
 
 val LocalEInkFontSize = compositionLocalOf { EInkFontSizePreference.default }
 
@@ -18,7 +17,7 @@ object EInkFontSizePreference {
 
     fun put(context: Context, scope: CoroutineScope, value: Int) {
         scope.launch {
-            context.dataStore.put(DataStoreKey.einkFontSize, value)
+            context.dataStore.saveCombinedReaderFontSize(value)
         }
     }
 

@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.PointF
 import android.graphics.Region
 import android.os.SystemClock
@@ -14,7 +15,9 @@ import android.view.MenuItem
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.view.ViewConfiguration
+import android.view.inspector.WindowInspector
 import android.webkit.WebView
 import android.widget.ListView
 import android.widget.TextView
@@ -54,6 +57,7 @@ import androidx.test.espresso.matcher.ViewMatchers.withText
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
 import androidx.test.runner.lifecycle.Stage
+import java.io.File
 import java.util.Date
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -111,7 +115,9 @@ class EInkReaderAnnotationUiTest {
     private val incomingContent = mutableStateOf<String?>(null)
     private val contentPresentation = ReaderContentPresentationGate<String, String> { it }
     private val nextDocumentInteraction = AtomicReference<(() -> Unit)?>(null)
+    private val testFormatting = mutableStateOf(ReaderFormatting.Default)
     private var nativeOverflowOpen = false
+    private val endpointAvailableLeading = mutableMapOf<PointF, Float>()
     private var originalAccessibilityFlags: Int? = null
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
 
@@ -130,13 +136,21 @@ class EInkReaderAnnotationUiTest {
         }
     }
 
-    private fun startReader(fontSize: Int = ReaderFormatting.Default.fontSize, annotationsAvailable: Boolean = true) {
+    private fun startReader(fontSize: Int = ReaderFormatting.Default.fontSize, annotationsAvailable: Boolean = true,
+        authoredTightLineHeight: Boolean = false) {
+        testFormatting.value = ReaderFormatting(fontSize = fontSize)
         compose.setContent {
             CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON,
-                LocalReaderFormatting provides ReaderFormatting.Default.copy(fontSize = fontSize)) {
+                LocalReaderFormatting provides testFormatting.value) {
                 AppTheme(useDarkTheme = false) {
                     val initialContent = buildString {
-                        append("<p id='select-target'>Selection preserves exact text, 中文 and emoji 😀.</p>")
+                        if (authoredTightLineHeight) {
+                            // Author-important declarations cannot bypass the measured selection floor.
+                            append("<p style='line-height:1!important'><span id='select-target' style='line-height:.75!important'>" +
+                                "Selection preserves exact text, 中文 and emoji 😀.</span></p>")
+                        } else {
+                            append("<p id='select-target'>Selection preserves exact text, 中文 and emoji 😀.</p>")
+                        }
                         append("<p><a id='link-target' href='https://example.invalid/annotation-fixture'>Fixture link</a></p>")
                         repeat(140) { append("<p id='paragraph-$it'>Paragraph $it. Long article text exercises native paging and annotation ownership.</p>") }
                     }
@@ -246,7 +260,13 @@ class EInkReaderAnnotationUiTest {
         val trace = NativeTouchTrace(downAt.get(), heldFor.get(), touchEvents.toString())
         if (awaitSelection) {
             trace.assertDelivered()
-            compose.waitUntil(5_000) { selecting.value && js("window.getSelection().toString().length > 0") == true }
+            try {
+                compose.waitUntil(5_000) { selecting.value && js("window.getSelection().toString().length > 0") == true }
+            } catch (timeout: ComposeTimeoutException) {
+                logNativeHandleState("timeout-long-press", expected = "Selection", from = point)
+                recordNativeFailureScreenshot("long-press")
+                throw timeout
+            }
             assertEquals("Selection", js("window.getSelection().toString()"))
             instrumentation.runOnMainSync {
                 assertTrue("Native selection must own WebView focus", reader().hasFocus() && reader().hasWindowFocus())
@@ -411,6 +431,104 @@ class EInkReaderAnnotationUiTest {
         assertEquals(false, js("!!document.getElementById('replacement-body')"))
     }
 
+    @Test fun mixedScriptHighlightRetainsExactAnchorAcrossIndependentSizesAndResize() {
+        startReader(authoredTightLineHeight = true)
+        openSelection()
+        val original = JSONObject(js("""(function(){
+            var model=InkReadScriptFonts.install(document.getElementById('eink-content'));
+            var n=model.annotationNodes.find(function(n){return n.parentElement.id==='select-target';});
+            var range=model.range(n,0,n.length), selection=getSelection();
+            selection.removeAllRanges();selection.addRange(range);
+            return InkReadAnnotations.captureSelection(window._inkreadGeneration);
+        })()""") as String)
+        assertTrue(original.getString("rangeQuote").contains("中文"))
+        val html = js("document.getElementById('eink-content').innerHTML")
+        compose.runOnIdle { annotationJson.value = JSONArray().put(JSONObject().put("id", "mixed-script")
+            .put("anchor", original)).toString() }
+        compose.waitUntil(5_000) { locations.get()?.contains("attached") == true }
+        compose.onNodeWithTag("reader_selection_done").performClick()
+        compose.waitUntil(5_000) { !selecting.value }
+        listOf(12 to 48, 48 to 12, 20 to 24).forEachIndexed { index, (english, chinese) ->
+            compose.runOnIdle { testFormatting.value = ReaderFormatting(fontSize = english, chineseFontSize = chinese) }
+            compose.waitUntil(10_000) {
+                js("Math.abs(parseFloat(getComputedStyle(document.querySelector('#select-target .eink-script-cjk')).fontSize) - " +
+                    (chinese * instrumentation.targetContext.resources.configuration.fontScale) + ") < .1") == true
+            }
+            assertEquals("Formatting must not rewrite the indexed article", html,
+                js("document.getElementById('eink-content').innerHTML"))
+            resizeRestored.set(null)
+            compose.runOnIdle { resizeRequest.value = "mixed-script" to (index + 1L) }
+            compose.waitUntil(5_000) { resizeRestored.get() == ("mixed-script" to true) && selecting.value }
+            val restored = JSONObject(js("InkReadAnnotations.captureSelection(window._inkreadGeneration)") as String)
+            listOf("documentFingerprint", "rangeQuote", "prefix", "suffix", "start", "end",
+                "startNode", "endNode", "startOffset", "endOffset").forEach { key ->
+                assertEquals("Independent sizing must preserve $key", original.get(key), restored.get(key))
+            }
+            pressBack()
+            compose.waitUntil(5_000) { !selecting.value }
+            assertNull("Reflow/cancel cannot commit a resized highlight", resized.get())
+            // Exercise real Chromium handles with unequal rendered sizes too,
+            // while the existing mixed-script annotation remains attached.
+            longPressFirstWord()
+            closeNativeOverflow()
+            // Exercise both handle directions inside the visible first word at
+            // every size pair, without assuming the next word fits on this page.
+            val wordEnd = textPoint("select-target", 0, 9, "end")
+            val shortenedEnd = textPoint("select-target", 0, 8, "end")
+            assertEquals("Adjacent final letters must share a visible line", wordEnd.y, shortenedEnd.y, 1f)
+            dragSelectionHandle(wordEnd, shortenedEnd)
+            awaitHandleSelection("Selectio", "independent-shrink-$english-$chinese")
+            assertNativeSelectionRetained("Selectio", "shrink at independent sizes $english/$chinese")
+            dragSelectionHandle(textPoint("select-target", 0, 8, "end"),
+                textPoint("select-target", 0, 9, "end"))
+            awaitHandleSelection("Selection", "independent-expand-$english-$chinese")
+            assertNativeSelectionRetained("Selection", "expand at independent sizes $english/$chinese")
+            if (english == 20 && chinese == 24) {
+                pressBack()
+                compose.waitUntil(5_000) { !selecting.value }
+                assertNull("Native long-press cannot commit a resized highlight", resized.get())
+                // Restore the existing highlight through the real resize action,
+                // then genuinely SHRINK its native END handle across scripts.
+                // Chromium expands by word with a history-dependent pointer
+                // offset; shrinking tests an exact character boundary instead.
+                // This fresh gesture does not manufacture a JS Selection.
+                resizeRestored.set(null)
+                compose.runOnIdle { resizeRequest.value = "mixed-script" to (index + 101L) }
+                compose.waitUntil(5_000) { resizeRestored.get() == ("mixed-script" to true) && selecting.value }
+                val fullQuote = original.getString("rangeQuote")
+                assertEquals("The saved range must restore exactly before native handle reveal",
+                    fullQuote, js("window.getSelection().toString()"))
+                // As in the dedicated resize workflow test, a real tap inside
+                // the restored highlight reveals Chromium's native handles.
+                tapText("select-target", 0, 9)
+                awaitVisualFrame()
+                // Both real handles and the entire restored range must be
+                // visible before injecting the one cross-script native drag.
+                assertNativeSelectionRetained(fullQuote, "before cross-script native resize")
+                val fullEnd = textPoint("select-target", 0, fullQuote.length, "end")
+                val chineseEnd = textPoint("select-target", 32, 34, "end")
+                dragSelectionHandle(fullEnd, chineseEnd)
+                val expected = "Selection preserves exact text, 中文"
+                awaitHandleSelection(expected, "independent-cross-script")
+                assertNativeSelectionRetained(expected, "native drag across unequal script sizes")
+                val captured = JSONObject(js("InkReadAnnotations.captureSelection(window._inkreadGeneration)") as String)
+                assertEquals(original.getString("documentFingerprint"), captured.getString("documentFingerprint"))
+                assertEquals(original.getInt("start"), captured.getInt("start"))
+                assertEquals(original.getInt("startNode"), captured.getInt("startNode"))
+                assertEquals(original.getInt("endNode"), captured.getInt("endNode"))
+                assertEquals(original.getInt("startOffset"), captured.getInt("startOffset"))
+                assertEquals(original.getInt("startOffset") + captured.getString("rangeQuote").length,
+                    captured.getInt("endOffset"))
+                assertEquals(expected, captured.getString("rangeQuote").trim())
+                assertEquals(original.getString("rangeQuote").substring(0, captured.getInt("end") - original.getInt("start")),
+                    captured.getString("rangeQuote"))
+            }
+            pressBack()
+            compose.waitUntil(5_000) { !selecting.value }
+            assertNull("Unequal-size handle gestures cannot overwrite the existing annotation", resized.get())
+        }
+    }
+
     @Test fun nativeHighlightRendersWithoutEditingBodyTextAndDoneRestoresPaging() {
         startReader()
         val before = js("document.getElementById('eink-content').innerHTML") as String
@@ -470,7 +588,7 @@ class EInkReaderAnnotationUiTest {
         nativeHandleAt(originalStart).check(matches(isDisplayed()))
         nativeHandleAt(originalEnd).check(matches(isDisplayed()))
         dragSelectionHandle(originalEnd, textPoint("select-target", 10, 19, edge = "end"))
-        compose.waitUntil(5_000) { js("window.getSelection().toString().trim()") == "Selection preserves" }
+        awaitHandleSelection("Selection preserves", "default-selection")
         assertTrue("Handle adjustment must keep native selection ownership", selecting.value)
         assertEquals("A handle drag must not turn pages", before, page.get())
         assertEquals("A handle drag must not trigger the article swipe", 0, nextArticles.get())
@@ -630,7 +748,7 @@ class EInkReaderAnnotationUiTest {
         assertTrue(nativeActionAvailable("Cancel")); closeNativeOverflow()
         assertTrue(nativeActionAvailable("Copy")); closeNativeOverflow()
         dragSelectionHandle(textPoint("select-target", 0, 9, "end"), textPoint("select-target", 10, 19, "end"))
-        compose.waitUntil(5_000) { js("window.getSelection().toString().trim()") == "Selection preserves" }
+        awaitHandleSelection("Selection preserves", "resize-explicit-save")
         assertNull("Handle motion/release cannot persist a resize", resized.get())
         assertEquals(0, automaticCount.get())
         assertTrue(nativeActionAvailable("Save highlight"))
@@ -688,7 +806,7 @@ class EInkReaderAnnotationUiTest {
         tapText("select-target", 0, 9)
         awaitVisualFrame()
         dragSelectionHandle(textPoint("select-target", 0, 9, "end"), textPoint("select-target", 10, 19, "end"))
-        compose.waitUntil(5_000) { js("window.getSelection().toString().trim()") == "Selection preserves" }
+        awaitHandleSelection("Selection preserves", "resize-cancel")
         clickNativeAction("Cancel")
         compose.waitUntil(5_000) { !selecting.value }
         settle()
@@ -763,7 +881,7 @@ class EInkReaderAnnotationUiTest {
             beforeCaptureFrame = ::awaitVisualFrame)
         closeNativeOverflow()
         dragSelectionHandle(textPoint("select-target", 0, 9, "end"), textPoint("select-target", 10, 19, "end"))
-        compose.waitUntil(5_000) { js("window.getSelection().toString().trim()") == "Selection preserves" }
+        awaitHandleSelection("Selection preserves", "automatic-highlight")
         settle()
         assertEquals("Adjusting the same session cannot save a second highlight", 1, automaticCount.get())
         assertEquals(before, page.get())
@@ -830,9 +948,20 @@ class EInkReaderAnnotationUiTest {
         compose.onNodeWithTag("reader_controls_toggle").performClick()
         awaitDisplayedControl("reader_select_text")
         settle()
+        awaitAppliedReaderViewport()
+        // The settled narrow/large-font first page may contain only metadata.
+        // Navigate normally before measuring a real press on article text.
+        if (!firstSelectionWordVisible()) {
+            val previousPage = page.get()
+            volume(KeyEvent.KEYCODE_VOLUME_DOWN)
+            compose.waitUntil(5_000) { page.get() == previousPage + 1 }
+            awaitAppliedReaderViewport()
+        }
+        assertTrue("The native long-press target must be visible after settled navigation", firstSelectionWordVisible())
         compose.runOnIdle { assertFalse("Opening controls is not explicit selection mode", selecting.value) }
         val viewport = js("JSON.stringify([innerWidth,innerHeight])")
         val before = page.get()
+        logNativeHandleState("controls-open-ready", from = textPoint("select-target", 0, 9))
         longPressFirstWord(beforeRelease = { assertEquals(0, automaticCount.get()) })
         compose.waitUntil(5_000) { automaticCount.get() == 1 && undoAvailable.value }
         settle()
@@ -842,7 +971,7 @@ class EInkReaderAnnotationUiTest {
         nativeHandleAt(textPoint("select-target", 0, 9, "start")).check(matches(isDisplayed()))
         nativeHandleAt(textPoint("select-target", 0, 9, "end")).check(matches(isDisplayed()))
         dragSelectionHandle(textPoint("select-target", 0, 9, "end"), textPoint("select-target", 10, 19, "end"))
-        compose.waitUntil(5_000) { js("window.getSelection().toString().trim()") == "Selection preserves" }
+        awaitHandleSelection("Selection preserves", "controls-open-automatic-highlight")
         assertEquals(viewport, js("JSON.stringify([innerWidth,innerHeight])"))
         clickNativeAction("Undo highlight")
         compose.waitUntil(5_000) { undoCount.get() == 1 }
@@ -865,9 +994,11 @@ class EInkReaderAnnotationUiTest {
         // Use real DOM Range/Selection objects in the device WebView to exercise
         // its layout-generated paragraph separators, in addition to gesture tests.
         val snapshot = JSONObject(js("""
-            (function(){var first=document.getElementById('select-target').firstChild;
-            var next=document.getElementById('paragraph-0').firstChild;
-            var range=document.createRange();range.setStart(first,0);range.setEnd(next,12);
+            (function(){var model=InkReadScriptFonts.install(document.getElementById('eink-content'));
+            var first=model.nodes.find(function(n){return n.parentElement===document.getElementById('select-target');});
+            var next=model.nodes.find(function(n){return n.parentElement===document.getElementById('paragraph-0');});
+            var a=model.point(first,0,false),b=model.point(next,12,true);
+            var range=document.createRange();range.setStart(a.node,a.offset);range.setEnd(b.node,b.offset);
             var selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);
             return JSON.stringify({display:selection.toString(),raw:range.toString(),
                 anchor:JSON.parse(InkReadAnnotations.captureSelection(window._inkreadGeneration))});})()
@@ -881,12 +1012,16 @@ class EInkReaderAnnotationUiTest {
 
     private fun textPoint(id: String, start: Int, end: Int, edge: String = "center"): PointF {
         val geometry = JSONObject(js("""
-            (function(){var target=document.getElementById(${JSONObject.quote(id)}),t=target.firstChild;
-            var r=document.createRange();r.setStart(t,$start);r.setEnd(t,$end);
+            (function(){var target=document.getElementById(${JSONObject.quote(id)});
+            var model=InkReadScriptFonts.install(document.getElementById('eink-content'));
+            var t=model.nodes.find(function(n){return n.parentElement===target;});
+            var a=model.point(t,$start,false),b=model.point(t,$end,true);
+            var r=document.createRange();r.setStart(a.node,a.offset);r.setEnd(b.node,b.offset);
             var rects=r.getClientRects(),b=rects[${if (edge == "end") "rects.length-1" else "0"}];
             var x=(b.left+b.right)/2,y=(b.top+b.bottom)/2;
             return JSON.stringify({x:x,y:y,left:b.left,right:b.right,bottom:b.bottom,
                 width:document.documentElement.getBoundingClientRect().width,height:innerHeight,
+                lineHeight:parseFloat(getComputedStyle(target.closest('p')||target).lineHeight),glyphHeight:b.height,
                 word:r.toString(),hit:target.contains(document.elementFromPoint(x,y)),
                 ready:document.readyState==='complete' && window._didFinishInitialPagination &&
                     InkReadAnnotations.documentId===window._inkreadGeneration});})()
@@ -904,7 +1039,12 @@ class EInkReaderAnnotationUiTest {
             val x = geometry.getDouble(when (edge) { "start" -> "left"; "end" -> "right"; else -> "x" }).toFloat() * scale
             val y = geometry.getDouble(if (edge == "center") "y" else "bottom").toFloat() * scale
             assertTrue("Text must stay inside the reader: $geometry", x > 0 && x < view.width && y > 0 && y < view.height)
-            result.set(PointF(origin[0] + x, origin[1] + y))
+            val point = PointF(origin[0] + x, origin[1] + y)
+            val lineHeight = geometry.getDouble("lineHeight").toFloat() * scale
+            assertTrue("Native handle lookup requires measured finite leading: $geometry",
+                lineHeight.isFinite() && lineHeight > 0)
+            endpointAvailableLeading[point] = maxOf(0f, lineHeight - geometry.getDouble("glyphHeight").toFloat() * scale)
+            result.set(point)
         }
         return result.get()
     }
@@ -919,28 +1059,119 @@ class EInkReaderAnnotationUiTest {
         }
     }
 
-    private fun nativeHandleAt(endpoint: PointF) = onView(isRoot()).inRoot(withDecorView(
-        object : TypeSafeMatcher<View>() {
+    private fun nativeHandleAt(endpoint: PointF): androidx.test.espresso.ViewInteraction {
+        val matcher = object : TypeSafeMatcher<View>() {
             override fun describeTo(description: Description) {
                 description.appendText("native selection-handle popup at ").appendValue(endpoint)
+                    .appendText(" with available measured leading ").appendValue(endpointAvailableLeading[endpoint])
             }
             override fun matchesSafely(view: View): Boolean {
                 val density = view.resources.displayMetrics.density
+                val params = view.layoutParams as? WindowManager.LayoutParams
+                if (params?.type != WindowManager.LayoutParams.TYPE_APPLICATION_SUB_PANEL) return false
                 if (!view.isShown || view.width !in 1..(64 * density).toInt() ||
                     view.height !in 1..(96 * density).toInt()) return false
                 val origin = IntArray(2)
                 view.getLocationOnScreen(origin)
+                // A native handle is attached to the line box, not the smaller
+                // English glyph's bottom in a Chinese-dominant line. Use the
+                // actual leading beyond the glyph height, not an arbitrary pixel radius.
+                // Root size/X remain constrained; uniqueness is checked below.
+                val belowGlyph = maxOf(32 * density, endpointAvailableLeading[endpoint] ?: 0f)
+                Log.i("InkReadAnnotationTest", "Native handle candidate: x=${origin[0]}, y=${origin[1]}, " +
+                    "width=${view.width}, height=${view.height}, endpoint=$endpoint, belowGlyph=$belowGlyph")
                 return abs(origin[0] + view.width / 2f - endpoint.x) <= 32 * density &&
-                    abs(origin[1] - endpoint.y) <= 32 * density
+                    origin[1] >= endpoint.y - 32 * density && origin[1] <= endpoint.y + belowGlyph
             }
-        },
-    ))
+        }
+        val selectedRoot = AtomicReference<View?>()
+        compose.waitUntil(5_000) {
+            instrumentation.runOnMainSync {
+                val candidates = WindowInspector.getGlobalWindowViews().filter { matcher.matches(it) }
+                assertTrue("Native handle targeting must be unambiguous at $endpoint; candidates=${candidates.size}",
+                    candidates.size <= 1)
+                selectedRoot.set(candidates.singleOrNull())
+            }
+            selectedRoot.get() != null
+        }
+        // Espresso may choose one of several matching roots. Pin the explicitly
+        // unique native popup instead of relying on its root-picker ordering.
+        return onView(isRoot()).inRoot(withDecorView(equalTo(checkNotNull(selectedRoot.get()))))
+    }
 
     private fun dragSelectionHandle(from: PointF, to: PointF) {
+        logNativeHandleState("before-drag", from = from, to = to)
         nativeHandleAt(from).perform(realTimeDrag(
             start = { view -> screenPoint(view, .5f, .5f) },
             end = { _, start -> PointF(to.x + start.x - from.x, to.y + start.y - from.y) },
         ))
+        logNativeHandleState("after-drag", from = from, to = to)
+    }
+
+    private fun awaitHandleSelection(expected: String, context: String) {
+        try {
+            compose.waitUntil(5_000) { js("window.getSelection().toString().trim()") == expected }
+        } catch (timeout: ComposeTimeoutException) {
+            // Observe the failed gesture, never repeat it or manufacture a range.
+            // Diagnostic failures must not replace the original exact-text timeout.
+            logNativeHandleState("timeout-$context", expected = expected)
+            recordNativeFailureScreenshot(context)
+            throw timeout
+        }
+    }
+
+    private fun recordNativeFailureScreenshot(context: String) {
+        runCatching {
+            val output = InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")
+            val directory = output?.takeIf { it.isNotBlank() }?.let(::File)
+                ?: File(instrumentation.targetContext.getExternalFilesDir(null), "annotation-diagnostics")
+            check(directory.isDirectory || directory.mkdirs())
+            val screenshot = File(directory, "annotation-handle-timeout-$context.png")
+            val bitmap = checkNotNull(instrumentation.uiAutomation.takeScreenshot())
+            try {
+                screenshot.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+            } finally { bitmap.recycle() }
+            Log.i("InkReadAnnotationTest", "Native handle timeout screenshot: ${screenshot.name}")
+        }.onFailure { Log.w("InkReadAnnotationTest", "Native handle timeout screenshot unavailable", it) }
+    }
+
+    private fun logNativeHandleState(phase: String, expected: String? = null, from: PointF? = null, to: PointF? = null) {
+        runCatching {
+            val state = JSONObject().put("phase", phase).put("uptimeMs", SystemClock.uptimeMillis())
+                .put("expected", expected ?: JSONObject.NULL)
+                .put("from", from?.let { JSONArray(listOf(it.x, it.y)) } ?: JSONObject.NULL)
+                .put("to", to?.let { JSONArray(listOf(it.x, it.y)) } ?: JSONObject.NULL)
+            instrumentation.runOnMainSync {
+                val view = reader() as EInkAnnotationWebView
+                state.put("host", JSONObject().put("selecting", selecting.value)
+                    .put("hasActiveSelection", view.hasActiveSelection).put("hasFocus", view.hasFocus())
+                    .put("hasWindowFocus", view.hasWindowFocus()).put("attached", view.isAttachedToWindow)
+                    .put("width", view.width).put("height", view.height).put("page", page.get())
+                    .put("automaticCount", automaticCount.get()).put("automaticAnchor", automaticAnchor.get() ?: JSONObject.NULL))
+            }
+            state.put("dom", JSONObject(js("""
+                (function(){
+                    var s=getSelection(),r=s&&s.rangeCount?s.getRangeAt(0):null;
+                    function rect(r){return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};}
+                    var target=document.getElementById('select-target'),block=target&&target.closest('p');
+                    function layout(e){if(!e)return null;var c=getComputedStyle(e);return {tag:e.tagName,
+                        fontSize:c.fontSize,lineHeight:c.lineHeight,padding:[c.paddingTop,c.paddingBottom],
+                        border:[c.borderTopWidth,c.borderBottomWidth],rects:Array.from(e.getClientRects()).map(rect)};}
+                    function node(n){return n?{type:n.nodeType,name:n.nodeName,text:(n.textContent||'').slice(0,256),
+                        parentId:n.parentElement&&n.parentElement.id,parentClass:n.parentElement&&n.parentElement.className}:null;}
+                    return JSON.stringify({text:s?s.toString():null,collapsed:s?s.isCollapsed:null,rangeCount:s?s.rangeCount:0,
+                        raw:r?r.toString():null,start:node(r&&r.startContainer),startOffset:r?r.startOffset:null,
+                        end:node(r&&r.endContainer),endOffset:r?r.endOffset:null,
+                        anchor:node(s&&s.anchorNode),anchorOffset:s?s.anchorOffset:null,
+                        focus:node(s&&s.focusNode),focusOffset:s?s.focusOffset:null,
+                        generation:window._inkreadGeneration,viewport:[innerWidth,innerHeight],
+                        appliedFrame:document.getElementById('eink-content').getAttribute('style'),
+                        logicalPage:window._currentPage,
+                        rangeRects:r?Array.from(r.getClientRects()).map(rect):[],target:layout(target),block:layout(block)});
+                })()
+            """.trimIndent()) as String))
+            Log.i("InkReadAnnotationTest", "Native handle state: $state")
+        }.onFailure { Log.w("InkReadAnnotationTest", "Native handle state unavailable: $phase", it) }
     }
 
     private fun screenPoint(view: View, x: Float, y: Float): PointF {
@@ -1217,6 +1448,37 @@ class EInkReaderAnnotationUiTest {
         nativeHandleAt(textPoint("select-target", 0, expected.length, edge = "end"))
             .check(matches(isDisplayed()))
     }
+    private fun awaitAppliedReaderViewport() {
+        // A drawn frame can still precede the existing debounced resize pass.
+        // Wait for actual applied column dimensions, never a longer fixed sleep.
+        compose.waitUntil(5_000) {
+            val nativeSize = IntArray(2)
+            instrumentation.runOnMainSync {
+                nativeSize[0] = reader().width
+                nativeSize[1] = reader().height
+            }
+            js("""(function(){
+                var f=document.getElementById('eink-content');
+                if(!f || !window._didFinishInitialPagination || !window.InkReadFormatting)return false;
+                var m=InkReadFormatting.effectiveMargins(),w=document.documentElement.getBoundingClientRect().width;
+                var nativeScale=${nativeSize[0]}/w;
+                return nativeScale>0 && Math.abs(innerHeight*nativeScale-${nativeSize[1]})<nativeScale+1 && Math.abs(parseFloat(f.style.height)-(innerHeight-m.top-m.bottom))<.1 &&
+                    Math.abs(parseFloat(f.style.width)-(w-m.left-m.right))<.1;
+            })()""") == true
+        }
+        awaitVisualFrame()
+    }
+
+    private fun firstSelectionWordVisible(): Boolean = js("""(function(){
+        var f=document.getElementById('eink-content'),t=document.getElementById('select-target');
+        var model=InkReadScriptFonts.install(f),n=model.nodes.find(function(n){return n.parentElement===t;});
+        var r=model.range(n,0,9).getClientRects()[0];
+        if(!r)return false;
+        var x=(r.left+r.right)/2,y=(r.top+r.bottom)/2,w=document.documentElement.getBoundingClientRect().width;
+        return r.left>=0 && r.right<=w && r.top>=0 && r.bottom<=innerHeight &&
+            t.contains(document.elementFromPoint(x,y));
+    })()""") == true
+
     private fun settle() { compose.waitForIdle(); awaitVisualFrame() }
     private fun awaitVisualFrame() {
         val latch = CountDownLatch(1)

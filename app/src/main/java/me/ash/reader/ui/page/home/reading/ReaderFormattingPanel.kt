@@ -175,14 +175,21 @@ private fun TextControls(draft: ReaderFormatting, onChange: (ReaderFormatting) -
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         item {
-            NumberControl("font_size", stringResource(R.string.font_size), draft.fontSize.toFloat(),
+            NumberControl("font_size", stringResource(R.string.english_font_size), draft.fontSize.toFloat(),
                 ReaderFormatting.FontSizeRange.asFloatRange(), 1f, 0, "px") {
                 onChange(draft.copy(fontSize = it.toInt()).clamped())
             }
         }
         item {
+            NumberControl("chinese_font_size", stringResource(R.string.chinese_font_size), draft.chineseFontSize.toFloat(),
+                ReaderFormatting.FontSizeRange.asFloatRange(), 1f, 0, "px") {
+                onChange(draft.copy(chineseFontSize = it.toInt()).clamped())
+            }
+        }
+        item {
             NumberControl("line_height", stringResource(R.string.reader_formatting_line_height), draft.lineHeight,
-                ReaderFormatting.LineHeightRange, .05f, 2, "×") {
+                ReaderFormatting.LineHeightRange, .05f, 2, "×",
+                stringResource(R.string.reader_formatting_line_height_hint)) {
                 onChange(draft.copy(lineHeight = it).clamped())
             }
         }

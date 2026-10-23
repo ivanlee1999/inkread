@@ -23,7 +23,7 @@ internal object EInkReaderFormatting {
     fun payload(value: ReaderFormatting, faces: String): String {
         val safe = value.clamped()
         return """{
-            "fontSize":${safe.fontSize},"lineHeight":${safe.lineHeight},
+            "fontSize":${safe.fontSize},"chineseFontSize":${safe.chineseFontSize},"lineHeight":${safe.lineHeight},
             "marginLeft":${safe.marginLeft},"marginRight":${safe.marginRight},
             "marginTop":${safe.marginTop},"marginBottom":${safe.marginBottom},
             "letterSpacing":${safe.letterSpacing},"wordSpacing":${safe.wordSpacing},
@@ -66,6 +66,8 @@ internal object EInkReaderFormatting {
             -webkit-text-size-adjust: none; text-size-adjust: none;
         }
         #eink-content * { color: var(--reader-text-color) !important; background-color: transparent !important; font-family: inherit !important; }
+        /* Script runs carry inherited typography without extra inline hit-test boxes. */
+        #eink-content .eink-script-cjk { all: unset !important; display: contents !important; font-size: var(--reader-cjk-scale, 1em) !important; }
         #eink-content a, #eink-content a:visited { text-decoration: underline; }
         #eink-content p { margin-block: var(--reader-paragraph-gap); text-indent: var(--reader-paragraph-indent); }
         #eink-content strong, #eink-content b, #eink-content h1, #eink-content h2, #eink-content h3,

@@ -46,4 +46,5 @@
     <string name="reader_formatting_download_failed">Could not download this font. Check your connection and try again.</string>
     <string name="reader_formatting_saving">Saving…</string>
     <string name="reader_formatting_label_unit">%1$s (%2$s)</string>
+    <string name="reader_formatting_line_height_hint">A font-based minimum prevents overlap and keeps text selection accurate. Your chosen value is preserved.</string>
 </resources>

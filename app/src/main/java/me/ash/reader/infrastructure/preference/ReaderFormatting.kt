@@ -6,7 +6,9 @@ package me.ash.reader.infrastructure.preference
  * This model deliberately has no Android/Compose dependency.
  */
 data class ReaderFormatting(
+    /** English/Latin base size; the existing key is retained for compatibility. */
     val fontSize: Int = 18,
+    val chineseFontSize: Int = fontSize,
     val englishFont: Int = 0,
     val chineseFont: Int = 0,
     val lineHeight: Float = 1f,
@@ -26,6 +28,7 @@ data class ReaderFormatting(
 ) {
     fun clamped(): ReaderFormatting = copy(
         fontSize = fontSize.coerceIn(FontSizeRange),
+        chineseFontSize = chineseFontSize.coerceIn(FontSizeRange),
         englishFont = englishFont.takeIf { it in EnglishFontRange } ?: Default.englishFont,
         chineseFont = chineseFont.takeIf { it in ChineseFontRange } ?: Default.chineseFont,
         lineHeight = lineHeight.finiteIn(LineHeightRange, Default.lineHeight),

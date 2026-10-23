@@ -9,9 +9,10 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import me.ash.reader.ui.ext.DataStoreKey
 
-/** The existing font and spacing keys remain the only persisted source for those settings. */
+/** Existing font/spacing keys remain authoritative; only the independent CJK size adds a key. */
 object ReaderFormattingPreference {
     private val fontSize = intPreferencesKey(DataStoreKey.einkFontSize)
+    private val chineseFontSize = intPreferencesKey(DataStoreKey.einkChineseFontSize)
     private val englishFont = intPreferencesKey(DataStoreKey.einkEnglishFont)
     private val chineseFont = intPreferencesKey(DataStoreKey.einkChineseFont)
     private val lineHeight = floatPreferencesKey(DataStoreKey.readingTextLineHeight)
@@ -36,6 +37,7 @@ object ReaderFormattingPreference {
         val padding = preferences[legacyPadding] ?: defaults.marginLeft
         return ReaderFormatting(
             fontSize = preferences[fontSize] ?: defaults.fontSize,
+            chineseFontSize = preferences[chineseFontSize] ?: preferences[fontSize] ?: defaults.chineseFontSize,
             englishFont = preferences[englishFont] ?: defaults.englishFont,
             chineseFont = preferences[chineseFont] ?: defaults.chineseFont,
             lineHeight = preferences[lineHeight] ?: defaults.lineHeight,
@@ -59,6 +61,7 @@ object ReaderFormattingPreference {
     internal fun writeTo(preferences: MutablePreferences, value: ReaderFormatting) {
         val format = value.clamped()
         preferences[fontSize] = format.fontSize
+        preferences[chineseFontSize] = format.chineseFontSize
         preferences[englishFont] = format.englishFont
         preferences[chineseFont] = format.chineseFont
         preferences[lineHeight] = format.lineHeight
@@ -78,6 +81,15 @@ object ReaderFormattingPreference {
         // A symmetric setting can be represented by the scrolling reader. An asymmetric setting
         // cannot: preserve its existing padding instead of arbitrarily choosing one side.
         if (format.marginLeft == format.marginRight) preferences[legacyPadding] = format.marginLeft
+    }
+
+    /** The old single-size/quick A controls move both scripts together, retaining their offset. */
+    internal fun writeCombinedFontSize(preferences: MutablePreferences, value: Int) {
+        val before = fromPreferences(preferences)
+        val english = value.coerceIn(ReaderFormatting.FontSizeRange)
+        preferences[fontSize] = english
+        preferences[chineseFontSize] = (before.chineseFontSize + english - before.fontSize)
+            .coerceIn(ReaderFormatting.FontSizeRange)
     }
 
     /** Compatibility for the existing horizontal-padding settings control, in the same transaction. */
@@ -103,4 +115,8 @@ suspend fun DataStore<Preferences>.saveReaderFormatting(value: ReaderFormatting)
 
 internal suspend fun DataStore<Preferences>.saveReaderHorizontalPadding(value: Int) {
     edit { ReaderFormattingPreference.writeHorizontalPadding(it, value) }
+}
+
+internal suspend fun DataStore<Preferences>.saveCombinedReaderFontSize(value: Int) {
+    edit { ReaderFormattingPreference.writeCombinedFontSize(it, value) }
 }
