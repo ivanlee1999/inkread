@@ -1,10 +1,12 @@
 package me.ash.reader.ui.page.home.reading
 
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.PointF
-import android.os.Build
+import android.graphics.Rect
+import android.graphics.Region
 import android.os.SystemClock
 import android.util.Log
 import android.view.InputDevice
@@ -14,7 +16,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewConfiguration
-import android.view.inspector.WindowInspector
+import android.view.WindowManager
 import android.webkit.WebView
 import android.widget.ListView
 import android.widget.TextView
@@ -96,10 +98,23 @@ class EInkReaderAnnotationUiTest {
     private val note = AtomicReference<Boolean?>()
     private val locations = AtomicReference<String?>()
     private var nativeOverflowOpen = false
+    private var diagnosticAccessibilityFlags: Int? = null
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
 
     @Before fun prepare() { VolumeKeyEventBus.resetForTest() }
-    @After fun cleanup() { VolumeKeyEventBus.resetForTest() }
+    @After fun cleanup() {
+        try {
+            diagnosticAccessibilityFlags?.let { flags ->
+                val automation = instrumentation.uiAutomation
+                val info = automation.serviceInfo
+                info.flags = flags
+                automation.serviceInfo = info
+                diagnosticAccessibilityFlags = null
+            }
+        } finally {
+            VolumeKeyEventBus.resetForTest()
+        }
+    }
 
     private fun startReader(fontSize: Int = ReaderFormatting.Default.fontSize, annotationsAvailable: Boolean = true) {
         compose.setContent {
@@ -367,7 +382,7 @@ class EInkReaderAnnotationUiTest {
 
     @Test fun nativeHandlesAdjustDefaultSelectionWithoutPagingAtLargeReaderFont() {
         startReader(fontSize = 32)
-        observeAnnotationCapture()
+        val clickDiagnostics = installHighlightCaptureObserver()
         val before = page.get()
         longPressFirstWord()
         assertTrue(nativeActionAvailable("Highlight"))
@@ -405,15 +420,14 @@ class EInkReaderAnnotationUiTest {
         dragSelectionHandle(textPoint("select-target", 0, 19, edge = "end"), originalEnd)
         compose.waitUntil(5_000) { js("window.getSelection().toString().trim()") == "Selection" }
         val exact = js("window.getSelection().toString()") as String
-        clickNativeAction("Highlight")
         try {
+            clickNativeAction("Highlight", clickDiagnostics)
             compose.waitUntil(5_000) { created.get() != null }
-        } catch (timeout: ComposeTimeoutException) {
-            logReaderSnapshot("Highlight callback timeout")
-            throw timeout
+            assertEquals(exact, JSONObject(created.get()!!).getString("quote"))
+            assertEquals(false, note.get())
+        } finally {
+            flushHighlightClickDiagnostics(clickDiagnostics, exact)
         }
-        assertEquals(exact, JSONObject(created.get()!!).getString("quote"))
-        assertEquals(false, note.get())
         assertReadingNavigationRestored()
     }
 
@@ -474,15 +488,25 @@ class EInkReaderAnnotationUiTest {
         assertEquals(documentUrl, js("location.href"))
         assertEquals(0, linkOpens.get())
         assertNull(created.get())
+        // Native dismissal and the renderer's range cleanup complete asynchronously.
+        // Observe the actual cleared range before testing whether a blank hold restores it.
+        compose.waitUntil(5_000) {
+            js("window.getSelection().isCollapsed && window.getSelection().toString() === ''") == true
+        }
+        assertEquals("Selected-link dismissal must leave a collapsed, empty DOM range before a blank hold", true,
+            js("window.getSelection().isCollapsed && window.getSelection().toString() === ''"))
         // Holding whitespace is not an invisible page-click shortcut.
         nativeTap(.98f, .5f, longPress = true)
         settle()
-        logReaderSnapshot("after margin hold", .98f, .5f)
         assertEquals(before, page.get())
         assertFalse(selecting.value)
+        assertEquals("A blank-margin hold must not resurrect the dismissed DOM range", true,
+            js("window.getSelection().isCollapsed"))
+        assertEquals("A blank-margin hold must not restore the old selected quote", "",
+            js("window.getSelection().toString()"))
         assertEquals(0, nextArticles.get())
         assertEquals(0, previousArticles.get())
-        assertReadingNavigationRestored(diagnoseTap = true)
+        assertReadingNavigationRestored()
     }
 
     @Test fun realBrowserCrossParagraphSelectionKeepsDisplayAndRawWhitespace() {
@@ -640,19 +664,12 @@ class EInkReaderAnnotationUiTest {
         }
     }
 
-    private fun assertReadingNavigationRestored(diagnoseTap: Boolean = false) {
+    private fun assertReadingNavigationRestored() {
         compose.waitUntil(5_000) { !selecting.value && !editing.value }
         compose.onNodeWithTag("reader_controls_toggle").assertIsDisplayed()
         val before = page.get()
-        if (diagnoseTap) logReaderSnapshot("before restored forward tap")
         nativeTap(.8f, .5f)
-        if (diagnoseTap) logReaderSnapshot("after restored forward tap")
-        try {
-            compose.waitUntil(5_000) { page.get() == before + 1 }
-        } catch (timeout: ComposeTimeoutException) {
-            if (diagnoseTap) logReaderSnapshot("restored forward tap timeout")
-            throw timeout
-        }
+        compose.waitUntil(5_000) { page.get() == before + 1 }
         nativeTap(.2f, .5f)
         compose.waitUntil(5_000) { page.get() == before }
         volume(KeyEvent.KEYCODE_VOLUME_DOWN)
@@ -738,10 +755,159 @@ class EInkReaderAnnotationUiTest {
         closeNativeOverflow()
     }
 
-    private fun clickNativeAction(label: String) {
+    private fun clickNativeAction(label: String, diagnostics: HighlightClickDiagnostics? = null) {
         nativeActionAvailable(label)
-        nativeAction(label).perform(click())
+        nativeAction(label).perform(if (diagnostics == null) click() else traceOneNativeClick(diagnostics))
         nativeOverflowOpen = false
+    }
+
+    // NONSHIPPING DIAGNOSTIC: used only by the existing handle test above.
+    // Collect in memory at injection time; logging and JS reads happen afterward
+    // so they cannot intentionally wait for or repair the native toolbar.
+    private class HighlightClickDiagnostics {
+        val events = mutableListOf<String>() // All writes and copies occur on the main thread.
+        var restoreActionObserver: (() -> Unit)? = null
+        fun record(event: String) { events += "uptime=${SystemClock.uptimeMillis()} $event" }
+    }
+
+    private fun installHighlightCaptureObserver(): HighlightClickDiagnostics {
+        val automation = instrumentation.uiAutomation
+        val info = automation.serviceInfo
+        diagnosticAccessibilityFlags = info.flags
+        info.flags = info.flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+        automation.serviceInfo = info
+        // Forward exactly once with the same receiver/arguments/result. This
+        // observes the atomic JS return, not delivery of Android's JS callback.
+        // No DOM range, menu, focus, capture ticket, or selection state is changed.
+        assertEquals(true, js("""
+            (function(){
+                var original=InkReadAnnotations.captureSelection;
+                window.__inkreadHighlightCapture={calls:0,returns:[],errors:[]};
+                InkReadAnnotations.captureSelection=function(){
+                    var trace=window.__inkreadHighlightCapture;trace.calls++;
+                    try {var result=original.apply(this,arguments);trace.returns.push(result);return result;}
+                    catch(error){trace.errors.push(String(error));throw error;}
+                };
+                return true;
+            })()
+        """.trimIndent()))
+        return HighlightClickDiagnostics()
+    }
+
+    private fun traceOneNativeClick(diagnostics: HighlightClickDiagnostics): ViewAction {
+        val originalClick = click()
+        return object : ViewAction {
+            override fun getConstraints(): Matcher<View> = originalClick.constraints
+            override fun getDescription() = "one unchanged native click with passive in-memory target and delivery observations"
+            override fun perform(uiController: UiController, view: View) {
+                val webView = reader() as EInkAnnotationWebView
+                val originalAction = webView.onAnnotationAction
+                webView.onAnnotationAction = { addNote, mode ->
+                    diagnostics.record("native_annotation_action addNote=$addNote mode=${System.identityHashCode(mode)}")
+                    originalAction(addNote, mode)
+                    diagnostics.record("native_annotation_action_return addNote=$addNote")
+                }
+                diagnostics.restoreActionObserver = { webView.onAnnotationAction = originalAction }
+                webView.setOnTouchListener { _, event ->
+                    diagnostics.record("webview_touch action=${MotionEvent.actionToString(event.actionMasked)} " +
+                        "eventTime=${event.eventTime} downTime=${event.downTime} x=${event.x} y=${event.y} " +
+                        "rawX=${event.rawX} rawY=${event.rawY}")
+                    false
+                }
+                val observingController = object : UiController by uiController {
+                    override fun injectMotionEvent(event: MotionEvent): Boolean {
+                        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                            recordNativeClickHierarchy(view, diagnostics)
+                            recordNativeTouchableRegion(view, event.rawX, event.rawY, diagnostics)
+                        }
+                        diagnostics.record("inject_touch action=${MotionEvent.actionToString(event.actionMasked)} " +
+                            "eventTime=${event.eventTime} downTime=${event.downTime} x=${event.x} y=${event.y} " +
+                            "rawX=${event.rawX} rawY=${event.rawY}")
+                        return uiController.injectMotionEvent(event)
+                    }
+                }
+                try {
+                    // Delegate the original Espresso click, without retrying,
+                    // replacing its coordinates, sleeping, or calling performClick.
+                    originalClick.perform(observingController, view)
+                } finally {
+                    webView.setOnTouchListener(null)
+                }
+            }
+        }
+    }
+
+    private fun recordNativeClickHierarchy(target: View, diagnostics: HighlightClickDiagnostics) {
+        var current: View? = target
+        var depth = 0
+        while (current != null) {
+            val node = current
+            val rect = Rect()
+            val visibleRect = node.getGlobalVisibleRect(rect)
+            val position = IntArray(2)
+            node.getLocationOnScreen(position)
+            val params = node.layoutParams as? WindowManager.LayoutParams
+            diagnostics.record("target_ancestor depth=$depth id=${System.identityHashCode(node)} " +
+                "class=${node.javaClass.name} text=${(node as? TextView)?.text} " +
+                "alpha=${node.alpha} shown=${node.isShown} visibility=${node.visibility} " +
+                "attached=${node.isAttachedToWindow} laidOut=${node.isLaidOut} enabled=${node.isEnabled} " +
+                "clickable=${node.isClickable} windowFocus=${node.hasWindowFocus()} " +
+                "rectVisible=$visibleRect rect=${rect.toShortString()} " +
+                "screen=${position.contentToString()} size=${node.width}x${node.height} " +
+                "windowToken=${System.identityHashCode(node.windowToken)} " +
+                "windowFlags=${params?.flags} windowType=${params?.type} " +
+                "animationStarted=${node.animation?.hasStarted()} animationEnded=${node.animation?.hasEnded()}")
+            current = node.parent as? View
+            depth++
+        }
+    }
+
+    private fun recordNativeTouchableRegion(target: View, x: Float, y: Float, diagnostics: HighlightClickDiagnostics) {
+        val started = SystemClock.elapsedRealtimeNanos()
+        runCatching {
+            // Public APIs only. getAccessibilityWindowId() on View is hidden;
+            // the locally created node exposes the same public window ID.
+            val targetNode = target.createAccessibilityNodeInfo()
+            val windowId = targetNode.windowId
+            targetNode.recycle()
+            val windows = instrumentation.uiAutomation.windows
+            try {
+                diagnostics.record("touchable_window_query targetWindow=$windowId count=${windows.size}")
+                for (window in windows) {
+                    val region = Region()
+                    window.getRegionInScreen(region)
+                    diagnostics.record("touchable_window id=${window.id} target=${window.id == windowId} " +
+                        "layer=${window.layer} type=${window.type} active=${window.isActive} " +
+                        "focused=${window.isFocused} region=$region containsClick=${region.contains(x.toInt(), y.toInt())}")
+                }
+            } finally {
+                windows.forEach { it.recycle() }
+            }
+        }.onFailure { diagnostics.record("touchable_window_observation_error=${it.javaClass.name}:${it.message}") }
+        diagnostics.record("touchable_window_observation_elapsedNs=${SystemClock.elapsedRealtimeNanos() - started}")
+    }
+
+    private fun flushHighlightClickDiagnostics(diagnostics: HighlightClickDiagnostics, expected: String) {
+        // A failed observation must not replace the original exact-quote assertion
+        // or creation timeout. All contents are this test's synthetic local fixture.
+        runCatching {
+            val events = AtomicReference<List<String>>()
+            instrumentation.runOnMainSync {
+                diagnostics.restoreActionObserver?.invoke()
+                events.set(diagnostics.events.toList())
+            }
+            events.get().forEach { Log.i("InkReadHighlightClick", it) }
+            Log.i("InkReadHighlightClick", "expected_quote=${JSONObject.quote(expected)} " +
+                "host_created=${created.get()} host_selecting=${selecting.value}")
+            val snapshot = js("""
+                (function(){var s=window.getSelection();return JSON.stringify({
+                    capture:window.__inkreadHighlightCapture,quote:s.toString(),
+                    collapsed:s.isCollapsed,rangeCount:s.rangeCount});})()
+            """.trimIndent()).toString()
+            snapshot.chunked(3000).forEachIndexed { index, part ->
+                Log.i("InkReadHighlightClick", "post_result_snapshot part=$index $part")
+            }
+        }.onFailure { Log.w("InkReadHighlightClick", "Diagnostic observation failed without replacing test result", it) }
     }
     private fun volume(code: Int) = instrumentation.runOnMainSync {
         assertTrue(dispatchEInkVolumeKey(true, code, KeyEvent.ACTION_DOWN, 0))
@@ -765,72 +931,8 @@ class EInkReaderAnnotationUiTest {
     private fun assertNativeCopyResult(expected: String) {
         // The native clipboard write can complete after ActionMode is destroyed.
         // Wait for that result, never repeat the gesture or accept old clipboard text.
-        Log.i("InkReadAnnotationTest", "Native Copy result expected=$expected current=${clipboardText()}")
-        try {
-            compose.waitUntil(5_000) { clipboardText() == expected }
-        } catch (timeout: ComposeTimeoutException) {
-            val actual = clipboardText()
-            Log.i("InkReadAnnotationTest", "Native Copy timeout expected=$expected current=$actual")
-            logReaderSnapshot("Native Copy timeout")
-            throw AssertionError("Native Copy did not produce fixture text: expected=<$expected> actual=<$actual>", timeout)
-        }
+        compose.waitUntil(5_000) { clipboardText() == expected }
         assertEquals("Copy must remain the real system action", expected, clipboardText())
-    }
-    private fun observeAnnotationCapture() {
-        // Observe the real native handler and existing JS serializer. Both are
-        // delegated unchanged; this never creates or adjusts a Selection range.
-        instrumentation.runOnMainSync {
-            val view = reader() as EInkAnnotationWebView
-            val original = view.onAnnotationAction
-            view.onAnnotationAction = { addNote, mode ->
-                Log.i("InkReadAnnotationTest", "Native annotation handler reached: addNote=$addNote selecting=${selecting.value} mode=${System.identityHashCode(mode)}")
-                original(addNote, mode)
-            }
-        }
-        js("""(function(){
-            var original=window.InkReadAnnotations.captureSelection;
-            var observed=window.__inkReadCaptureDiagnostics={calls:0,result:null,error:null};
-            window.InkReadAnnotations.captureSelection=function(){
-                observed.calls++;
-                try { var result=original.apply(this,arguments); observed.result=result; return result; }
-                catch(error) { observed.error=String(error); throw error; }
-            };
-            return true;
-        })()""".trimIndent())
-    }
-    private fun logReaderSnapshot(phase: String, xRatio: Float = .8f, yRatio: Float = .5f) {
-        // Diagnostics must not replace the original assertion/timeout if a
-        // renderer or window disappears while its failure is being inspected.
-        runCatching {
-            val dom = js("""(function(){
-                var s=window.getSelection(), ranges=[];
-                for(var i=0;s && i<Math.min(s.rangeCount,3);i++){
-                    var r=s.getRangeAt(i), boxes=r.getClientRects(), rects=[];
-                    for(var j=0;j<Math.min(boxes.length,12);j++){
-                        var b=boxes[j];rects.push([b.left,b.top,b.right,b.bottom]);
-                    }
-                    ranges.push({start:[r.startContainer.nodeName,r.startContainer.parentElement && r.startContainer.parentElement.id,r.startOffset],
-                        end:[r.endContainer.nodeName,r.endContainer.parentElement && r.endContainer.parentElement.id,r.endOffset],
-                        rectCount:boxes.length,rects:rects});
-                }
-                var x=$xRatio*innerWidth,y=$yRatio*innerHeight,e=document.elementFromPoint(x,y),ancestors=[];
-                while(e && ancestors.length<8){ancestors.push({tag:e.tagName,id:e.id,role:e.getAttribute('role'),href:e.getAttribute('href')});e=e.parentElement;}
-                return JSON.stringify({quote:s && s.toString(),collapsed:s && s.isCollapsed,rangeCount:s && s.rangeCount,ranges:ranges,
-                    point:[x,y],viewport:[innerWidth,innerHeight],ancestors:ancestors,capture:window.__inkReadCaptureDiagnostics || null});
-            })()""".trimIndent())
-            val native = AtomicReference<String>()
-            instrumentation.runOnMainSync {
-                val view = reader()
-                val roots = if (Build.VERSION.SDK_INT >= 29) WindowInspector.getGlobalWindowViews() else listOf(view.rootView)
-                native.set(roots.joinToString(prefix = "[", postfix = "]") { root ->
-                    val location = IntArray(2); root.getLocationOnScreen(location)
-                    "${root.javaClass.name}{tag=${root.tag},xy=${location.toList()},size=${root.width}x${root.height},visible=${root.isShown},focus=${root.hasWindowFocus()}}"
-                })
-            }
-            val detail = "$phase: selecting=${selecting.value} editing=${editing.value} page=${page.get()} created=${created.get()} DOM=$dom roots=${native.get()}"
-            val chunks = detail.chunked(3_000)
-            chunks.forEachIndexed { index, chunk -> Log.i("InkReadAnnotationTest", "snapshot ${index + 1}/${chunks.size}: $chunk") }
-        }.onFailure { Log.w("InkReadAnnotationTest", "$phase: diagnostic snapshot unavailable", it) }
     }
     private fun assertNativeSelectionRetained(expected: String, phase: String) {
         settle()

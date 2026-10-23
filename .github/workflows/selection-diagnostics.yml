@@ -1,4 +1,4 @@
-name: Selection diagnostics (nonshipping)
+name: Highlight click diagnostics (nonshipping)
 
 on:
   push:
@@ -20,11 +20,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: narrow
-            size: 320x900
-            density: 160
-          - name: phone
-            size: 400x1000
+          - name: compact-tablet
+            size: 800x1100
             density: 160
           - name: tablet
             size: 1000x1200
@@ -91,11 +88,11 @@ jobs:
           actual_size=$(tr -d '\r' < article-annotations-evidence/size.txt | sed -n 's/^\(Physical\|Override\) size: //p' | tail -n 1)
           test "$actual_size" = "${{ matrix.size }}"
           result=0
-          for scale in 1.0 1.6; do
+          for scale in 1.0; do
             adb shell settings put system font_scale "$scale"
             export ANNOTATION_FONT_SCALE="$scale"
-            classes=me.ash.reader.ui.page.home.reading.EInkReaderAnnotationUiTest#linksAndMarginLongPressDoNotBecomePageTurnsOrExternalNavigation,me.ash.reader.ui.page.home.reading.EInkReaderAnnotationUiTest#nativeHandlesAdjustDefaultSelectionWithoutPagingAtLargeReaderFont,me.ash.reader.ui.page.home.reading.EInkReaderAnnotationUiTest#defaultSelectionKeepsCopyButHidesUnavailableAnnotationActions
-            for iteration in 1 2; do
+            classes=me.ash.reader.ui.page.home.reading.EInkReaderAnnotationUiTest#nativeHandlesAdjustDefaultSelectionWithoutPagingAtLargeReaderFont
+            for iteration in 1; do
             phase="article-annotations-evidence/font-$scale-run-$iteration"
             mkdir -p "$phase"
             ./gradlew --no-daemon --max-workers=2 connectedGithubDebugAndroidTest \
@@ -109,7 +106,7 @@ jobs:
           adb logcat -d > article-annotations-evidence/logcat.txt
           exit "$result"
           SCRIPT
-      - name: Diagnose existing native selection cases without release gating claims
+      - name: Diagnose one native Highlight click without release gating claims
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35

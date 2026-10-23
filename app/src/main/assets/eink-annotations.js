@@ -224,11 +224,25 @@
         return Math.max(0, Math.floor((rects[0].left + window._currentPage * window._pageStride - margins.left + .5) / window._pageStride));
     }
     function clearSelection() { var s = window.getSelection(); if (s) s.removeAllRanges(); redraw(); }
-    function setSelectionMode(value, expectedGeneration) {
+    function setSelectionMode(value, expectedGeneration, clearRange) {
         if (destroyed || generation !== expectedGeneration) return false;
         enabled = !!value;
-        if (!enabled) clearSelection();
+        // Native Copy owns its own asynchronous range cleanup. State-only sync
+        // must not remove its range before Chromium has copied it.
+        if (!enabled && clearRange !== false) clearSelection();
         return true;
+    }
+    function preventBlankMarginSelection(event) {
+        if (destroyed || enabled || !event.cancelable || !event.touches || event.touches.length !== 1) return;
+        var selection = window.getSelection();
+        if (selection && !selection.isCollapsed) return;
+        // Article text, links and media are descendants of #eink-content. Only
+        // the empty BODY/HTML outside it is ours; leave every descendant native.
+        if (event.target !== document.body && event.target !== document.documentElement) return;
+        // Cancel at touch-start acknowledgement, before Chromium can turn a
+        // margin hold into cached selection handles without creating ActionMode.
+        // Kotlin still receives the real stream and owns page taps/swipes.
+        event.preventDefault();
     }
     function initialize() {
         frame = document.getElementById('eink-content'); if (!frame) return;
@@ -242,6 +256,7 @@
         if (window.MutationObserver) { observer = new MutationObserver(redraw); observer.observe(frame, {attributes:true, attributeFilter:['style']}); }
         if (document.fonts) document.fonts.addEventListener('loadingdone', redraw);
         document.addEventListener('selectionchange', redraw);
+        document.addEventListener('touchstart', preventBlankMarginSelection, {passive:false});
         window.addEventListener('resize', redraw);
         window.addEventListener('scroll', redraw, true);
     }
@@ -258,7 +273,9 @@
         if (customHighlight()) CSS.highlights.delete('inkread-annotation');
         if (frame) { frame.removeEventListener('load', redraw, true); frame.removeEventListener('error', redraw, true); }
         if (document.fonts) document.fonts.removeEventListener('loadingdone', redraw);
-        document.removeEventListener('selectionchange', redraw); window.removeEventListener('resize', redraw); window.removeEventListener('scroll', redraw, true);
+        document.removeEventListener('selectionchange', redraw);
+        document.removeEventListener('touchstart', preventBlankMarginSelection);
+        window.removeEventListener('resize', redraw); window.removeEventListener('scroll', redraw, true);
     }, {once:true});
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initialize, {once:true}); else initialize();
 })();
