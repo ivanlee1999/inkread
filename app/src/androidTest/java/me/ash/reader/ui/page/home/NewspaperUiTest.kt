@@ -486,8 +486,12 @@ class NewspaperUiTest {
                 assertEquals((12 until 24).map { "a-$it" }, marked)
             }
             compose.onNodeWithTag("effects-fixture").performScrollToIndex(2)
-            val oldList = currentList.get()
-            val oldIndex = oldList.firstVisibleItemIndex
+            val (oldList, oldIndex) = compose.runOnIdle {
+                val list = currentList.get()
+                assertTrue("Capture the old filter only after its requested scroll settles",
+                    list.firstVisibleItemIndex > 0)
+                list to list.firstVisibleItemIndex
+            }
             compose.runOnIdle { selected.value = "b" }
             compose.waitUntil(5_000) { page.value == 0 && currentList.get() !== oldList }
             compose.onNodeWithText(data.getValue("b")[0].articleWithFeed.article.title).assertIsDisplayed()
