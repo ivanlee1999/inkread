@@ -58,6 +58,7 @@ fun SavedLibraryPage(
     onBack: () -> Unit,
     onOpen: (String) -> Unit,
     onCapture: (String) -> Unit,
+    onHighlights: () -> Unit = {},
     viewModel: SavedLibraryViewModel = hiltViewModel(),
 ) {
     val allItems by viewModel.items.collectAsState()
@@ -97,6 +98,10 @@ fun SavedLibraryPage(
     }
     if (pasteOpen) SavedPasteDialog(onSave = { pasteOpen = false; onCapture(it) }, onDismiss = { pasteOpen = false })
     if (filtersOpen) SavedLibraryDialog("Your saved library", { filtersOpen = false }) {
+        SavedLibraryAction("Highlights and notes", Modifier.testTag("saved-library-highlights")) {
+            filtersOpen = false; onHighlights()
+        }
+        HorizontalDivider()
         Text("One on-device library, independent of RSS accounts. Inbox, Later and Archive are locations, not read states.")
         Text("Tap an article to read. Touch and hold it for actions. Page controls are in the article count; swipe up or down to turn a whole page.")
         HorizontalDivider()

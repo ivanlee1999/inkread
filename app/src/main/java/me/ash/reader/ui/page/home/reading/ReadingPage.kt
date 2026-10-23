@@ -88,15 +88,19 @@ fun ReadingPage(
     onNavigateToStylePage: () -> Unit,
     saveToLibraryViewModel: SaveRssToLibraryViewModel = hiltViewModel(),
     annotationViewModel: AnnotationReaderViewModel = hiltViewModel(),
+    requestedAnnotationId: String? = null,
+    expectedAnnotationSourceId: String? = null,
+    expectedAnnotationAccountId: Int? = null,
 ) {
+    val usePaginatedReader = isEInkMode || requestedAnnotationId != null
     val context = LocalContext.current
     val hapticFeedback = LocalHapticFeedback.current
     val openLink = LocalOpenLink.current
     val openLinkSpecificBrowser = LocalOpenLinkSpecificBrowser.current
-    val isPullToSwitchArticleEnabled = LocalPullToSwitchArticle.current.value
+    val isPullToSwitchArticleEnabled = requestedAnnotationId == null && LocalPullToSwitchArticle.current.value
     val readingUiState = viewModel.readingUiState.collectAsStateValue()
     val readerState = viewModel.readerStateStateFlow.collectAsStateValue()
-    val annotationSource = if (isEInkMode && readerState.articleId != null && readerState.sourceAccountId != null &&
+    val annotationSource = if (usePaginatedReader && readerState.articleId != null && readerState.sourceAccountId != null &&
         (readerState.content is ReaderState.FullContent || readerState.content is ReaderState.Description)) {
         AnnotationSource(
             kind = AnnotationSourceKind.RSS,
@@ -108,7 +112,11 @@ fun ReadingPage(
             sourceName = readerState.feedName,
         )
     } else null
-    val annotations = rememberAnnotationReaderUi(annotationSource, readerState.content, annotationViewModel)
+    val matchingRequestedAnnotation = requestedAnnotationId.takeIf {
+        annotationSource != null && annotationSource.sourceId == expectedAnnotationSourceId &&
+            annotationSource.accountId == expectedAnnotationAccountId
+    }
+    val annotations = rememberAnnotationReaderUi(annotationSource, readerState.content, annotationViewModel, matchingRequestedAnnotation)
 
     val savedSuccessMessage by rememberUpdatedState(stringResource(R.string.saved_rss_save_success))
     val savedFailureMessage by rememberUpdatedState(stringResource(R.string.saved_rss_save_failed))
@@ -138,7 +146,7 @@ fun ReadingPage(
     // Keep reader ownership during loading, so keys cannot turn or mark the list
     // underneath it. The ready content collects without a second registration.
     val volumeKeyOwner = remember(readerState.articleId) { Any() }
-    EInkReaderVolumeReservation(isEInkMode && readerState.articleId != null, volumeKeyOwner)
+    EInkReaderVolumeReservation(usePaginatedReader && readerState.articleId != null, volumeKeyOwner)
     val boldCharacters = LocalReadingBoldCharacters.current
     val coroutineScope = rememberCoroutineScope()
 
@@ -168,7 +176,7 @@ fun ReadingPage(
         containerColor = MaterialTheme.colorScheme.surface,
         content = { paddings ->
             Box(modifier = Modifier.fillMaxSize()) {
-                if (readerState.articleId != null && !isEInkMode) {
+                if (readerState.articleId != null && !usePaginatedReader) {
                     TopBar(
                         isShow = isShowToolBar,
                         isScrolled = showTopDivider,
@@ -182,11 +190,11 @@ fun ReadingPage(
                     )
                 }
 
-                val isNextArticleAvailable = readerState.nextArticle != null
-                val isPreviousArticleAvailable = readerState.previousArticle != null
+                val isNextArticleAvailable = requestedAnnotationId == null && readerState.nextArticle != null
+                val isPreviousArticleAvailable = requestedAnnotationId == null && readerState.previousArticle != null
 
                 if (readerState.articleId != null) {
-                    if (isEInkMode) {
+                    if (usePaginatedReader) {
                         // E-Ink paginated content reader
                         if (readerState.content is ReaderState.Loading) {
                             // Show plain white placeholder while content is still loading
@@ -217,6 +225,14 @@ fun ReadingPage(
                                 onCreateAnnotation = annotations.onCreateAnnotation.takeIf { annotations.available },
                                 onAnnotationLocationsChanged = annotations.onAnnotationLocationsChanged,
                                 onAnnotationsClick = annotations.onAnnotationsClick.takeIf { annotationSource != null },
+                                onAnnotationClick = annotations.onAnnotationClick,
+                                annotationResizeRequest = annotations.resizeRequest,
+                                onAnnotationResizeResult = annotations.onResizeResult,
+                                onResizeSelection = annotations.onResizeSelection,
+                                autoHighlightEnabled = annotations.autoHighlightEnabled,
+                                onAutoCreateAnnotation = annotations.onAutoCreateAnnotation,
+                                onUndoAutoHighlight = annotations.undoAutoHighlight,
+                                annotationStatus = annotations.status,
                                 annotationJumpRequest = annotations.jumpRequest,
                                 onAnnotationJumpResult = annotations.onAnnotationJumpResult,
                                 reserveVolumeKeys = false,
@@ -251,8 +267,8 @@ fun ReadingPage(
                                 onNavigateToStylePage = onNavigateToStylePage,
                                 onSaveArticle = saveArticle,
                                 onBack = { onNavAction(NavigationAction.Close) },
-                                currentArticleIndex = readerState.articleOrdinal,
-                                totalArticleCount = readerState.totalArticleCount,
+                                currentArticleIndex = readerState.articleOrdinal.takeIf { requestedAnnotationId == null },
+                                totalArticleCount = readerState.totalArticleCount.takeIf { requestedAnnotationId == null },
                             )
                         }
                         }
@@ -420,7 +436,7 @@ fun ReadingPage(
                     }
                 }
                 // Bottom Bar (hidden in E-Ink mode, pagination bar is used instead)
-                if (readerState.articleId != null && !isEInkMode) {
+                if (readerState.articleId != null && !usePaginatedReader) {
                     BottomBar(
                         isShow = isShowToolBar,
                         isUnread = readingUiState.isUnread,

@@ -2,11 +2,16 @@
 (function () {
     'use strict';
     var VERSION = 1, CONTEXT = 32, CAPTURE_BYTE_LIMIT = 128 * 1024, frame, map, enabled = false, destroyed = false;
-    var annotations = [], locations = [], ranges = [], redrawFrame = 0, overlay, observer;
+    var annotations = [], locations = [], ranges = [], attached = [], redrawFrame = 0, overlay, observer;
+    var resizeSession = null, autoEnabled = false, autoGesture = null, autoFrame = 0;
+    var selectionRevision = 0, autoConsumed = false, sessionEmittedRanges = [], lastAutoEmittedKey = null;
     var generation = window._inkreadGeneration;
     var OMIT = /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/;
     function notify(name, value) {
         try { if (window.Android && typeof Android[name] === 'function') Android[name](generation, value); } catch (ignored) {}
+    }
+    function live(expectedGeneration) {
+        return !destroyed && generation === expectedGeneration && window._inkreadGeneration === generation;
     }
     function isInteger(value) { return typeof value === 'number' && isFinite(value) && Math.floor(value) === value; }
     function scalarBoundary(text, offset) {
@@ -137,7 +142,7 @@
         return json;
     }
     function captureSelection(expectedGeneration) {
-        if (destroyed || !enabled || generation !== expectedGeneration) return null;
+        if (!live(expectedGeneration) || !enabled) return null;
         var selection = window.getSelection();
         if (!selection || selection.rangeCount !== 1 || selection.isCollapsed || !ensureMap()) return null;
         // Range endpoints are document ordered even for right-to-left drags.
@@ -168,9 +173,52 @@
     function customHighlight() {
         return window.CSS && CSS.highlights && typeof window.Highlight === 'function';
     }
+    function contentBounds() {
+        var margins = window.InkReadFormatting && InkReadFormatting.effectiveMargins ? InkReadFormatting.effectiveMargins() : {left:0,right:0,top:0,bottom:0};
+        return { left: Math.max(0, margins.left), right: Math.min(window.innerWidth, window.innerWidth - margins.right),
+            top: Math.max(0, margins.top), bottom: Math.min(window.innerHeight, window.innerHeight - margins.bottom) };
+    }
+    function rangeContainsPoint(range, x, y) {
+        var bounds = contentBounds(), rects = range.getClientRects();
+        for (var i = 0; i < rects.length; i++) {
+            var rect = rects[i], left = Math.max(bounds.left, rect.left), right = Math.min(bounds.right, rect.right);
+            var top = Math.max(bounds.top, rect.top), bottom = Math.min(bounds.bottom, rect.bottom);
+            if (x >= left && x < right && y >= top && y < bottom) return true;
+        }
+        return false;
+    }
+    function hasSelection() {
+        var selection = window.getSelection();
+        return selection && selection.rangeCount > 0 && !selection.isCollapsed;
+    }
+    function selectionContainsPoint(x, y, expectedGeneration) {
+        if (!live(expectedGeneration) || typeof x !== 'number' || !isFinite(x) || typeof y !== 'number' || !isFinite(y) || !hasSelection()) return false;
+        var selection = window.getSelection();
+        for (var i = 0; i < selection.rangeCount; i++) if (rangeContainsPoint(selection.getRangeAt(i), x, y)) return true;
+        return false;
+    }
+    function interactiveElement(element) {
+        for (var node = element; node; node = node.parentElement) {
+            if (/^(A|BUTTON|INPUT|SELECT|TEXTAREA|LABEL|OPTION|SUMMARY|AUDIO|VIDEO)$/.test(node.tagName) || node.isContentEditable ||
+                (node.hasAttribute && node.hasAttribute('contenteditable'))) return true;
+            var role = node.getAttribute && node.getAttribute('role');
+            if (role === 'button' || role === 'link') return true;
+        }
+        return false;
+    }
+    function tapTarget(x, y, expectedGeneration) {
+        if (!live(expectedGeneration) || typeof x !== 'number' || !isFinite(x) || typeof y !== 'number' || !isFinite(y) || hasSelection()) return '{"kind":"blocked"}';
+        // Native links/buttons win over annotations, including an inline child
+        // inside the link. Selection wins over both, even with capture disabled.
+        var element = document.elementFromPoint(x, y);
+        if (!element || interactiveElement(element)) return '{"kind":"blocked"}';
+        var hits = attached.filter(function (entry) { return rangeContainsPoint(entry.range, x, y); });
+        hits.sort(function (a, b) { return (a.end - a.start) - (b.end - b.start) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0); });
+        return hits.length ? JSON.stringify({kind:'annotation', id:hits[0].id}) : '{"kind":"page"}';
+    }
     function draw() {
         redrawFrame = 0;
-        if (destroyed || !frame) return;
+        if (!live(generation) || !frame) return;
         if (customHighlight()) {
             try { var highlight = new Highlight(); ranges.forEach(function (r) { highlight.add(r); }); CSS.highlights.set('inkread-annotation', highlight); return; } catch (ignored) {}
         }
@@ -202,20 +250,20 @@
         if (!destroyed && ranges.length && !redrawFrame) redrawFrame = requestAnimationFrame(draw);
     }
     function setAnnotations(value, expectedGeneration) {
-        if (destroyed || generation !== expectedGeneration || !Array.isArray(value)) return false;
+        if (!live(expectedGeneration) || !Array.isArray(value)) return false;
         if (value.length && !ensureMap()) return false;
-        annotations = value; locations = []; ranges = [];
+        annotations = value; locations = []; ranges = []; attached = [];
         annotations.forEach(function (annotation) {
             var resolved = locate(annotation.anchor), range = resolved && makeRange(resolved.start, resolved.end);
             locations.push({ id: annotation.id, status: range ? 'attached' : 'unmatched' });
-            if (range) ranges.push(range);
+            if (range) { ranges.push(range); attached.push({id:annotation.id, start:resolved.start, end:resolved.end, range:range}); }
         });
         notify('onAnnotationLocations', JSON.stringify(locations));
         if (ranges.length) redraw(); else clearMarks();
         return true;
     }
     function pageForAnnotation(id, expectedGeneration) {
-        if (destroyed || generation !== expectedGeneration || !map) return null;
+        if (!live(expectedGeneration) || !map) return null;
         var entry = annotations.filter(function (a) { return a.id === id; })[0];
         var location = entry && locate(entry.anchor), range = location && makeRange(location.start, location.end);
         if (!range || typeof window._pageStride !== 'number' || window._pageStride <= 0) return null;
@@ -223,14 +271,133 @@
         var margins = window.InkReadFormatting.effectiveMargins();
         return Math.max(0, Math.floor((rects[0].left + window._currentPage * window._pageStride - margins.left + .5) / window._pageStride));
     }
-    function clearSelection() { var s = window.getSelection(); if (s) s.removeAllRanges(); redraw(); }
+    function clearSelection() { if (!live(generation)) return; cancelPendingAuto(); var s = window.getSelection(); if (s) s.removeAllRanges(); redraw(); }
     function setSelectionMode(value, expectedGeneration, clearRange) {
-        if (destroyed || generation !== expectedGeneration) return false;
+        if (!live(expectedGeneration)) return false;
+        var wasEnabled = enabled;
         enabled = !!value;
+        if (!enabled) cancelPendingAuto();
         // Native Copy owns its own asynchronous range cleanup. State-only sync
         // must not remove its range before Chromium has copied it.
         if (!enabled && clearRange !== false) clearSelection();
+        if (enabled && !wasEnabled && autoGesture && autoGesture.completed) scheduleAutoCapture(autoGesture);
         return true;
+    }
+    function validToken(token) { return typeof token === 'string' && token.length > 0; }
+    function beginResize(id, requestToken, expectedGeneration) {
+        if (!live(expectedGeneration) || !validToken(requestToken) || typeof id !== 'string' || !ensureMap()) return false;
+        var entries = annotations.filter(function (entry) { return entry.id === id; });
+        if (entries.length !== 1) return false;
+        var location = locate(entries[0].anchor), range = location && makeRange(location.start, location.end), selection = window.getSelection();
+        if (!range || !selection) return false;
+        cancelPendingAuto();
+        // The token/ID/generation identify one immutable native edit request.
+        // Moving handles only changes the browser range, never the saved anchor.
+        resizeSession = {id:id, token:requestToken, generation:expectedGeneration};
+        enabled = true; selection.removeAllRanges(); selection.addRange(range); redraw();
+        return true;
+    }
+    function activeResize(id, token, expectedGeneration) {
+        return live(expectedGeneration) && resizeSession && resizeSession.id === id && resizeSession.token === token && resizeSession.generation === expectedGeneration;
+    }
+    function captureResize(id, requestToken, expectedGeneration) {
+        return activeResize(id, requestToken, expectedGeneration) ? captureSelection(expectedGeneration) : null;
+    }
+    function cancelResize(id, requestToken, expectedGeneration, clearRange) {
+        if (!activeResize(id, requestToken, expectedGeneration)) return false;
+        resizeSession = null; cancelPendingAuto();
+        // Copy's asynchronous native serialization still owns the live range.
+        // Revoke this edit request without clearing it on that completion path.
+        if (clearRange !== false) clearSelection();
+        return true;
+    }
+    function cancelPendingAuto() {
+        if (autoFrame) { cancelAnimationFrame(autoFrame); autoFrame = 0; }
+        autoGesture = null;
+    }
+    function cancelAutoCapture(expectedGeneration) {
+        if (!live(expectedGeneration)) return false;
+        cancelPendingAuto(); return true;
+    }
+    function endSelectionSession(expectedGeneration) {
+        if (!live(expectedGeneration)) return false;
+        cancelPendingAuto(); autoConsumed = false;
+        // A bridge emission is not a successful host save. Only attached saved
+        // annotations can deduplicate a future session; rejection, failure,
+        // deletion and Undo must leave that future selection retryable.
+        sessionEmittedRanges = []; lastAutoEmittedKey = null; return true;
+    }
+    function forgetLastAutoCapture(expectedGeneration) {
+        if (!live(expectedGeneration) || lastAutoEmittedKey === null) return false;
+        var index = sessionEmittedRanges.indexOf(lastAutoEmittedKey);
+        if (index >= 0) sessionEmittedRanges.splice(index, 1);
+        // Undo only makes the last emitted range eligible for a future native
+        // session. It must not rearm handles still visible in this session.
+        lastAutoEmittedKey = null; return true;
+    }
+    function setAutoHighlightEnabled(value, expectedGeneration) {
+        if (!live(expectedGeneration)) return false;
+        autoEnabled = !!value;
+        if (!autoEnabled) cancelPendingAuto();
+        return true;
+    }
+    function beginSelectionGesture(token, expectedGeneration) {
+        if (!live(expectedGeneration) || !validToken(token)) return false;
+        cancelPendingAuto();
+        if (!autoEnabled || autoConsumed || resizeSession) return false;
+        // Only native can arm this, from the original single-pointer DOWN.
+        // DOM touch events cannot represent Chromium's selection-handle popup.
+        autoGesture = {token:token, completed:false}; return true;
+    }
+    function eligibleAuto(gesture) {
+        return live(generation) && autoEnabled && enabled && !resizeSession && !autoConsumed && autoGesture === gesture && gesture.completed;
+    }
+    function autoCaptureValue() {
+        var json = captureSelection(generation);
+        if (!json) return null;
+        var value = JSON.parse(json);
+        return value.error ? null : {json:json, anchor:value};
+    }
+    function scheduleAutoCapture(gesture) {
+        if (autoFrame) { cancelAnimationFrame(autoFrame); autoFrame = 0; }
+        if (!eligibleAuto(gesture)) return;
+        var candidate = autoCaptureValue(), revision = selectionRevision;
+        if (!candidate) return; // A later selectionchange can supply the range.
+        var stableFrames = 0;
+        function check() {
+            autoFrame = 0;
+            if (!eligibleAuto(gesture)) return;
+            var next = autoCaptureValue();
+            if (!next) return;
+            if (revision !== selectionRevision || next.json !== candidate.json) {
+                candidate = next; revision = selectionRevision; stableFrames = 0;
+            } else stableFrames++;
+            if (stableFrames < 2) { autoFrame = requestAnimationFrame(check); return; }
+            var anchor = candidate.anchor;
+            var key = anchor.documentFingerprint + ':' + anchor.start + ':' + anchor.end;
+            var duplicate = sessionEmittedRanges.indexOf(key) >= 0 || attached.some(function (entry) { return entry.start === anchor.start && entry.end === anchor.end; });
+            // Consume even a duplicate, so adjusting an existing selection does
+            // not turn it into another automatic write within this same session.
+            autoConsumed = true; autoGesture = null;
+            if (duplicate) return;
+            try {
+                if (window.Android && typeof Android.onAutoAnnotation === 'function') {
+                    sessionEmittedRanges.push(key);
+                    lastAutoEmittedKey = key;
+                    Android.onAutoAnnotation(generation, gesture.token, candidate.json);
+                }
+            } catch (ignored) {}
+        }
+        autoFrame = requestAnimationFrame(check);
+    }
+    function completeSelectionGesture(token, expectedGeneration) {
+        if (!live(expectedGeneration) || !autoGesture || autoGesture.token !== token || autoGesture.completed || !autoEnabled || resizeSession || autoConsumed) return false;
+        autoGesture.completed = true; scheduleAutoCapture(autoGesture); return true;
+    }
+    function selectionChanged() {
+        selectionRevision++; redraw();
+        if (!live(generation)) { cancelPendingAuto(); return; }
+        if (autoGesture && autoGesture.completed) scheduleAutoCapture(autoGesture);
     }
     function preventBlankMarginSelection(event) {
         if (destroyed || enabled || !event.cancelable || !event.touches || event.touches.length !== 1) return;
@@ -255,7 +422,7 @@
         // than wrapping its API or touching its command IDs or resume indices.
         if (window.MutationObserver) { observer = new MutationObserver(redraw); observer.observe(frame, {attributes:true, attributeFilter:['style']}); }
         if (document.fonts) document.fonts.addEventListener('loadingdone', redraw);
-        document.addEventListener('selectionchange', redraw);
+        document.addEventListener('selectionchange', selectionChanged);
         document.addEventListener('touchstart', preventBlankMarginSelection, {passive:false});
         window.addEventListener('resize', redraw);
         window.addEventListener('scroll', redraw, true);
@@ -263,17 +430,22 @@
     window.InkReadAnnotations = {
         documentId: generation, pageForAnnotation: pageForAnnotation, captureSelection: captureSelection, setAnnotations: setAnnotations,
         setSelectionMode: setSelectionMode, clearSelection: clearSelection, redraw: redraw,
+        tapTarget: tapTarget, selectionContainsPoint: selectionContainsPoint,
+        beginResize: beginResize, captureResize: captureResize, cancelResize: cancelResize,
+        setAutoHighlightEnabled: setAutoHighlightEnabled, beginSelectionGesture: beginSelectionGesture,
+        completeSelectionGesture: completeSelectionGesture, cancelAutoCapture: cancelAutoCapture, endSelectionSession: endSelectionSession,
+        forgetLastAutoCapture: forgetLastAutoCapture,
         // Read-only diagnostics useful to native regression tests.
         textMapVersion: VERSION,
         locationStatus: function () { return locations.slice(); }
     };
     window.addEventListener('pagehide', function () {
-        destroyed = true; if (redrawFrame) cancelAnimationFrame(redrawFrame);
+        destroyed = true; cancelPendingAuto(); resizeSession = null; if (redrawFrame) cancelAnimationFrame(redrawFrame);
         if (observer) observer.disconnect(); if (overlay) overlay.remove();
         if (customHighlight()) CSS.highlights.delete('inkread-annotation');
         if (frame) { frame.removeEventListener('load', redraw, true); frame.removeEventListener('error', redraw, true); }
         if (document.fonts) document.fonts.removeEventListener('loadingdone', redraw);
-        document.removeEventListener('selectionchange', redraw);
+        document.removeEventListener('selectionchange', selectionChanged);
         document.removeEventListener('touchstart', preventBlankMarginSelection);
         window.removeEventListener('resize', redraw); window.removeEventListener('scroll', redraw, true);
     }, {once:true});

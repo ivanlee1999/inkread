@@ -54,6 +54,7 @@ fun SavedLibraryReadingPage(
     onBack: () -> Unit,
     viewModel: SavedLibraryReadingViewModel = hiltViewModel(),
     annotationViewModel: AnnotationReaderViewModel = hiltViewModel(),
+    requestedAnnotationId: String? = null,
 ) {
     val state by viewModel.state.collectAsState()
     LaunchedEffect(itemId) { viewModel.open(itemId) }
@@ -62,7 +63,7 @@ fun SavedLibraryReadingPage(
         AnnotationSource(AnnotationSourceKind.SAVED, item.id, url = item.url,
             title = item.title, author = item.author, sourceName = item.sourceName)
     }
-    val annotations = rememberAnnotationReaderUi(source, document?.contentRevision, annotationViewModel)
+    val annotations = rememberAnnotationReaderUi(source, document?.contentRevision, annotationViewModel, requestedAnnotationId)
     // Key by the route immediately, not by the previous VM's asynchronous state.
     SavedLibraryReadingContent(
         state = if (state.itemId == itemId) state else SavedLibraryReadingState(itemId = itemId),
@@ -168,6 +169,14 @@ internal fun SavedLibraryReadingContent(
                     onCreateAnnotation = annotations?.onCreateAnnotation?.takeIf { annotations?.available == true },
                     onAnnotationLocationsChanged = annotations?.onAnnotationLocationsChanged,
                     onAnnotationsClick = annotations?.onAnnotationsClick?.takeIf { sourceReadyForAnnotations(state) },
+                    onAnnotationClick = annotations?.onAnnotationClick,
+                    annotationResizeRequest = annotations?.resizeRequest,
+                    onAnnotationResizeResult = annotations?.onResizeResult ?: { _, _ -> },
+                    onResizeSelection = annotations?.onResizeSelection,
+                    autoHighlightEnabled = annotations?.autoHighlightEnabled == true,
+                    onAutoCreateAnnotation = annotations?.onAutoCreateAnnotation,
+                    onUndoAutoHighlight = annotations?.undoAutoHighlight,
+                    annotationStatus = annotations?.status,
                     annotationJumpRequest = annotations?.jumpRequest,
                     onAnnotationJumpResult = annotations?.onAnnotationJumpResult,
                     reserveVolumeKeys = false,

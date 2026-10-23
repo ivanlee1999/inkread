@@ -1,5 +1,9 @@
 package me.ash.reader.ui.page.annotation
 
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
+import me.ash.reader.infrastructure.preference.AnnotationPreferences
+import me.ash.reader.ui.ext.dataStore
 import androidx.lifecycle.ViewModel
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -28,6 +32,13 @@ data class AnnotationDocumentState(
 
 /** Read-only data plus local edits; keeps UI tests independent of credentials and HTTP. */
 interface AnnotationReaderActions {
+    val autoHighlight: Flow<Boolean> get() = flowOf(false)
+    fun createAutomatic(draft: AnnotationDraft, onResult: (String?, String?) -> Unit) {
+        onResult(null, "Automatic highlights are unavailable.")
+    }
+    fun updateSelection(id: String, quote: String, anchorJson: String, onResult: (String?) -> Unit) {
+        onResult("Resizing highlights is unavailable.")
+    }
     fun observe(source: AnnotationSource?): Flow<AnnotationDocumentState>
     fun create(draft: AnnotationDraft, onResult: (String?) -> Unit)
     fun updateNote(id: String, note: String, onResult: (String?) -> Unit)
@@ -37,10 +48,30 @@ interface AnnotationReaderActions {
 
 @HiltViewModel
 class AnnotationReaderViewModel @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val repository: AnnotationRepository,
     private val readwise: ReadwiseConnectionManager,
     @ApplicationScope private val applicationScope: CoroutineScope,
 ) : ViewModel(), AnnotationReaderActions {
+    override val autoHighlight = AnnotationPreferences.observeAutoHighlight(context.dataStore)
+
+    override fun createAutomatic(draft: AnnotationDraft, onResult: (String?, String?) -> Unit) {
+        applicationScope.launch {
+            try {
+                val id = repository.create(draft, AnnotationRepository.AUTO_HIGHLIGHT_EXPORT_DELAY_MILLIS)
+                runCatching { readwise.requestDrain() }
+                withContext(Dispatchers.Main.immediate) { onResult(id, null) }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                withContext(Dispatchers.Main.immediate) { onResult(null, annotationSaveError(failure)) }
+            }
+        }
+    }
+
+    override fun updateSelection(id: String, quote: String, anchorJson: String, onResult: (String?) -> Unit) = change(onResult) {
+        repository.updateSelection(id, quote, anchorJson)
+    }
+
     override fun observe(source: AnnotationSource?): Flow<AnnotationDocumentState> =
         if (source == null) flowOf(AnnotationDocumentState(loading = false))
         else repository.observeDocument(source)
