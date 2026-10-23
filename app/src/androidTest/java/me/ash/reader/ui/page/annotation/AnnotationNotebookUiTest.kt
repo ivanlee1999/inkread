@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import me.ash.reader.domain.annotation.*
+import me.ash.reader.domain.annotation.Annotation
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
