@@ -496,6 +496,12 @@ class EInkReaderAnnotationUiTest {
                 compose.runOnIdle { resizeRequest.value = "mixed-script" to (index + 101L) }
                 compose.waitUntil(5_000) { resizeRestored.get() == ("mixed-script" to true) && selecting.value }
                 val fullQuote = original.getString("rangeQuote")
+                assertEquals("The saved range must restore exactly before native handle reveal",
+                    fullQuote, js("window.getSelection().toString()"))
+                // As in the dedicated resize workflow test, a real tap inside
+                // the restored highlight reveals Chromium's native handles.
+                tapText("select-target", 0, 9)
+                awaitVisualFrame()
                 // Both real handles and the entire restored range must be
                 // visible before injecting the one cross-script native drag.
                 assertNativeSelectionRetained(fullQuote, "before cross-script native resize")
@@ -942,9 +948,20 @@ class EInkReaderAnnotationUiTest {
         compose.onNodeWithTag("reader_controls_toggle").performClick()
         awaitDisplayedControl("reader_select_text")
         settle()
+        awaitAppliedReaderViewport()
+        // The settled narrow/large-font first page may contain only metadata.
+        // Navigate normally before measuring a real press on article text.
+        if (!firstSelectionWordVisible()) {
+            val previousPage = page.get()
+            volume(KeyEvent.KEYCODE_VOLUME_DOWN)
+            compose.waitUntil(5_000) { page.get() == previousPage + 1 }
+            awaitAppliedReaderViewport()
+        }
+        assertTrue("The native long-press target must be visible after settled navigation", firstSelectionWordVisible())
         compose.runOnIdle { assertFalse("Opening controls is not explicit selection mode", selecting.value) }
         val viewport = js("JSON.stringify([innerWidth,innerHeight])")
         val before = page.get()
+        logNativeHandleState("controls-open-ready", from = textPoint("select-target", 0, 9))
         longPressFirstWord(beforeRelease = { assertEquals(0, automaticCount.get()) })
         compose.waitUntil(5_000) { automaticCount.get() == 1 && undoAvailable.value }
         settle()
@@ -1148,6 +1165,8 @@ class EInkReaderAnnotationUiTest {
                         anchor:node(s&&s.anchorNode),anchorOffset:s?s.anchorOffset:null,
                         focus:node(s&&s.focusNode),focusOffset:s?s.focusOffset:null,
                         generation:window._inkreadGeneration,viewport:[innerWidth,innerHeight],
+                        appliedFrame:document.getElementById('eink-content').getAttribute('style'),
+                        logicalPage:window._currentPage,
                         rangeRects:r?Array.from(r.getClientRects()).map(rect):[],target:layout(target),block:layout(block)});
                 })()
             """.trimIndent()) as String))
@@ -1429,6 +1448,37 @@ class EInkReaderAnnotationUiTest {
         nativeHandleAt(textPoint("select-target", 0, expected.length, edge = "end"))
             .check(matches(isDisplayed()))
     }
+    private fun awaitAppliedReaderViewport() {
+        // A drawn frame can still precede the existing debounced resize pass.
+        // Wait for actual applied column dimensions, never a longer fixed sleep.
+        compose.waitUntil(5_000) {
+            val nativeSize = IntArray(2)
+            instrumentation.runOnMainSync {
+                nativeSize[0] = reader().width
+                nativeSize[1] = reader().height
+            }
+            js("""(function(){
+                var f=document.getElementById('eink-content');
+                if(!f || !window._didFinishInitialPagination || !window.InkReadFormatting)return false;
+                var m=InkReadFormatting.effectiveMargins(),w=document.documentElement.getBoundingClientRect().width;
+                var nativeScale=${nativeSize[0]}/w;
+                return nativeScale>0 && Math.abs(innerHeight*nativeScale-${nativeSize[1]})<nativeScale+1 && Math.abs(parseFloat(f.style.height)-(innerHeight-m.top-m.bottom))<.1 &&
+                    Math.abs(parseFloat(f.style.width)-(w-m.left-m.right))<.1;
+            })()""") == true
+        }
+        awaitVisualFrame()
+    }
+
+    private fun firstSelectionWordVisible(): Boolean = js("""(function(){
+        var f=document.getElementById('eink-content'),t=document.getElementById('select-target');
+        var model=InkReadScriptFonts.install(f),n=model.nodes.find(function(n){return n.parentElement===t;});
+        var r=model.range(n,0,9).getClientRects()[0];
+        if(!r)return false;
+        var x=(r.left+r.right)/2,y=(r.top+r.bottom)/2,w=document.documentElement.getBoundingClientRect().width;
+        return r.left>=0 && r.right<=w && r.top>=0 && r.bottom<=innerHeight &&
+            t.contains(document.elementFromPoint(x,y));
+    })()""") == true
+
     private fun settle() { compose.waitForIdle(); awaitVisualFrame() }
     private fun awaitVisualFrame() {
         val latch = CountDownLatch(1)
