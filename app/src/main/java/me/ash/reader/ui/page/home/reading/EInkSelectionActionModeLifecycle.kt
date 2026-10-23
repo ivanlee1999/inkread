@@ -17,7 +17,7 @@ internal class EInkSelectionActionModeLifecycle<Mode : Any> {
         ownsSelection = true
     }
 
-    /** Revoke in-flight captures immediately, but retain input ownership. */
+    /** Retain input ownership while the provider may replace its floating menu. */
     fun destroyed(mode: Mode): Long? {
         if (activeMode !== mode) return null
         activeMode = null

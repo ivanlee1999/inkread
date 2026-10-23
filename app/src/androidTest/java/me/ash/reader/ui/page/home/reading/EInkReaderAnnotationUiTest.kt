@@ -466,6 +466,13 @@ class EInkReaderAnnotationUiTest {
         assertEquals(documentUrl, js("location.href"))
         assertEquals(0, linkOpens.get())
         assertNull(created.get())
+        // Native dismissal and the renderer's range cleanup complete asynchronously.
+        // Observe the actual cleared range before testing whether a blank hold restores it.
+        compose.waitUntil(5_000) {
+            js("window.getSelection().isCollapsed && window.getSelection().toString() === ''") == true
+        }
+        assertEquals("Selected-link dismissal must leave a collapsed, empty DOM range before a blank hold", true,
+            js("window.getSelection().isCollapsed && window.getSelection().toString() === ''"))
         // Holding whitespace is not an invisible page-click shortcut.
         nativeTap(.98f, .5f, longPress = true)
         settle()
