@@ -188,7 +188,8 @@ private fun TextControls(draft: ReaderFormatting, onChange: (ReaderFormatting) -
         }
         item {
             NumberControl("line_height", stringResource(R.string.reader_formatting_line_height), draft.lineHeight,
-                ReaderFormatting.LineHeightRange, .05f, 2, "×") {
+                ReaderFormatting.LineHeightRange, .05f, 2, "×",
+                stringResource(R.string.reader_formatting_line_height_hint)) {
                 onChange(draft.copy(lineHeight = it).clamped())
             }
         }

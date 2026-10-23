@@ -46,4 +46,5 @@
     <string name="reader_formatting_download_failed">字体下载失败，请检查网络后重试。</string>
     <string name="reader_formatting_saving">保存中…</string>
     <string name="reader_formatting_label_unit">%1$s (%2$s)</string>
+    <string name="reader_formatting_line_height_hint">实际行高会根据字体保持最低安全间距，避免文字重叠并确保选字准确。您选择的数值仍会保存。</string>
 </resources>

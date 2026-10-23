@@ -1,3 +1,193 @@
+/* Native selection hit-testing uses line boxes, not overflowing glyph rectangles.
+ * Keep mixed-script lines at least as tall as their real loaded font metrics.
+ * The requested preference is unchanged. Measurements and rules live outside the
+ * immutable article, and every temporary probe is removed in the same JS turn.
+ */
+(function () {
+    'use strict';
+    var EXCLUDE = /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|PRE|CODE|MATH|SVG|TEXTAREA|SELECT|OPTION|INPUT|IMG|VIDEO|IFRAME|OBJECT|EMBED|CANVAS)$/;
+    var BLOCK = /^(P|LI|BLOCKQUOTE|TD|TH|H[1-6]|DT|DD|DIV|SECTION|ARTICLE|MAIN)$/;
+    var INLINE = 'a,b,strong,i,em,s,del,u,mark,small,sub,sup,span,abbr,cite,q,time';
+    var TYPOGRAPHY = ['fontFamily','fontWeight','fontStyle','fontStretch','fontVariant','fontFeatureSettings',
+        'fontKerning','fontVariationSettings','letterSpacing','wordSpacing','textTransform','verticalAlign','direction'];
+    function tag(node) { return String(node.tagName || '').toUpperCase(); }
+    function number(value, fallback) { var result = parseFloat(value); return isFinite(result) ? result : fallback; }
+    function eligible(element, root) {
+        for (var n = element; n && n !== root; n = n.parentElement) {
+            if (EXCLUDE.test(tag(n)) || (n.classList && n.classList.contains('eink-metadata')) ||
+                n.getAttribute('aria-hidden') === 'true') return false;
+        }
+        return !!element;
+    }
+    function isBlock(element) {
+        var display = window.getComputedStyle(element).display;
+        return display ? /^(block|flow-root|list-item|table|flex|grid|inline-block|inline-flex|inline-grid)/.test(display) : BLOCK.test(tag(element));
+    }
+    function closestBlock(element, root) {
+        for (var n = element; n && n !== root; n = n.parentElement) if (isBlock(n)) return n;
+        return root;
+    }
+    function create(root, model) {
+        var document = root.ownerDocument || window.document, blocks = [], boundaries = [], seen = new WeakMap(), boundarySeen = new WeakMap();
+        model.nodes.forEach(function (record) {
+            if (!eligible(record.parentElement, root) || !record.fragments.some(function (piece) {
+                var p = piece.node.parentElement;
+                return p && p.classList && p.classList.contains('eink-script-cjk');
+            })) return;
+            var block = closestBlock(record.parentElement, root);
+            if (seen.has(block)) return;
+            seen.set(block, true);
+            // Assigned once, before pagination is ready. Previews change only the
+            // separate stylesheet, never article attributes or text nodes.
+            block.setAttribute('data-inkread-line-block', String(blocks.length));
+            function markInline(parent) {
+                for (var child = parent.firstChild; child; child = child.nextSibling) {
+                    if (child.nodeType !== 1 || EXCLUDE.test(tag(child)) || isBlock(child) || !eligible(child, root)) continue;
+                    if (INLINE.split(',').indexOf(tag(child).toLowerCase()) !== -1) child.setAttribute('data-inkread-line-inline', '');
+                    markInline(child);
+                }
+            }
+            markInline(block);
+            blocks.push(block);
+        });
+        blocks.forEach(function (block) {
+            function findBoundaries(parent) {
+                for (var child = parent.firstChild; child; child = child.nextSibling) {
+                    if (child.nodeType !== 1) continue;
+                    if (isBlock(child)) {
+                        if (!boundarySeen.has(child)) {
+                            boundarySeen.set(child, true);
+                            child.setAttribute('data-inkread-line-boundary', String(boundaries.length));
+                            boundaries.push(child);
+                        }
+                    } else findBoundaries(child);
+                }
+            }
+            findBoundaries(block);
+        });
+        var style = document.createElement('style');
+        style.setAttribute('data-inkread-line-metrics', '');
+        (document.head || document.body).appendChild(style);
+        var cacheKey = '', lastHeight = 0, epoch = 0, deferred = false, disposed = false;
+        function selectionActive() {
+            var selection = window.getSelection && window.getSelection();
+            return selection && !selection.isCollapsed;
+        }
+        function update(settings) {
+            if (disposed) return 0;
+            if (selectionActive()) { deferred = true; return lastHeight; }
+            if (!blocks.length) { deferred = false; return 0; }
+            var frameStyle = window.getComputedStyle(root);
+            var key = JSON.stringify([settings.fontSize, settings.chineseFontSize, settings.lineHeight,
+                settings.textWeight, settings.fontCss, settings.letterSpacing, settings.wordSpacing, settings.alignment,
+                frameStyle.fontSize, window.innerWidth, window.innerHeight, epoch]);
+            if (key === cacheKey && !deferred) return lastHeight;
+            deferred = false;
+            // Read requested styles without our previous floor. No frame can be
+            // painted between this removal and the synchronous replacement.
+            var previousCss = style.textContent;
+            style.textContent = '';
+            var host = document.createElement('div'), rules = [], maximum = 0;
+            host.setAttribute('aria-hidden', 'true'); host.setAttribute('inert', '');
+            host.style.cssText = 'position:fixed;left:-100000px;top:0;visibility:hidden;pointer-events:none;' +
+                'width:max-content;max-width:none;height:auto;margin:0;padding:0;border:0;contain:layout style;';
+            document.body.appendChild(host);
+            try {
+                var frameSize = number(window.getComputedStyle(root).fontSize, settings.fontSize);
+                boundaries.forEach(function (boundary) {
+                    var computed = window.getComputedStyle(boundary), size = number(computed.fontSize, frameSize);
+                    var declared = boundary.style.lineHeight;
+                    if (/^(inherit|unset|revert|revert-layer)$/.test(declared)) declared = '';
+                    var leading = declared || (computed.lineHeight === 'normal' ? 'normal' : String(number(computed.lineHeight, size * settings.lineHeight) / size));
+                    rules.push('#eink-content [data-inkread-line-boundary="' + boundary.getAttribute('data-inkread-line-boundary') +
+                        '"]{line-height:' + leading + '!important;}');
+                });
+                blocks.forEach(function (block) {
+                    var sourceStyle = window.getComputedStyle(block), blockSize = number(sourceStyle.fontSize, frameSize);
+                    if (!(blockSize > 0) || sourceStyle.display === 'none') return;
+                    var requested = number(sourceStyle.lineHeight, blockSize * settings.lineHeight);
+                    var probe = document.createElement(block.tagName), textCount = 0;
+                    for (var ancestor = block; ancestor; ancestor = ancestor.parentElement) {
+                        var language = ancestor.getAttribute('lang') || ancestor.getAttribute('xml:lang');
+                        if (language) { probe.setAttribute('lang', language); break; }
+                    }
+                    probe.style.cssText = 'display:block;position:relative;width:max-content;max-width:none;min-width:0;' +
+                        'height:auto;min-height:0;max-height:none;margin:0;padding:0;border:0;white-space:nowrap;' +
+                        'text-indent:0;column-count:auto;column-width:auto;overflow:visible;line-height:normal;';
+                    function copyType(from, to, parentSize) {
+                        var computed = window.getComputedStyle(from), size = number(computed.fontSize, parentSize);
+                        TYPOGRAPHY.forEach(function (name) { if (computed[name]) to.style[name] = computed[name]; });
+                        to.style.fontSize = (size / parentSize) + 'em';
+                        to.style.lineHeight = 'normal';
+                        requested = Math.max(requested, number(computed.lineHeight, size * settings.lineHeight));
+                        return size;
+                    }
+                    copyType(block, probe, blockSize);
+                    // WebView text zoom also applies to probes. Start with the
+                    // authored CSS size, then verify against the live block.
+                    probe.style.fontSize = (settings.fontSize * blockSize / frameSize) + 'px';
+                    function copyChildren(from, to, parentSize) {
+                        for (var child = from.firstChild; child; child = child.nextSibling) {
+                            if (child.nodeType === 3) {
+                                to.appendChild(document.createTextNode(child.data));
+                                if (/\S/.test(child.data)) textCount++;
+                            } else if (child.nodeType === 1 && !EXCLUDE.test(tag(child)) && tag(child) !== 'BR' &&
+                                !isBlock(child) && eligible(child, root)) {
+                                var childStyle = window.getComputedStyle(child);
+                                if (childStyle.display === 'none') continue;
+                                var clone = document.createElement(child.tagName);
+                                var size = copyType(child, clone, parentSize);
+                                clone.style.display = childStyle.display;
+                                if (child.getAttribute('lang')) clone.setAttribute('lang', child.getAttribute('lang'));
+                                copyChildren(child, clone, size); to.appendChild(clone);
+                            }
+                        }
+                    }
+                    copyChildren(block, probe, blockSize);
+                    if (!textCount) return;
+                    host.appendChild(probe);
+                    var actualSize = number(window.getComputedStyle(probe).fontSize, blockSize);
+                    if (actualSize > 0 && Math.abs(actualSize - blockSize) > .01) {
+                        probe.style.fontSize = (number(probe.style.fontSize, settings.fontSize) * blockSize / actualSize) + 'px';
+                    }
+                    var box = probe.getBoundingClientRect(), range = document.createRange();
+                    range.selectNodeContents(probe);
+                    var glyph = range.getBoundingClientRect();
+                    var natural = Math.max(box.height, glyph.height, Math.max(box.bottom, glyph.bottom) - Math.min(box.top, glyph.top));
+                    // Bound duplicate text memory to one inline context, even
+                    // for articles with thousands of mixed-script paragraphs.
+                    probe.remove();
+                    if (!(natural > 0) || !isFinite(natural)) return;
+                    // Round outward for native integer caret bounds. This is a
+                    // measured length, not an assumed font-size multiplier.
+                    var leading = Math.max(requested, Math.ceil(natural) + 1);
+                    maximum = Math.max(maximum, leading);
+                    var selector = '#eink-content[data-inkread-line-block="' + block.getAttribute('data-inkread-line-block') + '"]';
+                    if (block !== root) selector = '#eink-content [data-inkread-line-block="' + block.getAttribute('data-inkread-line-block') + '"]';
+                    rules.push(selector + '{line-height:' + (leading / blockSize) + 'em!important;}');
+                    // A length is inherited unchanged by the differently sized
+                    // script runs. Unitless leading would multiply it again.
+
+                });
+            } catch (error) {
+                // A metric failure must not remove the last safe layout or
+                // prevent the article from opening. Retry on a later update.
+                style.textContent = previousCss; deferred = true;
+                if (window.console && console.warn) console.warn('InkRead font metrics unavailable', error);
+                return lastHeight;
+            } finally { host.remove(); }
+            if (rules.length) rules.push('#eink-content [data-inkread-line-inline]{line-height:inherit!important;}');
+            style.textContent = rules.join('\n');
+            cacheKey = key; lastHeight = maximum;
+            return maximum;
+        }
+        return { update: update, invalidate: function () { epoch++; },
+            deferred: function () { return deferred; },
+            destroy: function () { disposed = true; style.remove(); } };
+    }
+    window.InkReadLineMetrics = { create: create };
+})();
+
 /* Live paginated layout. Logical article nodes stay immutable across script-size reflow. */
 var _vw = 0, _pageStride = 0, _totalPages = 1, _currentPage = 0;
 var _didFinishInitialPagination = false;
@@ -9,7 +199,7 @@ var _didFinishInitialPagination = false;
     var margins = { left: 0, right: 0, top: 0, bottom: 0 };
     var fontCss = '', pendingAnchor = null, columnProbe = null;
     var readingIdentity = window._inkreadReadingIdentity || null;
-    var lastAppliedCommandId = 0, scriptFonts = null;
+    var lastAppliedCommandId = 0, scriptFonts = null, lineMetrics = null, measuredLeading = 0;
 
     function notify(name) {
         try {
@@ -158,6 +348,7 @@ var _didFinishInitialPagination = false;
         if (hasCommandId) notify('reflow');
     };
     function layoutViewport() {
+        if (lineMetrics) measuredLeading = lineMetrics.update(settings);
         // Never round the CSS viewport: integer innerWidth drifts at 420dpi.
         _vw = document.documentElement.getBoundingClientRect().width || window.innerWidth || 360;
         var vh = window.innerHeight || document.documentElement.clientHeight || 640;
@@ -167,14 +358,16 @@ var _didFinishInitialPagination = false;
         // Reserve space for the actual rendered line/glyph, not its raw setting.
         var typography = window.getComputedStyle(frame);
         var effectiveFontSize = parseFloat(typography.fontSize) || settings.fontSize;
-        var effectiveLineHeight = parseFloat(typography.lineHeight) || effectiveFontSize * settings.lineHeight;
+        // The root itself may carry an already measured mixed-script floor.
+        // Scale the requested base leading, never that floor a second time.
+        var effectiveLineHeight = effectiveFontSize * settings.lineHeight;
         // CJK may be larger than the English base even when system text zoom is active.
         var largestScriptScale = Math.max(1, (settings.chineseFontSize || settings.fontSize) / settings.fontSize);
         effectiveFontSize *= largestScriptScale;
         effectiveLineHeight *= largestScriptScale;
         var minimumWidth = Math.max(32, effectiveFontSize * 1.5);
         var horizontalScale = Math.min(1, Math.max(0, _vw - minimumWidth) / Math.max(1, settings.marginLeft + settings.marginRight));
-        var minimumLine = Math.max(32, Math.max(effectiveLineHeight, effectiveFontSize * 1.4) + 8);
+        var minimumLine = Math.max(32, Math.max(effectiveLineHeight, effectiveFontSize * 1.4, measuredLeading) + 8);
         var verticalScale = Math.min(1, Math.max(0, vh - minimumLine) / Math.max(1, settings.marginTop + settings.marginBottom));
         margins = {
             left: settings.marginLeft * horizontalScale, right: settings.marginRight * horizontalScale,
@@ -242,7 +435,8 @@ var _didFinishInitialPagination = false;
         notify(reason || 'reflow');
         publishReadingAnchor();
     }
-    function scheduleReflow() {
+    function scheduleReflow(metricOnly) {
+        metricOnly = metricOnly === true;
         if (!_didFinishInitialPagination || destroyed) return;
         // Font/image layout can already have changed by the event. Use the
         // anchor cached at page navigation, never recapture after that change.
@@ -250,6 +444,11 @@ var _didFinishInitialPagination = false;
         if (reflowFrame) cancelAnimationFrame(reflowFrame);
         reflowFrame = requestAnimationFrame(function () {
             reflowFrame = 0;
+            var selection = metricOnly && window.getSelection && window.getSelection();
+            if (selection && !selection.isCollapsed) {
+                if (lineMetrics) lineMetrics.update(settings);
+                return;
+            }
             repaginate(pendingAnchor);
         });
     }
@@ -280,7 +479,10 @@ var _didFinishInitialPagination = false;
         // Force font selection/layout before reading document.fonts.ready.
         if (frame) frame.getBoundingClientRect();
         if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () {
-            if (token === revision && !destroyed) scheduleReflow();
+            if (token === revision && !destroyed) {
+                if (lineMetrics) lineMetrics.invalidate();
+                scheduleMetricReflow();
+            }
         }, function () {});
     }
     window.InkReadFormatting = {
@@ -316,9 +518,24 @@ var _didFinishInitialPagination = false;
             scheduleReflow();
         }
     };
+    function scheduleMetricReflow() {
+        if (lineMetrics) {
+            var selection = window.getSelection && window.getSelection();
+            if (selection && !selection.isCollapsed) { lineMetrics.update(settings); return; }
+        }
+        scheduleReflow(true);
+    }
+    function onFontLoadingDone() {
+        if (lineMetrics) lineMetrics.invalidate();
+        scheduleMetricReflow();
+    }
+    function onMetricSelectionChange() {
+        if (lineMetrics && lineMetrics.deferred()) scheduleMetricReflow();
+    }
     function finishInitialPagination() {
         if (_didFinishInitialPagination || destroyed) return;
         _didFinishInitialPagination = true;
+        if (lineMetrics) lineMetrics.invalidate();
         layoutViewport();
         recountPages();
         var restored = initialReadingAnchor();
@@ -345,6 +562,8 @@ var _didFinishInitialPagination = false;
             var node;
             while ((node = walker.nextNode())) nodes.push(node);
         }
+        if (scriptFonts) lineMetrics = InkReadLineMetrics.create(frame, scriptFonts);
+        document.addEventListener('selectionchange', onMetricSelectionChange);
         media = Array.prototype.slice.call(frame.querySelectorAll('img,svg,video,table'));
         setStyle(settings);
         layoutViewport();
@@ -352,7 +571,7 @@ var _didFinishInitialPagination = false;
         // Includes ordinary images arriving long after initial font readiness.
         frame.addEventListener('load', scheduleReflow, true);
         frame.addEventListener('error', scheduleReflow, true);
-        if (document.fonts) document.fonts.addEventListener('loadingdone', scheduleReflow);
+        if (document.fonts) document.fonts.addEventListener('loadingdone', onFontLoadingDone);
         var finish = function () { requestAnimationFrame(finishInitialPagination); };
         if (document.fonts && document.fonts.ready) document.fonts.ready.then(finish, finish);
         else finish();
@@ -376,8 +595,10 @@ var _didFinishInitialPagination = false;
             frame.removeEventListener('load', scheduleReflow, true);
             frame.removeEventListener('error', scheduleReflow, true);
         }
-        if (document.fonts) document.fonts.removeEventListener('loadingdone', scheduleReflow);
+        if (document.fonts) document.fonts.removeEventListener('loadingdone', onFontLoadingDone);
         if (columnProbe) columnProbe.remove();
+        if (lineMetrics) lineMetrics.destroy();
+        document.removeEventListener('selectionchange', onMetricSelectionChange);
     }, { once: true });
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initialize, { once: true });
     else initialize();

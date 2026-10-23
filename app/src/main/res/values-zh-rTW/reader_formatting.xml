@@ -46,4 +46,5 @@
     <string name="reader_formatting_download_failed">字型下載失敗，請檢查網路後重試。</string>
     <string name="reader_formatting_saving">儲存中…</string>
     <string name="reader_formatting_label_unit">%1$s (%2$s)</string>
+    <string name="reader_formatting_line_height_hint">實際行高會依字型保持最低安全間距，避免文字重疊並確保選字準確。您選擇的數值仍會儲存。</string>
 </resources>

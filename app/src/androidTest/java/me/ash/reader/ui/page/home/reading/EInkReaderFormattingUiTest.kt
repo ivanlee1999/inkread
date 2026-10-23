@@ -144,7 +144,9 @@ class EInkReaderFormattingUiTest {
             var walker=document.createTreeWalker(p,NodeFilter.SHOW_TEXT),latin,offset,n;
             while((n=walker.nextNode())){var match=/[A-Za-z]/.exec(n.data);if(match){latin=n;offset=match.index;break;}}
             return JSON.stringify({english:parseFloat(getComputedStyle(p).fontSize),
-                chinese:parseFloat(getComputedStyle(c).fontSize),englishGlyph:width(latin,offset),chineseGlyph:width(c.firstChild,0)});
+                chinese:parseFloat(getComputedStyle(c).fontSize),englishGlyph:width(latin,offset),chineseGlyph:width(c.firstChild,0),
+                englishLetterSpacing:parseFloat(getComputedStyle(latin.parentElement).letterSpacing)||0,
+                chineseLetterSpacing:parseFloat(getComputedStyle(c).letterSpacing)||0});
         })()""".trimIndent()) as String)
         val initialGlyphs = renderedSizes()
         assertTrue("English glyph must render", initialGlyphs.getDouble("englishGlyph") > 0)
@@ -156,9 +158,11 @@ class EInkReaderFormattingUiTest {
             assertEquals(chinese * scale, sizes.getDouble("chinese"), .1)
             // Actual glyph boxes, not only computed styles: display:contents must
             // still transmit the independent inherited size to native text layout.
-            assertEquals(initialGlyphs.getDouble("englishGlyph") * english / 18.0,
+            assertEquals((initialGlyphs.getDouble("englishGlyph") - initialGlyphs.getDouble("englishLetterSpacing")) * english / 18.0 +
+                    sizes.getDouble("englishLetterSpacing"),
                 sizes.getDouble("englishGlyph"), .75)
-            assertEquals(initialGlyphs.getDouble("chineseGlyph") * chinese / 18.0,
+            assertEquals((initialGlyphs.getDouble("chineseGlyph") - initialGlyphs.getDouble("chineseLetterSpacing")) * chinese / 18.0 +
+                    sizes.getDouble("chineseLetterSpacing"),
                 sizes.getDouble("chineseGlyph"), .75)
             assertEquals(textBefore, js("document.getElementById('eink-content').textContent"))
             assertEquals(runsBefore, js("document.querySelectorAll('.eink-script-cjk').length"))
@@ -212,7 +216,7 @@ class EInkReaderFormattingUiTest {
         verifyPanelScrollReachability()
         section("text")
         step("font_size", increase = true, times = 2)
-        step("line_height", increase = true, times = 2)
+        setControlValue("line_height", 2f) // Above the measured minimum, so actual spacing must grow.
         step("text_darkness", increase = false, times = 2)
         step("text_weight", increase = true, times = 2)
         val textDraft = settled("text-draft")
@@ -1085,7 +1089,11 @@ class EInkReaderFormattingUiTest {
             context.resources.configuration.fontScale, actual.getDouble("fontSize"), .1)
         assertEquals("Chinese size remains independently restored", expected.chineseFontSize.toDouble() *
             context.resources.configuration.fontScale, actual.getDouble("chineseFontSize"), .1)
-        assertEquals(expected.lineHeight.toDouble(), actual.getDouble("lineHeight") / actual.getDouble("fontSize"), .02)
+        assertEquals("Requested spacing survives persistence without being replaced by the safety floor",
+            expected.lineHeight.toDouble(), actual.getDouble("requestedLineHeight"), .02)
+        assertTrue("Effective spacing must honor the larger requested script leading",
+            actual.getDouble("lineHeight") + .1 >= expected.lineHeight *
+                maxOf(actual.getDouble("fontSize"), actual.getDouble("chineseFontSize")))
         assertEquals(expected.textWeight, actual.getInt("fontWeight"))
         assertEquals(expected.marginLeft.toDouble(), actual.getDouble("marginLeft"), .1)
         assertEquals(expected.marginRight.toDouble(), actual.getDouble("marginRight"), .1)
@@ -1323,6 +1331,7 @@ class EInkReaderFormattingUiTest {
                     marginLeft:parseFloat(c.left),marginRight:w-parseFloat(c.left)-parseFloat(c.width),marginTop:parseFloat(c.top),marginBottom:h-parseFloat(c.top)-parseFloat(c.height),
                     chineseFontSize:parseFloat(getComputedStyle(p.querySelector('.eink-script-cjk')).fontSize),
                     fontSize:parseFloat(pc.fontSize),specifiedFontSize:parseFloat(document.documentElement.style.getPropertyValue('--reader-font-size')),
+                    requestedLineHeight:parseFloat(document.documentElement.style.getPropertyValue('--reader-line-height')),
                     lineHeight:parseFloat(pc.lineHeight),fontWeight:parseInt(pc.fontWeight),color:pc.color,fontFamily:pc.fontFamily,
                     textFilter:pc.filter,frameFilter:c.filter,bodyFilter:b.filter,imageFilter:image?getComputedStyle(image).filter:'',scrollX:scrollX,scrollY:scrollY,
                     documentSentinel:!!window.__formattingDocumentSentinel,sameDocument:!window.__formattingExpectedDocument||window.__formattingExpectedDocument===InkReadFormatting.documentId,
