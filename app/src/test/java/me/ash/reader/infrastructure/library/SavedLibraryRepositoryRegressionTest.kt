@@ -465,18 +465,149 @@ class SavedLibraryRepositoryRegressionTest {
         assertEquals(listOf("content.html"), java.io.File(fixture.root, id).walkTopDown().filter { it.isFile }.map { it.name }.toList())
     }
 
+
+    @Test fun responsiveImageFallsBackOnceAndStaysOfflineAcrossReopen() = runRepositoryTest {
+        val fixture = Fixture()
+        val repository = fixture.repository(Dispatchers.Unconfined)
+        val requested = mutableListOf<String>()
+        fixture.downloader.image = { url ->
+            requested += url
+            if (url.endsWith("large.webp")) throw IOException("Unsupported responsive variant")
+            java.util.Base64.getDecoder().decode(TINY_PNG)
+        }
+        val html = "$HTML<figure><img src='/fallback.png' srcset='/small.png 400w, /large.webp 1600w' alt='Photo'><figcaption>Original caption</figcaption></figure>"
+        val id = repository.saveRssSnapshot(URL, "Photo", null, null, html)
+        val initial = repository.loadDocument(id)!!
+        repository.saveReadingAnchor(id, initial.contentRevision, ANCHOR)
+        repository.download(id, fixture.scheduler.latest(id).token)
+        val ready = repository.loadDocument(id)!!
+        assertEquals(listOf("https://example.test/large.webp", "https://example.test/small.png"), requested)
+        assertEquals(SavedImageState.READY, ready.item.imageState)
+        assertEquals(initial.contentRevision, ready.contentRevision)
+        assertEquals(ANCHOR, ready.readingAnchor)
+        assertTrue(ready.html.contains("Original caption"))
+        assertTrue(ready.html.contains(java.io.File(ready.item.thumbnailPath!!).toURI().toString()))
+        assertEquals(listOf("https://example.test/large.webp"), SavedDocumentImages.sources(ready.html, URL))
+        fixture.downloader.image = { error("Reopening must not request any variant") }
+        fixture.downloader.extract = { _, _ -> error("Reopening must not request text") }
+        val reopened = fixture.repository(Dispatchers.Unconfined)
+        reopened.observeItems().first()
+        assertEquals(ready, reopened.loadDocument(id))
+        reopened.retry(id)
+        assertEquals(2, requested.size)
+    }
+
+    @Test fun partialResponsiveFailuresCountPicturesAndRetryOnlyMissingPictures() = runRepositoryTest {
+        val fixture = Fixture()
+        val repository = fixture.repository(Dispatchers.Unconfined)
+        val requested = mutableListOf<String>()
+        var repairing = false
+        fixture.downloader.image = { url ->
+            requested += url
+            if (url.endsWith("first.png") || repairing) java.util.Base64.getDecoder().decode(TINY_PNG)
+            else throw IOException("Temporarily unavailable")
+        }
+        val html = "$HTML<img src='/first.png' srcset='/first-large.webp 1600w'><img src='/second.png' srcset='/second-large.webp 1600w'>"
+        val id = repository.saveRssSnapshot(URL, "Photos", null, null, html)
+        repository.download(id, fixture.scheduler.latest(id).token)
+        val partial = repository.loadDocument(id)!!
+        val originalPath = partial.item.thumbnailPath!!
+        assertEquals(SavedImageState.PARTIAL, partial.item.imageState)
+        assertEquals("Text is saved. 1 of 2 images available offline.", partial.item.lastError)
+        assertEquals(4, requested.size)
+        requested.clear()
+        repairing = true
+        repository.retry(id)
+        repository.download(id, fixture.scheduler.latest(id).token)
+        val ready = repository.loadDocument(id)!!
+        assertEquals(listOf("https://example.test/second-large.webp"), requested)
+        assertEquals(SavedImageState.READY, ready.item.imageState)
+        assertEquals(partial.contentRevision, ready.contentRevision)
+        assertEquals(originalPath, ready.item.thumbnailPath)
+        assertTrue(java.io.File(originalPath).isFile)
+    }
+
+    @Test fun candidateFallbackHonorsPerImageAndTotalArticleByteBudgets() = runRepositoryTest {
+        val fixture = Fixture(SavedStorageLimits(maxImageBytes = 40, maxArticleImageBytes = 50))
+        val repository = fixture.repository(Dispatchers.Unconfined)
+        val requested = mutableListOf<String>()
+        fixture.downloader.image = { url ->
+            requested += url
+            when {
+                url.endsWith("first-large.png") -> ByteArray(41)
+                url.endsWith("first.png") -> ByteArray(30)
+                url.endsWith("second-large.png") -> ByteArray(25)
+                else -> ByteArray(15)
+            }
+        }
+        val html = "$HTML<img src='/first.png' srcset='/first-large.png 1600w'><img src='/second.png' srcset='/second-large.png 1600w'>"
+        val id = repository.saveRssSnapshot(URL, "Photos", null, null, html)
+        repository.download(id, fixture.scheduler.latest(id).token)
+        val ready = repository.loadDocument(id)!!
+        assertEquals(4, requested.size)
+        assertEquals(SavedImageState.READY, ready.item.imageState)
+        val paths = SavedDocumentImages.retained(ready.html, URL) { true }.values
+        assertEquals(45L, paths.sumOf { java.io.File(it).length() })
+        assertTrue(paths.all { java.io.File(it).length() <= 40 })
+    }
+
+    @Test fun manyResponsiveVariantsCannotExceedPerPictureOrArticleAttemptLimits() = runRepositoryTest {
+        val fixture = Fixture(SavedStorageLimits(maxImagesPerArticle = 1))
+        val repository = fixture.repository(Dispatchers.Unconfined)
+        val requested = mutableListOf<String>()
+        fixture.downloader.image = { url -> requested += url; throw IOException("Unavailable") }
+        val srcset = (1..100).joinToString(", ") { "/$it.jpg ${it * 20}w" }
+        val id = repository.saveRssSnapshot(URL, "Photos", null, null,
+            "$HTML<img src='/fallback.jpg' srcset='$srcset'><img src='/unattempted.jpg'>")
+        repository.download(id, fixture.scheduler.latest(id).token)
+        val document = repository.loadDocument(id)!!
+        assertEquals(listOf("https://example.test/64.jpg", "https://example.test/63.jpg",
+            "https://example.test/62.jpg", "https://example.test/fallback.jpg"), requested)
+        assertEquals(SavedImageState.FAILED, document.item.imageState)
+        assertEquals("Text is saved. 0 of 2 images available offline.", document.item.lastError)
+        assertTrue(document.html.contains("A durable paragraph"))
+    }
+
+    @Test fun cancellationDuringAlternateStopsFurtherAttemptsAndRetainsRetryMetadata() = runRepositoryTest {
+        val fixture = Fixture()
+        val repository = fixture.repository(Dispatchers.Unconfined)
+        val entered = CompletableDeferred<Unit>()
+        val requested = mutableListOf<String>()
+        fixture.downloader.image = { url ->
+            requested += url
+            if (url.endsWith("large.jpg")) throw IOException("Unavailable")
+            entered.complete(Unit)
+            CompletableDeferred<Unit>().await()
+            byteArrayOf(1)
+        }
+        val id = repository.saveRssSnapshot(URL, "Photo", null, null,
+            "$HTML<img src='/fallback.jpg' srcset='/medium.jpg 800w, /large.jpg 1600w'>")
+        val worker = launch(Dispatchers.Unconfined) { repository.download(id, fixture.scheduler.latest(id).token) }
+        entered.await()
+        worker.cancelAndJoin()
+        assertEquals(listOf("https://example.test/large.jpg", "https://example.test/medium.jpg"), requested)
+        val interrupted = repository.loadDocument(id)!!
+        assertEquals(SavedContentState.READY, interrupted.item.contentState)
+        assertEquals(SavedImageState.PENDING, interrupted.item.imageState)
+        assertEquals(3, SavedDocumentImages.candidateGroups(interrupted.html, URL).values.single().size)
+        fixture.downloader.image = { java.util.Base64.getDecoder().decode(TINY_PNG) }
+        repository.retry(id)
+        repository.download(id, fixture.scheduler.latest(id).token)
+        assertEquals(SavedImageState.READY, repository.loadDocument(id)!!.item.imageState)
+    }
+
     private fun runRepositoryTest(block: suspend CoroutineScope.() -> Unit) = runBlocking {
         withTimeout(10_000) { block() }
     }
 
-    private inner class Fixture {
+    private inner class Fixture(private val limits: SavedStorageLimits = SavedStorageLimits()) {
         val dao = MemoryDao()
         val root = temporary.newFolder()
         val downloader = ControlledDownloader()
         val scheduler = RecordingScheduler()
         val clock = AtomicLong(1_000L)
         fun repository(dispatcher: kotlinx.coroutines.CoroutineDispatcher) = DefaultSavedLibraryRepository(
-            dao, SavedLibraryFiles(root), downloader, scheduler, dispatcher, clock::incrementAndGet,
+            dao, SavedLibraryFiles(root, limits), downloader, scheduler, dispatcher, clock::incrementAndGet,
         )
     }
 

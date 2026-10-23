@@ -23,6 +23,10 @@ import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.foundation.layout.Column
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -96,6 +100,36 @@ fun ReadingPage(
     val isPullToSwitchArticleEnabled = LocalPullToSwitchArticle.current.value
     val readingUiState = viewModel.readingUiState.collectAsStateValue()
     val readerState = viewModel.readerStateStateFlow.collectAsStateValue()
+    var showContentSource by rememberSaveable(readerState.articleId, readerState.sourceAccountId) { mutableStateOf(false) }
+    val feedFallback = (readerState.content as? ReaderState.Description)?.fallback == true
+    val refreshFailed = (readerState.content as? ReaderState.FullContent)?.refreshFailed == true
+    val fallbackMessage = stringResource(if (refreshFailed) R.string.reader_content_previous_kept else R.string.reader_content_feed_kept)
+    LaunchedEffect(readerState.articleId, readerState.sourceAccountId, feedFallback, refreshFailed) {
+        if (feedFallback || refreshFailed) context.showToast(fallbackMessage)
+    }
+    if (showContentSource) {
+        AlertDialog(
+            onDismissRequest = { showContentSource = false },
+            title = { Text(stringResource(R.string.reader_content_source)) },
+            text = {
+                Column {
+                    Text(stringResource(if (readerState.content is ReaderState.FullContent)
+                        R.string.reader_content_extracted_current else R.string.reader_content_feed_current))
+                    if (feedFallback || refreshFailed) Text(fallbackMessage)
+                    TextButton(onClick = { showContentSource = false; viewModel.renderDescriptionContent() }) {
+                        Text(stringResource(R.string.reader_content_use_feed))
+                    }
+                    TextButton(onClick = { showContentSource = false; viewModel.renderFullContent() }) {
+                        Text(stringResource(R.string.reader_content_try_full))
+                    }
+                    TextButton(onClick = { showContentSource = false; viewModel.renderFullContent(forceRefresh = true) }) {
+                        Text(stringResource(R.string.reader_content_refresh))
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showContentSource = false }) { Text(stringResource(R.string.close)) } },
+        )
+    }
     val annotationSource = if (isEInkMode && readerState.articleId != null && readerState.sourceAccountId != null &&
         (readerState.content is ReaderState.FullContent || readerState.content is ReaderState.Description)) {
         AnnotationSource(
@@ -250,6 +284,7 @@ fun ReadingPage(
                                 } else null,
                                 onNavigateToStylePage = onNavigateToStylePage,
                                 onSaveArticle = saveArticle,
+                                onContentSource = { showContentSource = true },
                                 onBack = { onNavAction(NavigationAction.Close) },
                                 currentArticleIndex = readerState.articleOrdinal,
                                 totalArticleCount = readerState.totalArticleCount,
@@ -439,8 +474,7 @@ fun ReadingPage(
                             }
                         },
                         onFullContent = {
-                            if (it) viewModel.renderFullContent()
-                            else viewModel.renderDescriptionContent()
+                            showContentSource = true
                         },
                         onBoldCharacters = { (!boldCharacters).put(context, coroutineScope) },
                         onReadAloud = {

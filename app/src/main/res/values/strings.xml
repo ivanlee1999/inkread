@@ -420,4 +420,12 @@
     <string name="reading_columns_auto_description">Two-column phone editions and richer three- or four-column tablet blocks when text fits.</string>
     <string name="reading_columns_one_description">One full-width column for every article and publication.</string>
     <string name="reading_columns_two_description">Two columns on phones and tablets when text fits comfortably.</string>
+    <string name="reader_content_source">Article source</string>
+    <string name="reader_content_feed_current">Showing feed/server content</string>
+    <string name="reader_content_extracted_current">Showing extracted original page</string>
+    <string name="reader_content_feed_kept">Kept the feed/server content because extraction failed or was not better.</string>
+    <string name="reader_content_use_feed">Use feed/server content</string>
+    <string name="reader_content_try_full">Use full article (keep feed if better)</string>
+    <string name="reader_content_refresh">Fetch full article again</string>
+    <string name="reader_content_previous_kept">Refresh failed. Kept the already-open article.</string>
 </resources>

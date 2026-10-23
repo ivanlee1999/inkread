@@ -60,15 +60,24 @@ constructor(
     suspend fun readOrFetchFullContent(article: Article): Result<String> =
         readOrFetchFullContent(ArticleFullContentRequest(article.accountId, article.id, article.title, article.link))
 
-    private suspend fun readOrFetchFullContent(article: ArticleFullContentRequest): Result<String> =
+    /** Explicit user retry; a failed refresh never destroys an existing offline cache. */
+    suspend fun refreshFullContent(article: Article): Result<String> =
+        readOrFetchFullContent(ArticleFullContentRequest(article.accountId, article.id, article.title, article.link), forceRefresh = true)
+
+    private suspend fun readOrFetchFullContent(article: ArticleFullContentRequest, forceRefresh: Boolean = false): Result<String> =
         withContext(ioDispatcher) {
             val key = "${article.accountId}:${article.id}"
             fetchLocks[(key.hashCode() and Int.MAX_VALUE) % fetchLocks.size].withLock {
                 val cached = readFullContent(article.id, article.accountId)
-                if (cached.isSuccess) return@withLock cached
+                if (cached.isSuccess && !forceRefresh) return@withLock cached
                 readerCacheResult {
-                    val fullContent = rssHelper.parseFullContent(article.link, article.title)
-                    check(fullContent.isNotBlank()) { "Empty article content" }
+                    val fetched = rssHelper.parseFullContent(article.link, article.title)
+                    check(fetched.isNotBlank()) { "Empty article content" }
+                    // Explicit refresh must not replace a useful offline extraction with a
+                    // shorter/error-page result either. The original feed remains separate.
+                    val fullContent = cached.getOrNull()?.let { previous ->
+                        ArticleContentSelection.select(previous, fetched).html
+                    } ?: fetched
                     // A failed cache write must not prevent reading fetched content.
                     readerCacheResult { writeContentToCache(fullContent, cacheFile(article.id, article.accountId)) }
                     fullContent

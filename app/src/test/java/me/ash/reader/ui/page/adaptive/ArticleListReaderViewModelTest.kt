@@ -191,14 +191,64 @@ class ArticleListReaderViewModelTest {
         runCurrent()
         fixture.viewModel.initData(a.article.id)
         runCurrent()
-        latest.complete(Result.success("latest A"))
+        latest.complete(Result.success("description A with latest complete article"))
         runCurrent()
         first.complete(Result.success("stale A"))
         runCurrent()
 
         assertEquals(2, fetchCount)
         assertEquals(a.article.id, fixture.viewModel.readerStateStateFlow.value.articleId)
-        assertEquals(ReaderState.FullContent("latest A"), fixture.viewModel.readerStateStateFlow.value.content)
+        assertEquals(ReaderState.FullContent("description A with latest complete article"), fixture.viewModel.readerStateStateFlow.value.content)
+    }
+
+    @Test fun `failed extraction keeps usable feed and original article identity`() = runTest(dispatcher) {
+        val a = article("A", fullContent = true)
+        val fixture = fixture(a)
+        whenever(fixture.cache.readOrFetchFullContent(a.article)).thenReturn(Result.failure(java.io.IOException("offline")))
+        fixture.viewModel.initData(a.article.id)
+        runCurrent()
+        assertEquals(ReaderState.Description("description A", fallback = true), fixture.viewModel.readerStateStateFlow.value.content)
+        assertEquals(a.article.id, fixture.viewModel.readerStateStateFlow.value.articleId)
+        assertEquals(1, fixture.viewModel.readerStateStateFlow.value.sourceAccountId)
+    }
+
+    @Test fun `worse cached extraction keeps feed without fetching again`() = runTest(dispatcher) {
+        val a = article("A", fullContent = true)
+        val fixture = fixture(a)
+        whenever(fixture.cache.readFullContent(a.article.id, 1)).thenReturn(Result.success("X"))
+        fixture.viewModel.initData(a.article.id)
+        runCurrent()
+        assertEquals(ReaderState.Description("description A", fallback = true), fixture.viewModel.readerStateStateFlow.value.content)
+        verify(fixture.cache, never()).readOrFetchFullContent(any<Article>())
+    }
+
+    @Test fun `explicit retry leaves existing readable content mounted while network waits`() = runTest(dispatcher) {
+        val a = article("A")
+        val fixture = fixture(a)
+        val fetched = CompletableDeferred<Result<String>>()
+        whenever(fixture.cache.readOrFetchFullContent(a.article)).thenSuspend { fetched.await() }
+        fixture.viewModel.initData(a.article.id)
+        runCurrent()
+        fixture.viewModel.renderFullContent()
+        advanceTimeBy(200)
+        runCurrent()
+        assertEquals(ReaderState.Description("description A"), fixture.viewModel.readerStateStateFlow.value.content)
+        fetched.complete(Result.failure(java.io.IOException("offline")))
+        runCurrent()
+        assertEquals(ReaderState.Description("description A", fallback = true), fixture.viewModel.readerStateStateFlow.value.content)
+    }
+
+    @Test fun `failed refresh keeps already open offline extraction`() = runTest(dispatcher) {
+        val a = article("A", fullContent = true)
+        val fixture = fixture(a)
+        val body = "description A with the complete offline article"
+        whenever(fixture.cache.readFullContent(a.article.id, 1)).thenReturn(Result.success(body))
+        whenever(fixture.cache.refreshFullContent(a.article)).thenReturn(Result.failure(java.io.IOException("offline")))
+        fixture.viewModel.initData(a.article.id)
+        runCurrent()
+        fixture.viewModel.renderFullContent(forceRefresh = true)
+        runCurrent()
+        assertEquals(ReaderState.FullContent(body, refreshFailed = true), fixture.viewModel.readerStateStateFlow.value.content)
     }
 
     @Test fun `star action retains the article selected when tapped`() = runTest(dispatcher) {
@@ -224,12 +274,12 @@ class ArticleListReaderViewModelTest {
         Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
         val a = article("A", fullContent = true)
         val fixture = fixture(a)
-        whenever(fixture.cache.readOrFetchFullContent(a.article)).thenReturn(Result.success("ready A"))
+        whenever(fixture.cache.readOrFetchFullContent(a.article)).thenReturn(Result.success("description A with immediately ready complete article"))
 
         fixture.viewModel.initData(a.article.id)
         runCurrent()
 
-        assertEquals(ReaderState.FullContent("ready A"), fixture.viewModel.readerStateStateFlow.value.content)
+        assertEquals(ReaderState.FullContent("description A with immediately ready complete article"), fixture.viewModel.readerStateStateFlow.value.content)
     }
 
     @Test fun `reader retains neighbours when current unread article disappears`() = runTest(dispatcher) {

@@ -60,6 +60,36 @@ class ReaderCacheHelperTest {
         assertEquals(content, cache.readFullContent("1:article", 1).getOrThrow())
     }
 
+    @Test fun `explicit refresh replaces a cached extraction only on success`() = runBlocking {
+        val rss: RssHelper = mock()
+        whenever(rss.parseFullContent(any(), any())).thenReturn("old content", "new content")
+        val cache = helper(rss)
+        assertEquals("old content", cache.readOrFetchFullContent(article()).getOrThrow())
+        assertEquals("new content", cache.refreshFullContent(article()).getOrThrow())
+        assertEquals("new content", cache.readFullContent("1:article", 1).getOrThrow())
+        verify(rss, times(2)).parseFullContent(any(), any())
+    }
+
+    @Test fun `worse refresh does not overwrite useful offline extraction`() = runBlocking {
+        val rss: RssHelper = mock()
+        val previous = "A complete offline article with useful content and details."
+        whenever(rss.parseFullContent(any(), any())).thenReturn(previous, "Oops")
+        val cache = helper(rss)
+        cache.readOrFetchFullContent(article()).getOrThrow()
+        assertEquals(previous, cache.refreshFullContent(article()).getOrThrow())
+        assertEquals(previous, cache.readFullContent("1:article", 1).getOrThrow())
+    }
+
+    @Test fun `failed explicit refresh retains offline cache`() = runBlocking {
+        val rss: RssHelper = mock()
+        whenever(rss.parseFullContent(any(), any())).thenReturn("offline article")
+        val cache = helper(rss)
+        cache.readOrFetchFullContent(article()).getOrThrow()
+        whenever(rss.parseFullContent(any(), any())).thenThrow(java.io.IOException("offline"))
+        assertTrue(cache.refreshFullContent(article()).isFailure)
+        assertEquals("offline article", cache.readFullContent("1:article", 1).getOrThrow())
+    }
+
     @Test fun `empty cache is refetched and deletion returns the actual result`() = runBlocking {
         val rss: RssHelper = mock()
         whenever(rss.parseFullContent(any(), any())).thenReturn("content")

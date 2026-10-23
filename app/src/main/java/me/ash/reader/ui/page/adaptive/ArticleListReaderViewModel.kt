@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import me.ash.reader.domain.data.ArticlePagingListUseCase
 import me.ash.reader.domain.data.DiffMapHolder
 import me.ash.reader.domain.data.FilterState
@@ -50,6 +51,7 @@ import me.ash.reader.infrastructure.di.IODispatcher
 import me.ash.reader.infrastructure.preference.PullToLoadNextFeedPreference
 import me.ash.reader.infrastructure.preference.SettingsProvider
 import me.ash.reader.infrastructure.rss.ReaderCacheHelper
+import me.ash.reader.infrastructure.rss.ArticleContentSelection
 import me.ash.reader.ui.page.home.flow.NewspaperViewportState
 import timber.log.Timber
 
@@ -408,7 +410,7 @@ constructor(
                 val fullContent =
                     readerCacheHelper.readFullContent(articleWithFeed.article.id, articleWithFeed.article.accountId).getOrNull()
                 if (fullContent != null) {
-                    ReaderState.FullContent(fullContent)
+                    withContext(ioDispatcher) { selectReaderContent(articleWithFeed.article.rawDescription, fullContent) }
                 } else {
                     ReaderState.Loading
                 }
@@ -429,23 +431,34 @@ constructor(
         }
     }
 
-    fun renderFullContent() {
+    fun renderFullContent(forceRefresh: Boolean = false) {
         val article = currentArticle ?: return
         fullContentJob?.cancel()
         fullContentJob = viewModelScope.launch {
             val loadingJob = launch {
                 delay(100L)
-                if (currentArticle?.id == article.id) setLoading()
+                // Keep an already readable source on screen during explicit retries. This avoids
+                // destroying the reader's WebView/anchor while a network request is in flight.
+                if (currentArticle?.id == article.id && currentArticle?.accountId == article.accountId &&
+                    _readerState.value.content !is ReaderState.Description &&
+                    _readerState.value.content !is ReaderState.FullContent) setLoading()
             }
             try {
-                val result = readerCacheHelper.readOrFetchFullContent(article)
+                val result = if (forceRefresh) readerCacheHelper.refreshFullContent(article)
+                    else readerCacheHelper.readOrFetchFullContent(article)
+                val selected = withContext(ioDispatcher) {
+                    result.fold(
+                        onSuccess = { selectReaderContent(article.rawDescription, it) },
+                        onFailure = { selectReaderContent(article.rawDescription, null, it) },
+                    )
+                }
                 ensureActive()
-                if (currentArticle?.id == article.id) {
+                if (currentArticle?.id == article.id && currentArticle?.accountId == article.accountId) {
                     _readerState.update {
-                        it.copy(content = result.fold(
-                            onSuccess = { ReaderState.FullContent(it) },
-                            onFailure = { ReaderState.Error(it.message.orEmpty()) },
-                        ))
+                        // A failed explicit refresh also keeps an already-open offline extraction.
+                        val previous = it.content as? ReaderState.FullContent
+                        it.copy(content = if (result.isFailure && previous != null)
+                            previous.copy(refreshFailed = true) else selected)
                     }
                 }
             } finally {
@@ -552,11 +565,21 @@ data class ReaderState(
             }
     }
 
-    data class FullContent(val content: String) : ContentState
+    data class FullContent(val content: String, val refreshFailed: Boolean = false) : ContentState
 
-    data class Description(val content: String) : ContentState
+    data class Description(val content: String, val fallback: Boolean = false) : ContentState
 
     data class Error(val message: String) : ContentState
 
     data object Loading : ContentState
+}
+
+/** Shared by warm-cache and network paths, so offline reads receive the same quality decision. */
+internal fun selectReaderContent(feed: String, extracted: String?, failure: Throwable? = null): ReaderState.ContentState {
+    val selected = ArticleContentSelection.select(feed, extracted, failed = failure != null)
+    return when (selected.source) {
+        ArticleContentSelection.Source.FEED -> ReaderState.Description(selected.html.orEmpty(), fallback = true)
+        ArticleContentSelection.Source.EXTRACTED -> ReaderState.FullContent(selected.html.orEmpty())
+        ArticleContentSelection.Source.UNAVAILABLE -> ReaderState.Error(failure?.message ?: "No readable article content")
+    }
 }

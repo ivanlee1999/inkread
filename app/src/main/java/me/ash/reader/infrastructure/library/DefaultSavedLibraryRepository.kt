@@ -222,7 +222,8 @@ internal class DefaultSavedLibraryRepository(
                     }
                 }
                 val sourceHtml = html ?: return@withPermit
-                val sources = SavedDocumentImages.sources(sourceHtml, initial.url)
+                val candidateGroups = SavedDocumentImages.candidateGroups(sourceHtml, initial.url)
+                val sources = candidateGroups.keys.toList()
                 val retained = mutations.withLock {
                     val current = matching(id, token) ?: return@withLock null
                     val result = SavedDocumentImages.retained(sourceHtml, initial.url) { files.isRetainedAsset(id, it) }
@@ -234,15 +235,23 @@ internal class DefaultSavedLibraryRepository(
                 for (url in sources.take(files.limits.maxImagesPerArticle)) {
                     currentCoroutineContext().ensureActive()
                     if (mutations.withLock { matching(id, token) == null }) return@withPermit
-                    if (url in retained || publicArticleUrl(url) == null || used >= files.limits.maxArticleImageBytes) continue
-                    try {
-                        val bytes = downloader.fetchImage(url)
-                        if (bytes.isNotEmpty() && bytes.size.toLong() <= files.limits.maxImageBytes && used + bytes.size <= files.limits.maxArticleImageBytes) {
-                            fetched[url] = bytes
-                            used += bytes.size
-                        }
-                    } catch (cancelled: CancellationException) { throw cancelled }
-                    catch (_: Exception) { /* Durable text survives missing images. */ }
+                    if (url in retained || used >= files.limits.maxArticleImageBytes) continue
+                    for (candidate in candidateGroups.getValue(url)) {
+                        currentCoroutineContext().ensureActive()
+                        if (mutations.withLock { matching(id, token) == null }) return@withPermit
+                        if (publicArticleUrl(candidate) == null) continue
+                        try {
+                            val bytes = downloader.fetchImage(candidate)
+                            if (bytes.isNotEmpty() && bytes.size.toLong() <= files.limits.maxImageBytes && used + bytes.size <= files.limits.maxArticleImageBytes) {
+                                // Store under the picture's stable identity even if an alternate
+                                // succeeds. Image counts, retries and retained paths stay logical.
+                                fetched[url] = bytes
+                                used += bytes.size
+                                break
+                            }
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: Exception) { /* Try a bounded alternate; durable text survives. */ }
+                    }
                 }
                 commitMutation {
                     val current = matching(id, token) ?: return@commitMutation

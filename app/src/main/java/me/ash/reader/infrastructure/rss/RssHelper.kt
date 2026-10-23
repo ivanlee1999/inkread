@@ -22,6 +22,7 @@ import me.ash.reader.domain.model.feed.Feed
 import me.ash.reader.domain.repository.FeedDao
 import me.ash.reader.infrastructure.di.IODispatcher
 import me.ash.reader.infrastructure.html.Readability
+import me.ash.reader.infrastructure.html.readHtmlLimited
 import me.ash.reader.ui.ext.currentAccountId
 import me.ash.reader.ui.ext.decodeHTML
 import me.ash.reader.ui.ext.extractDomain
@@ -36,7 +37,6 @@ import okio.BufferedSource
 import org.jsoup.Jsoup
 
 private const val FULL_CONTENT_MAX_BYTES = 2L * 1024L * 1024L
-private const val FULL_CONTENT_CHARSET_SNIFF_BYTES = 64L * 1024L
 private const val READ_BUFFER_BYTES = 8L * 1024L
 
 /** Some operations on RSS. */
@@ -117,21 +117,9 @@ constructor(
             response(okHttpClient, link).use { response ->
                 if (!response.isSuccessful) throw IOException(response.message)
 
-                val responseBody = response.body
-                val charset = responseBody.contentType()?.charset()
-                val content =
-                    responseBody.source().use {
-                        if (charset != null) {
-                            return@use it.readStringLimited(charset)
-                        }
-
-                        val charsetFromMeta =
-                            it.peekCharsetFromMeta(link)
-
-                        it.readStringLimited(charsetFromMeta)
-                    }
-
-                val articleContent = Readability.parseToElement(content, link)
+                val content = response.body.readHtmlLimited(FULL_CONTENT_MAX_BYTES)
+                val finalUrl = response.request.url.toString()
+                val articleContent = Readability.parseToElement(content, finalUrl)
                 articleContent?.let {
                     val h1Element = articleContent.selectFirst("h1")
                     if (h1Element != null && h1Element.hasText() && h1Element.text() == title) {
@@ -311,35 +299,4 @@ internal fun BufferedSource.readByteArrayLimited(maxBytes: Long): ByteArray {
     }
 
     return buffer.readByteArray()
-}
-
-private fun BufferedSource.peekCharsetFromMeta(baseUrl: String): Charset {
-    val peek = peek()
-    val buffer = Buffer()
-
-    while (buffer.size < FULL_CONTENT_CHARSET_SNIFF_BYTES) {
-        val bytesRead = peek.read(buffer, FULL_CONTENT_CHARSET_SNIFF_BYTES - buffer.size)
-        if (bytesRead == -1L) break
-    }
-
-    val peekContent = buffer.readString(Charsets.UTF_8)
-
-    return runCatching {
-        val element =
-            Jsoup.parse(peekContent, baseUrl)
-                .selectFirst("meta[http-equiv=content-type], meta[charset]")
-        when {
-            element == null -> Charsets.UTF_8
-            element.hasAttr("charset") -> Charset.forName(element.attr("charset"))
-            else ->
-                element
-                    .attr("content")
-                    .substringAfter("charset=")
-                    .substringBefore(";")
-                    .removeSurrounding("\"")
-                    .trim()
-                    .lowercase()
-                    .let { Charset.forName(it) }
-        }
-    }.getOrDefault(Charsets.UTF_8)
 }

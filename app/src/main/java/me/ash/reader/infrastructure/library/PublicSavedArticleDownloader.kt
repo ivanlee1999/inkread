@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import me.ash.reader.infrastructure.html.Readability
+import me.ash.reader.infrastructure.html.readHtmlLimited
 import me.ash.reader.infrastructure.rss.articleImageHttpClient
 import me.ash.reader.infrastructure.rss.publicArticleUrl
 import okhttp3.Call
@@ -24,7 +25,7 @@ internal class PublicSavedArticleDownloader(private val limits: SavedStorageLimi
         val page = pageClient.newCall(request).readResponse { response ->
             val contentType = response.body.contentType()
             if (contentType != null && contentType.subtype !in setOf("html", "xhtml+xml")) throw IOException("Article is not an HTML page")
-            response.request.url.toString() to response.body.string()
+            response.request.url.toString() to response.body.readHtmlLimited(limits.maxHtmlBytes)
         }
         extractSavedArticle(page.second, page.first, titleHint)
     }
