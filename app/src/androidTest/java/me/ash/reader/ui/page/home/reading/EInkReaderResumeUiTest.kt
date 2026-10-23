@@ -190,6 +190,10 @@ class EInkReaderResumeUiTest {
         assertInsideSafeBounds("zero-margin-later-page", webViewBounds(), safe)
         capture("saved-zero-margins")
         compose.onNodeWithTag("reader_controls_toggle").performClick()
+        // Await the shown footer before checking its unchanged touch-target and inset bounds.
+        compose.waitUntil(5_000) {
+            runCatching { compose.onNodeWithTag("reader_library_actions").assertIsDisplayed() }.isSuccess
+        }
         compose.onNodeWithTag("reader_library_actions").assertIsDisplayed().assertHeightIsAtLeast(48.dp)
         val controls = nodeScreenBounds("reader_secondary_controls")
         assertInsideSafeBounds("saved-toolbar", controls, safe)

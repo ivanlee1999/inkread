@@ -52,6 +52,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.launch
@@ -1114,30 +1115,49 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
         56f * resources.displayMetrics.density,
         ViewConfiguration.getLongPressTimeout().toLong(),
     )
-    private var gestureSerial = 0L
+    private val gestureSerial = AtomicLong()
     private var gestureKey: Any? = null
     private var activePointer = -1
     private var nativeStreamOpen = false
     private val autoHighlightGesture = EInkAutoHighlightGesture()
 
-    private fun annotationScript(command: String) {
-        evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.$command", null)
+    // Compose test/layout reflow can invalidate from a worker. Never move the
+    // token revocation behind this queue, or an already-queued bridge callback
+    // could save first. Only the WebView operation waits for its owner looper.
+    private val annotationHandler = Handler(checkNotNull(Looper.myLooper()))
+    private val annotationDispatch = EInkAnnotationScriptDispatch(
+        isOwnerThread = { Looper.myLooper() === annotationHandler.looper },
+        postToOwner = { command -> annotationHandler.post { command() } },
+        currentDocument = { selectionDocumentKey() },
+        currentRevision = { autoHighlightGesture.currentRevision },
+        currentSessionRevision = { autoHighlightGesture.currentSessionRevision },
+        isAttached = { isAttachedToWindow },
+    )
+
+    private fun annotationScript(method: String, token: Long? = null,
+                                 revision: Long = autoHighlightGesture.currentRevision, sessionReset: Boolean = false) {
+        val document = selectionDocumentKey()
+        val arguments = listOfNotNull(token?.toString(), document.toString())
+            .joinToString(", ") { EInkReaderFormatting.quote(it) }
+        annotationDispatch.dispatch(document, revision, sessionReset) {
+            evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.$method($arguments)", null)
+        }
     }
     private fun completeAutomaticCapture(token: Long?) {
         if (token == null || !autoHighlightAvailable()) return
-        annotationScript("completeSelectionGesture(${EInkReaderFormatting.quote(token.toString())}, ${EInkReaderFormatting.quote(selectionDocumentKey().toString())})")
+        annotationScript("completeSelectionGesture", token)
     }
     fun cancelAutomaticCapture() {
-        autoHighlightGesture.cancelGesture()
-        annotationScript("cancelAutoCapture(${EInkReaderFormatting.quote(selectionDocumentKey().toString())})")
+        val revision = autoHighlightGesture.cancelGesture()
+        annotationScript("cancelAutoCapture", revision = revision)
     }
     fun acceptAutomaticCapture(token: String): Boolean =
         token.toLongOrNull()?.let(autoHighlightGesture::consume) == true
 
     fun invalidateReaderGesture() {
-        gestureSerial++
-        touch.cancel()
+        gestureSerial.incrementAndGet()
         cancelAutomaticCapture()
+        touch.cancel()
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -1162,8 +1182,8 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
             onReaderDown()
             cancelAutomaticCapture()
             val autoToken = autoHighlightGesture.down(autoHighlightAvailable(), ownedAtDown)
-            if (autoToken != null) annotationScript("beginSelectionGesture(${EInkReaderFormatting.quote(autoToken.toString())}, ${EInkReaderFormatting.quote(selectionDocumentKey().toString())})")
-            gestureSerial++
+            if (autoToken != null) annotationScript("beginSelectionGesture", autoToken)
+            gestureSerial.incrementAndGet()
             gestureKey = readerGestureKey()
             activePointer = event.getPointerId(0)
             nativeStreamOpen = true
@@ -1173,7 +1193,7 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
                 (edges?.left ?: 0).toFloat(), (edges?.right ?: 0).toFloat())
         } else if (action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_POINTER_DOWN ||
             event.pointerCount != 1 || event.getPointerId(0) != activePointer || gestureKey != readerGestureKey()) {
-            gestureSerial++
+            gestureSerial.incrementAndGet()
             cancelAutomaticCapture()
             touch.cancel()
         } else {
@@ -1216,13 +1236,13 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
 
     private fun dispatchSelectionTap(x: Float, y: Float) {
         if (width <= 0 || height <= 0) return
-        val serial = gestureSerial
+        val serial = gestureSerial.get()
         val key = readerGestureKey()
         // A real tap inside a programmatically restored range is Chromium's
         // native route to reveal selection handles. Never turn it into a page
         // tap or unconditional dismissal. Outside taps remain dismiss-only.
         evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.selectionContainsPoint(${x / width}*innerWidth, ${y / height}*innerHeight, ${EInkReaderFormatting.quote(selectionDocumentKey().toString())})") { result ->
-            if (result != "true" && serial == gestureSerial && key == readerGestureKey()) {
+            if (result != "true" && serial == gestureSerial.get() && key == readerGestureKey()) {
                 onReaderAction(EInkReaderTouchArbitrator.Action.DISMISS_SELECTION)
             }
         }
@@ -1230,12 +1250,12 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
 
     private fun dispatchPlainTap(x: Float, y: Float, action: EInkReaderTouchArbitrator.Action) {
         if (width <= 0 || height <= 0) return
-        val serial = gestureSerial
+        val serial = gestureSerial.get()
         val key = readerGestureKey()
         // Geometry and interactive ancestors are read from the current DOM,
         // never Chromium's potentially stale native hitTestResult.
         evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.tapTarget(${x / width}*innerWidth, ${y / height}*innerHeight, ${EInkReaderFormatting.quote(selectionDocumentKey().toString())})") { result ->
-            if (serial != gestureSerial || key != readerGestureKey() ||
+            if (serial != gestureSerial.get() || key != readerGestureKey() ||
                 !navigationEnabled() || hasActiveSelection || isSelectionActive()) return@evaluateJavascript
             val json = runCatching { (JSONTokener(result).nextValue() as? String)?.let(::JSONObject) }.getOrNull()
                 ?: return@evaluateJavascript
@@ -1250,9 +1270,9 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
 
     fun finishSelection(clearNativeCache: Boolean = false) {
         cancelAutomaticCapture()
-        autoHighlightGesture.finishSession()
-        annotationScript("endSelectionSession(${EInkReaderFormatting.quote(selectionDocumentKey().toString())})")
-        gestureSerial++
+        val revision = autoHighlightGesture.finishSession()
+        annotationScript("endSelectionSession", revision = revision, sessionReset = true)
+        gestureSerial.incrementAndGet()
         touch.claimSelection()
         // Explicit dismissal owns its token/state changes and immediately
         // cancels any deferred completion from an earlier native menu.
@@ -1291,7 +1311,7 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
         override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
             if (!selectionEnabled() || !touch.permitsNativeSelection || !original.onCreateActionMode(mode, menu)) return false
             selectionLifecycle.start(mode)
-            gestureSerial++
+            gestureSerial.incrementAndGet()
             touch.claimSelection()
             onSelectionStarted()
             completeAutomaticCapture(autoHighlightGesture.selectionStarted())
@@ -1320,7 +1340,7 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
         override fun onDestroyActionMode(mode: ActionMode) {
             original.onDestroyActionMode(mode)
             val token = selectionLifecycle.destroyed(mode) ?: return
-            gestureSerial++
+            gestureSerial.incrementAndGet()
             val document = selectionDocumentKey()
             onSelectionModeEnded()
             // Chromium can destroy the old floating menu and start its
@@ -1330,8 +1350,8 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
                 if (selectionLifecycle.completeDismissal(token,
                         sameReader = document == selectionDocumentKey(), attached = isAttachedToWindow)) {
                     cancelAutomaticCapture()
-                    autoHighlightGesture.finishSession()
-                    annotationScript("endSelectionSession(${EInkReaderFormatting.quote(selectionDocumentKey().toString())})")
+                    val revision = autoHighlightGesture.finishSession()
+                    annotationScript("endSelectionSession", revision = revision, sessionReset = true)
                     onSelectionFinished()
                 }
             }

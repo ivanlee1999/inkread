@@ -706,6 +706,53 @@ class EInkReaderAnnotationUiTest {
         compose.waitUntil(5_000) { !selecting.value }
     }
 
+    @Test fun workerViewportInvalidationRejectsHeldAutomaticResultBeforeOwnerCleanup() {
+        startReader()
+        compose.runOnIdle { automatic.value = true }
+        settle()
+        // Hold the real native gesture's complete callback, not its selection.
+        // This isolates the queue ordering without sleeps or browser animation.
+        js("""
+            (function(){window._completeAuto=InkReadAnnotations.completeSelectionGesture;
+            InkReadAnnotations.completeSelectionGesture=function(token,generation){
+                window._heldAuto={token:token,generation:generation,
+                    json:InkReadAnnotations.captureSelection(generation)};return true;};return true;})()
+        """.trimIndent())
+        longPressFirstWord()
+        compose.waitUntil(5_000) { js("!!window._heldAuto") == true }
+        val held = JSONObject(js("JSON.stringify(window._heldAuto)") as String)
+        assertEquals("Selection", JSONObject(held.getString("json")).getString("quote"))
+        assertEquals(0, automaticCount.get())
+        instrumentation.runOnMainSync {
+            val view = reader() as EInkAnnotationWebView
+            val failure = AtomicReference<Throwable?>()
+            val worker = Thread({
+                try { view.invalidateReaderGesture() }
+                catch (error: Throwable) { failure.set(error) }
+            }, "reader-layout-regression")
+            worker.start()
+            worker.join(5_000)
+            assertFalse("Invalidation must not wait for the owner thread", worker.isAlive)
+            failure.get()?.let { throw AssertionError("Off-owner viewport invalidation failed", it) }
+            // The owner queue is still blocked by this same call. Native capture
+            // must already be revoked, rather than waiting for posted JS cleanup.
+            assertFalse(view.acceptAutomaticCapture(held.getString("token")))
+        }
+        js("""
+            (function(){var held=window._heldAuto;
+            Android.onAutoAnnotation(held.generation,held.token,held.json);
+            InkReadAnnotations.completeSelectionGesture=window._completeAuto;return true;})()
+        """.trimIndent())
+        settle()
+        assertEquals("A pre-resize snapshot must never persist after invalidation", 0, automaticCount.get())
+        assertTrue(selecting.value)
+        pressBack()
+        compose.waitUntil(5_000) { !selecting.value }
+        longPressFirstWord()
+        compose.waitUntil(5_000) { automaticCount.get() == 1 }
+        assertEquals("Selection", JSONObject(automaticAnchor.get()!!).getString("quote"))
+    }
+
     @Test fun controlsOpenAutomaticSaveAndUndoDoNotReflowNativeSelection() {
         startReader(fontSize = 32)
         compose.runOnIdle { automatic.value = true }
