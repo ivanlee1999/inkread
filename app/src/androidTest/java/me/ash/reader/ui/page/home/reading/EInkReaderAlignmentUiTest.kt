@@ -96,7 +96,7 @@ class EInkReaderAlignmentUiTest {
     @Test fun cjkPagesStayCenteredThroughRepeatedTurnsImagesAndReflow() {
         compose.setContent {
             CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON,
-                LocalReaderFormatting provides ReaderFormatting.Default.copy(fontSize = fontSize.value)) {
+                LocalReaderFormatting provides ReaderFormatting(fontSize = fontSize.value)) {
                 AppTheme(useDarkTheme = false) {
                     Box(Modifier.fillMaxSize()) {
                         EInkPaginatedContent(

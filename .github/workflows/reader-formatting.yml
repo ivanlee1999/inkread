@@ -162,13 +162,15 @@ jobs:
                   fonts = next(s for s in samples if s["label"] == "offline-script-faces")
                   assert all(fonts[key] for key in ("latinFaceLoaded", "cjkFaceLoaded", "latinPaintMatchesFace", "cjkPaintMatchesFace", "latinPaintDiffersFromSans"))
               elif name == "script-sizes":
-                  required = {"chinese-size-preview-anchor", "english-size-preview-anchor", "script-size-reset"}
+                  required = {"chinese-size-preview-anchor", "english-size-preview-anchor", "script-size-reset", "large-chinese-anchor", "large-english-anchor"}
                   assert required <= labels, f"Missing script-size assertions: {required-labels}"
                   assert report["htmlRequests"] == 1, "Independent size preview unexpectedly reloaded its article HTML"
                   scale = float(os.environ["FORMATTING_FONT_SCALE"])
                   for label, english, chinese in (("chinese-size-preview-anchor", 18, 24),
                                                   ("english-size-preview-anchor", 20, 24),
-                                                  ("script-size-reset", 18, 18)):
+                                                  ("script-size-reset", 18, 18),
+                                                  ("large-chinese-anchor", 12, 48),
+                                                  ("large-english-anchor", 48, 12)):
                       sample = next(s for s in samples if s["label"] == label)
                       assert sample["sameAnchor"] and sample["sameDocument"] and sample["anchorVisible"] and sample["documentSentinel"], sample
                       assert abs(sample["fontSize"] - english * scale) < .1, sample
