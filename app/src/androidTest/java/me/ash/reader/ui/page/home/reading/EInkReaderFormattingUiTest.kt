@@ -138,13 +138,26 @@ class EInkReaderFormattingUiTest {
         rememberAnchor()
         val textBefore = js("document.getElementById('eink-content').textContent")
         val runsBefore = js("document.querySelectorAll('.eink-script-cjk').length")
+        fun renderedSizes(): JSONObject = JSONObject(js("""(function(){
+            var p=document.querySelector('p.format-text'),c=p.querySelector('.eink-script-cjk');
+            function width(n,i){var r=document.createRange();r.setStart(n,i);r.setEnd(n,i+1);return r.getBoundingClientRect().width;}
+            var walker=document.createTreeWalker(p,NodeFilter.SHOW_TEXT),latin,offset,n;
+            while((n=walker.nextNode())){var match=/[A-Za-z]/.exec(n.data);if(match){latin=n;offset=match.index;break;}}
+            return JSON.stringify({english:parseFloat(getComputedStyle(p).fontSize),
+                chinese:parseFloat(getComputedStyle(c).fontSize),englishGlyph:width(latin,offset),chineseGlyph:width(c.firstChild,0)});
+        })()""".trimIndent()) as String)
+        val initialGlyphs = renderedSizes()
         fun assertSizes(english: Int, chinese: Int) {
             val scale = context.resources.configuration.fontScale.toDouble()
-            val sizes = JSONObject(js("""(function(){var p=document.querySelector('p.format-text');
-                return JSON.stringify({english:parseFloat(getComputedStyle(p).fontSize),
-                    chinese:parseFloat(getComputedStyle(p.querySelector('.eink-script-cjk')).fontSize)});})()""") as String)
+            val sizes = renderedSizes()
             assertEquals(english * scale, sizes.getDouble("english"), .1)
             assertEquals(chinese * scale, sizes.getDouble("chinese"), .1)
+            // Actual glyph boxes, not only computed styles: display:contents must
+            // still transmit the independent inherited size to native text layout.
+            assertEquals(initialGlyphs.getDouble("englishGlyph") * english / 18.0,
+                sizes.getDouble("englishGlyph"), .75)
+            assertEquals(initialGlyphs.getDouble("chineseGlyph") * chinese / 18.0,
+                sizes.getDouble("chineseGlyph"), .75)
             assertEquals(textBefore, js("document.getElementById('eink-content').textContent"))
             assertEquals(runsBefore, js("document.querySelectorAll('.eink-script-cjk').length"))
         }

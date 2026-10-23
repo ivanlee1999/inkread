@@ -451,6 +451,17 @@ class EInkReaderAnnotationUiTest {
             pressBack()
             compose.waitUntil(5_000) { !selecting.value }
             assertNull("Reflow/cancel cannot commit a resized highlight", resized.get())
+            // Exercise real Chromium handles with unequal rendered sizes too,
+            // while the existing mixed-script annotation remains attached.
+            longPressFirstWord()
+            closeNativeOverflow()
+            dragSelectionHandle(textPoint("select-target", 0, 9, "end"),
+                textPoint("select-target", 10, 19, "end"))
+            awaitHandleSelection("Selection preserves", "independent-$english-$chinese")
+            assertNativeSelectionRetained("Selection preserves", "independent sizes $english/$chinese")
+            pressBack()
+            compose.waitUntil(5_000) { !selecting.value }
+            assertNull("Unequal-size handle gestures cannot overwrite the existing annotation", resized.get())
         }
     }
 

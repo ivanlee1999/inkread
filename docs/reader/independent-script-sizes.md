@@ -8,7 +8,7 @@ Han (including supplementary ideographs), kana, bopomofo, CJK/full-width punctua
 
 ## Rendering and compatibility
 
-`size-adjust` on the CJK font face alone cannot cover absent local fonts or glyph fallback. Instead, `eink-script-fonts.js` installs transparent inline runs once before pagination. Subsequent previews update only a CSS variable, with no HTML reload or repeated wrapping. The runs inherit the containing heading/paragraph size and multiply it by `Chinese / English`. Font fallbacks therefore obey the setting too.
+`size-adjust` on the CJK font face alone cannot cover absent local fonts or glyph fallback. Instead, `eink-script-fonts.js` installs transparent script runs once before pagination. Subsequent previews update only a CSS variable, with no HTML reload or repeated wrapping. The runs inherit the containing heading/paragraph size and multiply it by `Chinese / English`. Font fallbacks therefore obey the setting too. The runs use `display: contents` so typography reaches their text without adding inline boxes that can displace native selection hit-testing at large system text sizes.
 
 The helper preserves the original text-node data, lengths, parent context and ordering. Pagination still persists the original node/UTF-16 coordinate. Annotation maps still fingerprint the exact original text and node lengths, and convert selections and native ranges through the fragment mapping. This intentionally keeps existing version-1 saved positions and repeated-quote anchors compatible, rather than invalidating or guessing them. Text content, link targets, quote/context strings and scalar boundaries are unchanged.
 
