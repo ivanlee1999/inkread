@@ -8,14 +8,17 @@ internal class EInkAnnotationCapture<Owner : Any> {
         val generation: String,
         val owner: Owner,
         val addNote: Boolean,
+        /** Captured at Save, never read from a newer resize request. */
+        val annotationId: String? = null,
+        val resizeToken: String? = null,
     )
 
     private var pending: Ticket<Owner>? = null
     val hasPending: Boolean get() = pending != null
 
-    fun begin(generation: String, owner: Owner, addNote: Boolean): Ticket<Owner>? {
+    fun begin(generation: String, owner: Owner, addNote: Boolean, annotationId: String? = null, resizeToken: String? = null): Ticket<Owner>? {
         if (hasPending) return null
-        return Ticket(generation, owner, addNote).also { pending = it }
+        return Ticket(generation, owner, addNote, annotationId, resizeToken).also { pending = it }
     }
 
     fun onEvent(event: Event) {

@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.isDisplayed as isComposeDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -66,6 +67,7 @@ import me.ash.reader.infrastructure.preference.EInkModePreference
 import me.ash.reader.infrastructure.preference.LocalEInkMode
 import me.ash.reader.infrastructure.preference.LocalReaderFormatting
 import me.ash.reader.infrastructure.preference.ReaderFormatting
+import me.ash.reader.ui.page.adaptive.ReaderContentPresentationGate
 import me.ash.reader.ui.theme.AppTheme
 import org.hamcrest.Description
 import org.hamcrest.Matcher
@@ -96,6 +98,19 @@ class EInkReaderAnnotationUiTest {
     private val created = AtomicReference<String?>()
     private val note = AtomicReference<Boolean?>()
     private val locations = AtomicReference<String?>()
+    private val tappedAnnotation = AtomicReference<String?>()
+    private val resizeRequest = mutableStateOf<Pair<String, Long>?>(null)
+    private val resizeRestored = AtomicReference<Pair<String, Boolean>?>()
+    private val resized = AtomicReference<Pair<String, String>?>()
+    private val automatic = mutableStateOf(false)
+    private val annotationStatus = mutableStateOf<String?>(null)
+    private val automaticCount = AtomicInteger()
+    private val automaticAnchor = AtomicReference<String?>()
+    private val undoAvailable = mutableStateOf(false)
+    private val undoCount = AtomicInteger()
+    private val incomingContent = mutableStateOf<String?>(null)
+    private val contentPresentation = ReaderContentPresentationGate<String, String> { it }
+    private val nextDocumentInteraction = AtomicReference<(() -> Unit)?>(null)
     private var nativeOverflowOpen = false
     private var originalAccessibilityFlags: Int? = null
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
@@ -120,12 +135,18 @@ class EInkReaderAnnotationUiTest {
             CompositionLocalProvider(LocalEInkMode provides EInkModePreference.ON,
                 LocalReaderFormatting provides ReaderFormatting.Default.copy(fontSize = fontSize)) {
                 AppTheme(useDarkTheme = false) {
+                    val initialContent = buildString {
+                        append("<p id='select-target'>Selection preserves exact text, 中文 and emoji 😀.</p>")
+                        append("<p><a id='link-target' href='https://example.invalid/annotation-fixture'>Fixture link</a></p>")
+                        repeat(140) { append("<p id='paragraph-$it'>Paragraph $it. Long article text exercises native paging and annotation ownership.</p>") }
+                    }
                     EInkPaginatedContent(modifier = Modifier.testTag("annotation-reader"),
                         articleId = "annotation-fixture", title = "Annotation fixture", feedName = "Local fixture",
-                        publishedDate = Date(0), content = buildString {
-                            append("<p id='select-target'>Selection preserves exact text, 中文 and emoji 😀.</p>")
-                            append("<p><a id='link-target' href='https://example.invalid/annotation-fixture'>Fixture link</a></p>")
-                            repeat(140) { append("<p id='paragraph-$it'>Paragraph $it. Long article text exercises native paging and annotation ownership.</p>") }
+                        publishedDate = Date(0),
+                        content = contentPresentation.present("annotation-fixture", incomingContent.value ?: initialContent),
+                        onDocumentInteractionStarted = {
+                            contentPresentation.onInteractionStarted()
+                            nextDocumentInteraction.getAndSet(null)?.invoke()
                         },
                         selectionMode = selecting.value, onSelectionModeChange = { selecting.value = it },
                         annotationEditing = editing.value, annotationsJson = annotationJson.value,
@@ -133,6 +154,21 @@ class EInkReaderAnnotationUiTest {
                             { json, addNote -> created.set(json); note.set(addNote); editing.value = addNote }
                         } else null,
                         onAnnotationLocationsChanged = { locations.set(it) }, onAnnotationsClick = {},
+                        onAnnotationClick = { tappedAnnotation.set(it) },
+                        annotationResizeRequest = resizeRequest.value,
+                        onAnnotationResizeResult = { id, attached -> resizeRestored.set(id to attached) },
+                        onResizeSelection = { id, json -> resized.set(id to json) },
+                        autoHighlightEnabled = automatic.value,
+                        annotationStatus = annotationStatus.value,
+                        onAutoCreateAnnotation = { json ->
+                            automaticAnchor.set(json)
+                            automaticCount.incrementAndGet()
+                            undoAvailable.value = true
+                            annotationStatus.value = "Saved locally · Readwise pending"
+                        },
+                        onUndoAutoHighlight = if (undoAvailable.value) {
+                            { undoCount.incrementAndGet(); undoAvailable.value = false; annotationStatus.value = "Highlight removed" }
+                        } else null,
                         onBack = { exits.incrementAndGet() },
                         onPrevArticle = { previousArticles.incrementAndGet() },
                         onNextArticle = { nextArticles.incrementAndGet() },
@@ -180,7 +216,7 @@ class EInkReaderAnnotationUiTest {
         }
     }
 
-    private fun longPressFirstWord(awaitSelection: Boolean = true): NativeTouchTrace {
+    private fun longPressFirstWord(awaitSelection: Boolean = true, beforeRelease: (() -> Unit)? = null): NativeTouchTrace {
         // This Range is read-only geometry. Only window-dispatched native touch
         // can create the Selection/ActionMode. No addRange or performLongClick.
         val point = textPoint("select-target", 0, 9)
@@ -190,6 +226,7 @@ class EInkReaderAnnotationUiTest {
         instrumentation.runOnMainSync {
             reader().setOnTouchListener { _, event ->
                 if (event.actionMasked == MotionEvent.ACTION_DOWN) downAt.set(event.eventTime)
+                if (event.actionMasked == MotionEvent.ACTION_UP) beforeRelease?.invoke()
                 if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
                     heldFor.set(event.eventTime - downAt.get())
                 }
@@ -332,6 +369,46 @@ class EInkReaderAnnotationUiTest {
         // otherwise the still-active editing guard correctly consumes that press.
         compose.onNodeWithTag("reader_controls_toggle").assertIsDisplayed()
         assertReadingNavigationRestored()
+    }
+
+    @Test fun incomingArticleKeepsNativeSelectionEvenWhenAnnotationsAreUnavailable() {
+        startReader(annotationsAvailable = false)
+        val generation = js("window._inkreadGeneration")
+        longPressFirstWord()
+        val exact = js("window.getSelection().toString()") as String
+        compose.runOnIdle { incomingContent.value = "<p id='replacement-body'>Newly extracted article.</p>" }
+        assertNativeSelectionRetained(exact, "after an incoming full article")
+        assertEquals(generation, js("window._inkreadGeneration"))
+        assertEquals(false, js("!!document.getElementById('replacement-body')"))
+        pressBack()
+        compose.waitUntil(5_000) { !selecting.value }
+        settle()
+        assertEquals("Ending selection is not permission to replace its document", generation, js("window._inkreadGeneration"))
+        assertEquals(false, js("!!document.getElementById('replacement-body')"))
+    }
+
+    @Test fun incomingArticleAtNativeCapturePreservesTheNoteHandoff() {
+        startReader()
+        val generation = js("window._inkreadGeneration")
+        longPressFirstWord()
+        val exact = js("window.getSelection().toString()") as String
+        // Complete a background fetch on the synchronous capture-entry callback. The real
+        // Chromium selection and capture still run normally, without JS Selection mocks.
+        nextDocumentInteraction.set {
+            incomingContent.value = "<p id='replacement-body'>Article fetched while capture starts.</p>"
+        }
+        clickNativeAction("Add note")
+        compose.waitUntil(5_000) { created.get() != null && editing.value }
+        assertNull("The native interaction hook must consume the queued fetch", nextDocumentInteraction.get())
+        assertEquals(exact, JSONObject(created.get()!!).getString("quote"))
+        assertEquals(true, note.get())
+        assertEquals(generation, js("window._inkreadGeneration"))
+        compose.runOnIdle { incomingContent.value = "<p id='replacement-body'>Another result while editing the note.</p>" }
+        settle()
+        assertTrue("A new body cannot dismiss the accepted note editor", editing.value)
+        assertEquals(exact, JSONObject(created.get()!!).getString("quote"))
+        assertEquals(generation, js("window._inkreadGeneration"))
+        assertEquals(false, js("!!document.getElementById('replacement-body')"))
     }
 
     @Test fun nativeHighlightRendersWithoutEditingBodyTextAndDoneRestoresPaging() {
@@ -501,6 +578,285 @@ class EInkReaderAnnotationUiTest {
         assertEquals(0, nextArticles.get())
         assertEquals(0, previousArticles.get())
         assertReadingNavigationRestored()
+    }
+
+    private fun saveFirstWordHighlight(id: String = "saved-highlight") {
+        longPressFirstWord()
+        clickNativeAction("Highlight")
+        compose.waitUntil(5_000) { created.get() != null && !selecting.value }
+        val json = JSONArray().put(JSONObject().put("id", id).put("anchor", JSONObject(created.get()!!))).toString()
+        compose.runOnIdle { annotationJson.value = json }
+        compose.waitUntil(5_000) { locations.get()?.contains("attached") == true }
+        awaitVisualFrame()
+    }
+
+    private fun requestResize(id: String, serial: Long) {
+        resizeRestored.set(null)
+        compose.runOnIdle { resizeRequest.value = id to serial }
+        compose.waitUntil(5_000) { resizeRestored.get() == (id to true) && selecting.value }
+        assertEquals("Selection", js("window.getSelection().toString()"))
+        awaitVisualFrame()
+    }
+
+    @Test fun defaultHighlightTapTargetsExistingRecordWithoutPagingAndLinkStillWins() {
+        startReader()
+        saveFirstWordHighlight()
+        val before = page.get()
+        tapText("select-target", 0, 9)
+        compose.waitUntil(5_000) { tappedAnnotation.get() == "saved-highlight" }
+        assertEquals(before, page.get())
+        assertFalse(selecting.value)
+        tappedAnnotation.set(null)
+        tapText("link-target", 0, 7)
+        settle()
+        assertNull(tappedAnnotation.get())
+        assertEquals(before, page.get())
+        assertEquals(0, linkOpens.get())
+    }
+
+    @Test fun resizeRestoresExactRangeAndRealHandlesOnlySaveOnExplicitCommit() {
+        startReader(fontSize = 32)
+        saveFirstWordHighlight()
+        val before = page.get()
+        val viewport = js("JSON.stringify([innerWidth,innerHeight])")
+        requestResize("saved-highlight", 1)
+        // Restoring a DOM range does not manufacture native handles. One real
+        // tap inside it asks Chromium to reveal them without changing its text.
+        tapText("select-target", 0, 9)
+        awaitVisualFrame()
+        nativeHandleAt(textPoint("select-target", 0, 9, "start")).check(matches(isDisplayed()))
+        nativeHandleAt(textPoint("select-target", 0, 9, "end")).check(matches(isDisplayed()))
+        assertTrue(nativeActionAvailable("Save highlight")); closeNativeOverflow()
+        assertTrue(nativeActionAvailable("Cancel")); closeNativeOverflow()
+        assertTrue(nativeActionAvailable("Copy")); closeNativeOverflow()
+        dragSelectionHandle(textPoint("select-target", 0, 9, "end"), textPoint("select-target", 10, 19, "end"))
+        compose.waitUntil(5_000) { js("window.getSelection().toString().trim()") == "Selection preserves" }
+        assertNull("Handle motion/release cannot persist a resize", resized.get())
+        assertEquals(0, automaticCount.get())
+        assertTrue(nativeActionAvailable("Save highlight"))
+        me.ash.reader.ui.page.home.NativePageDensityCapture.capture(compose,
+            "annotation-resize-selection", "annotation-reader", recordDensity = false,
+            beforeCaptureFrame = ::awaitVisualFrame)
+        closeNativeOverflow()
+        volume(KeyEvent.KEYCODE_VOLUME_DOWN)
+        settle()
+        assertEquals(before, page.get())
+        assertEquals(viewport, js("JSON.stringify([innerWidth,innerHeight])"))
+        clickNativeAction("Save highlight")
+        compose.waitUntil(5_000) { resized.get() != null && !selecting.value }
+        assertEquals("saved-highlight", resized.get()!!.first)
+        assertEquals("Selection preserves", JSONObject(resized.get()!!.second).getString("quote").trim())
+        assertEquals("Selection", JSONObject(created.get()!!).getString("quote"))
+        assertEquals(0, exits.get())
+    }
+
+    @Test fun incomingArticleKeepsRestoredResizeBeforeItsNativeToolbarExists() {
+        startReader()
+        saveFirstWordHighlight()
+        // Do not let the previous creation's pin mask a missing resize-start hook.
+        compose.runOnIdle { assertTrue(contentPresentation.onExplicitSourceChoice { true }) }
+        val generation = js("window._inkreadGeneration")
+        requestResize("saved-highlight", 1)
+        compose.runOnIdle { incomingContent.value = "<p id='replacement-body'>New full article during resize.</p>" }
+        settle()
+        assertTrue(selecting.value)
+        assertEquals("Selection", (js("window.getSelection().toString()") as String).trim())
+        assertEquals(generation, js("window._inkreadGeneration"))
+        assertEquals(false, js("!!document.getElementById('replacement-body')"))
+        assertNull("Content arrival cannot commit a resize", resized.get())
+        pressBack()
+        compose.waitUntil(5_000) { !selecting.value }
+        settle()
+        assertEquals(generation, js("window._inkreadGeneration"))
+        assertNull(resized.get())
+    }
+
+    @Test fun resizeBackBeforeToolbarAndCancelAfterHandleDragNeverSave() {
+        startReader(fontSize = 32)
+        saveFirstWordHighlight()
+        val before = page.get()
+        requestResize("saved-highlight", 1)
+        volume(KeyEvent.KEYCODE_VOLUME_DOWN)
+        settle()
+        assertEquals(before, page.get())
+        pressBack()
+        compose.waitUntil(5_000) { !selecting.value }
+        assertEquals(0, exits.get())
+        assertNull(resized.get())
+        assertEquals(true, js("window.getSelection().isCollapsed"))
+        requestResize("saved-highlight", 2)
+        tapText("select-target", 0, 9)
+        awaitVisualFrame()
+        dragSelectionHandle(textPoint("select-target", 0, 9, "end"), textPoint("select-target", 10, 19, "end"))
+        compose.waitUntil(5_000) { js("window.getSelection().toString().trim()") == "Selection preserves" }
+        clickNativeAction("Cancel")
+        compose.waitUntil(5_000) { !selecting.value }
+        settle()
+        assertNull(resized.get())
+        assertEquals(0, automaticCount.get())
+        assertEquals(before, page.get())
+        assertEquals(0, exits.get())
+    }
+
+    @Test fun resizeCopyPreservesExactClipboardAndDoesNotSaveRevision() {
+        startReader()
+        saveFirstWordHighlight()
+        prepareNativeCopyClipboard("Before resize Copy")
+        requestResize("saved-highlight", 1)
+        tapText("select-target", 0, 9)
+        awaitVisualFrame()
+        clickNativeAction("Copy")
+        compose.waitUntil(5_000) { !selecting.value }
+        assertNativeCopyResult("Selection")
+        assertNull(resized.get())
+        assertEquals(0, automaticCount.get())
+        assertEquals(0, exits.get())
+    }
+
+    @Test fun resizeBackRevokesAlreadyCapturedButHeldSaveResult() {
+        startReader()
+        saveFirstWordHighlight()
+        requestResize("saved-highlight", 1)
+        tapText("select-target", 0, 9)
+        awaitVisualFrame()
+        js("""
+            (function(){var original=InkReadAnnotations.captureResize;
+            InkReadAnnotations.captureResize=function(id,token,g){var captured=original(id,token,g),until=Date.now()+1200;
+            while(Date.now()<until){} return captured;};return true;})()
+        """.trimIndent())
+        clickNativeAction("Save highlight")
+        pressBack()
+        compose.waitUntil(5_000) { !selecting.value }
+        assertEquals(true, js("true")) // Queued behind the held result, not a sleep.
+        compose.waitForIdle()
+        assertNull("Back revokes the immutable resize snapshot before persistence", resized.get())
+        assertEquals(0, automaticCount.get())
+        assertEquals(0, exits.get())
+    }
+
+    @Test fun automaticHighlightRequiresReleasedGestureDefaultsOffAndKeepsNativeUndo() {
+        startReader(fontSize = 32)
+        longPressFirstWord()
+        settle()
+        assertEquals("Auto-highlight is off by default", 0, automaticCount.get())
+        pressBack()
+        compose.waitUntil(5_000) { !selecting.value }
+        compose.runOnIdle { automatic.value = true }
+        settle()
+        val before = page.get()
+        var sawRelease = false
+        longPressFirstWord(beforeRelease = {
+            assertEquals("A held or intermediate selection must not save", 0, automaticCount.get())
+            sawRelease = true
+        })
+        assertTrue(sawRelease)
+        compose.waitUntil(5_000) { automaticCount.get() == 1 }
+        assertEquals("Selection", JSONObject(automaticAnchor.get()!!).getString("quote"))
+        assertTrue(selecting.value)
+        assertTrue(nativeActionAvailable("Undo highlight")); closeNativeOverflow()
+        assertTrue(nativeActionAvailable("Copy")); closeNativeOverflow()
+        assertTrue(nativeActionAvailable("Highlight")); closeNativeOverflow()
+        assertTrue(nativeActionAvailable("Add note")); closeNativeOverflow()
+        assertTrue(nativeActionAvailable("Undo highlight"))
+        me.ash.reader.ui.page.home.NativePageDensityCapture.capture(compose,
+            "annotation-auto-highlight-undo", "annotation-reader", recordDensity = false,
+            beforeCaptureFrame = ::awaitVisualFrame)
+        closeNativeOverflow()
+        dragSelectionHandle(textPoint("select-target", 0, 9, "end"), textPoint("select-target", 10, 19, "end"))
+        compose.waitUntil(5_000) { js("window.getSelection().toString().trim()") == "Selection preserves" }
+        settle()
+        assertEquals("Adjusting the same session cannot save a second highlight", 1, automaticCount.get())
+        assertEquals(before, page.get())
+        clickNativeAction("Undo highlight")
+        compose.waitUntil(5_000) { undoCount.get() == 1 }
+        assertTrue(selecting.value)
+        settle()
+        assertEquals(1, automaticCount.get())
+        assertNull(created.get())
+        pressBack()
+        compose.waitUntil(5_000) { !selecting.value }
+    }
+
+    @Test fun workerViewportInvalidationRejectsHeldAutomaticResultBeforeOwnerCleanup() {
+        startReader()
+        compose.runOnIdle { automatic.value = true }
+        settle()
+        // Hold the real native gesture's complete callback, not its selection.
+        // This isolates the queue ordering without sleeps or browser animation.
+        js("""
+            (function(){window._completeAuto=InkReadAnnotations.completeSelectionGesture;
+            InkReadAnnotations.completeSelectionGesture=function(token,generation){
+                window._heldAuto={token:token,generation:generation,
+                    json:InkReadAnnotations.captureSelection(generation)};return true;};return true;})()
+        """.trimIndent())
+        longPressFirstWord()
+        compose.waitUntil(5_000) { js("!!window._heldAuto") == true }
+        val held = JSONObject(js("JSON.stringify(window._heldAuto)") as String)
+        assertEquals("Selection", JSONObject(held.getString("json")).getString("quote"))
+        assertEquals(0, automaticCount.get())
+        instrumentation.runOnMainSync {
+            val view = reader() as EInkAnnotationWebView
+            val failure = AtomicReference<Throwable?>()
+            val worker = Thread({
+                try { view.invalidateReaderGesture() }
+                catch (error: Throwable) { failure.set(error) }
+            }, "reader-layout-regression")
+            worker.start()
+            worker.join(5_000)
+            assertFalse("Invalidation must not wait for the owner thread", worker.isAlive)
+            failure.get()?.let { throw AssertionError("Off-owner viewport invalidation failed", it) }
+            // The owner queue is still blocked by this same call. Native capture
+            // must already be revoked, rather than waiting for posted JS cleanup.
+            assertFalse(view.acceptAutomaticCapture(held.getString("token")))
+        }
+        js("""
+            (function(){var held=window._heldAuto;
+            Android.onAutoAnnotation(held.generation,held.token,held.json);
+            InkReadAnnotations.completeSelectionGesture=window._completeAuto;return true;})()
+        """.trimIndent())
+        settle()
+        assertEquals("A pre-resize snapshot must never persist after invalidation", 0, automaticCount.get())
+        assertTrue(selecting.value)
+        pressBack()
+        compose.waitUntil(5_000) { !selecting.value }
+        longPressFirstWord()
+        compose.waitUntil(5_000) { automaticCount.get() == 1 }
+        assertEquals("Selection", JSONObject(automaticAnchor.get()!!).getString("quote"))
+    }
+
+    @Test fun controlsOpenAutomaticSaveAndUndoDoNotReflowNativeSelection() {
+        startReader(fontSize = 32)
+        compose.runOnIdle { automatic.value = true }
+        compose.onNodeWithTag("reader_controls_toggle").performClick()
+        awaitDisplayedControl("reader_select_text")
+        settle()
+        compose.runOnIdle { assertFalse("Opening controls is not explicit selection mode", selecting.value) }
+        val viewport = js("JSON.stringify([innerWidth,innerHeight])")
+        val before = page.get()
+        longPressFirstWord(beforeRelease = { assertEquals(0, automaticCount.get()) })
+        compose.waitUntil(5_000) { automaticCount.get() == 1 && undoAvailable.value }
+        settle()
+        assertEquals("Hidden status/Undo rows must not resize the reader after an automatic save",
+            viewport, js("JSON.stringify([innerWidth,innerHeight])"))
+        compose.onNodeWithTag("reader_selection_done").assertIsDisplayed()
+        nativeHandleAt(textPoint("select-target", 0, 9, "start")).check(matches(isDisplayed()))
+        nativeHandleAt(textPoint("select-target", 0, 9, "end")).check(matches(isDisplayed()))
+        dragSelectionHandle(textPoint("select-target", 0, 9, "end"), textPoint("select-target", 10, 19, "end"))
+        compose.waitUntil(5_000) { js("window.getSelection().toString().trim()") == "Selection preserves" }
+        assertEquals(viewport, js("JSON.stringify([innerWidth,innerHeight])"))
+        clickNativeAction("Undo highlight")
+        compose.waitUntil(5_000) { undoCount.get() == 1 }
+        settle()
+        assertEquals("Undo/status refresh must retain the same selection viewport",
+            viewport, js("JSON.stringify([innerWidth,innerHeight])"))
+        assertNativeSelectionRetained("Selection preserves", "controls-open automatic Undo")
+        assertEquals(before, page.get())
+        assertEquals(1, automaticCount.get())
+        compose.onNodeWithTag("reader_selection_done").performClick()
+        compose.waitUntil(5_000) { !selecting.value }
+        awaitDisplayedControl("reader_annotation_status")
+        compose.onNodeWithTag("reader_annotation_status").assertTextEquals("Highlight removed")
+        compose.onNodeWithTag("reader_annotation_undo").assertDoesNotExist()
     }
 
     @Test fun realBrowserCrossParagraphSelectionKeepsDisplayAndRawWhitespace() {

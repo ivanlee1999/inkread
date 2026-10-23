@@ -27,6 +27,96 @@ class AnnotationReaderUiTest {
     @Before fun resetKeys() = VolumeKeyEventBus.resetForTest()
     @After fun releaseKeys() = VolumeKeyEventBus.resetForTest()
 
+    @Test fun sourceGuardReadsSelectionModalAndSaveOwnershipBeforeRecomposition() {
+        val fixture = Fixture()
+        fixture.actions.state.value = AnnotationDocumentState(loading = false, annotations = listOf(annotation()))
+        compose.setContent { fixture.Screen() }
+        awaitReady(fixture)
+        compose.runOnIdle {
+            val guard = fixture.ui.canReplaceDocument
+            assertTrue(guard())
+            fixture.ui.onAnnotationClick("highlight-one")
+            assertEquals("An accepted annotation tap pins immediately", 1, fixture.interactions)
+            assertFalse(guard())
+            fixture.ui.close()
+            assertTrue(guard())
+            fixture.ui.onSelectionModeChange(true)
+            assertFalse("Native selection owns input immediately", guard())
+            fixture.ui.onSelectionModeChange(false)
+            assertTrue(guard())
+            fixture.ui.onCreateAnnotation(ANCHOR, true)
+            assertFalse("An accepted note owns input before its dialog recomposes", guard())
+            fixture.ui.close()
+            assertTrue(guard())
+            fixture.ui.onCreateAnnotation(ANCHOR, false)
+            assertFalse("An accepted save owns input before its busy state recomposes", guard())
+            fixture.actions.pending!!.invoke(null)
+            assertTrue(guard())
+        }
+    }
+
+    @Test fun interactionHookIgnoresRejectedAndRevokedCallbacksButPinsAcceptedRequests() {
+        val fixture = Fixture()
+        compose.setContent { fixture.Screen() }
+        awaitReady(fixture)
+        lateinit var previous: AnnotationReaderUi
+        compose.runOnIdle {
+            fixture.ui.onCreateAnnotation("{}", false)
+            fixture.ui.onAnnotationClick("unknown-highlight")
+            assertEquals(0, fixture.interactions)
+            fixture.ui.onCreateAnnotation(ANCHOR, false)
+            assertEquals(1, fixture.interactions)
+            fixture.ui.onCreateAnnotation(ANCHOR, false) // Rejected while this manual save is busy.
+            assertEquals(1, fixture.interactions)
+            fixture.actions.pending!!.invoke(null)
+            fixture.ui.resize(annotation())
+            assertEquals("Pin synchronously at resize request, before the reader effect", 2, fixture.interactions)
+            assertFalse("A queued resize owns input before the reader recomposes", fixture.ui.canReplaceDocument())
+            fixture.ui.onResizeResult("unrelated-highlight", false)
+            assertFalse("Unrelated results cannot release a queued resize", fixture.ui.canReplaceDocument())
+            fixture.ui.onResizeResult("highlight-one", false)
+            assertTrue("A failed matching resize releases pending ownership", fixture.ui.canReplaceDocument())
+            fixture.ui.resize(annotation())
+            assertFalse(fixture.ui.canReplaceDocument())
+            fixture.ui.onSelectionModeChange(true)
+            assertFalse("The native selection now owns the acknowledged resize", fixture.ui.canReplaceDocument())
+            fixture.ui.onSelectionModeChange(false)
+            assertTrue("Native cancellation must not permanently disable Source", fixture.ui.canReplaceDocument())
+            previous = fixture.ui
+            fixture.source = null
+            fixture.revision = "unavailable"
+        }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            previous.onCreateAnnotation(ANCHOR, true)
+            previous.resize(annotation())
+            assertEquals(3, fixture.interactions)
+            assertFalse("An obsolete document cannot authorize a source change", previous.canReplaceDocument())
+            assertFalse(fixture.ui.available)
+            assertTrue("Annotation availability is not required for ordinary source choices", fixture.ui.canReplaceDocument())
+        }
+    }
+
+    @Test fun automaticSavePinsImmediatelyAndBlocksSourceUntilItSettles() {
+        val fixture = Fixture()
+        fixture.actions.autoHighlight.value = true
+        compose.setContent { fixture.Screen() }
+        awaitReady(fixture)
+        compose.waitUntil(5_000) { fixture.ui.autoHighlightEnabled }
+        compose.runOnIdle {
+            val guard = fixture.ui.canReplaceDocument
+            fixture.ui.onAutoCreateAnnotation(ANCHOR)
+            assertEquals(1, fixture.interactions)
+            assertFalse(guard())
+            fixture.ui.onAutoCreateAnnotation(ANCHOR)
+            assertEquals("Rejected duplicate saves do not acquire new ownership", 1, fixture.interactions)
+            fixture.actions.automaticPending!!("auto-one", null)
+            assertTrue(guard())
+            fixture.ui.onAutoCreateAnnotation(ANCHOR)
+            assertEquals("An already accepted anchor is not saved twice", 1, fixture.interactions)
+        }
+    }
+
     @Test fun noteBackClosesModalFirstAndNeverCreatesOrMovesReader() {
         val fixture = Fixture()
         compose.setContent { fixture.Screen() }
@@ -137,26 +227,179 @@ class AnnotationReaderUiTest {
         compose.runOnIdle { assertEquals(listOf("highlight-one"), fixture.actions.removed) }
     }
 
+    @Test fun tappingHighlightOpensItsActionsAndResizeKeepsImmutableIdentity() {
+        val fixture = Fixture()
+        fixture.actions.state.value = AnnotationDocumentState(listOf(annotation()), loading = false)
+        compose.setContent { fixture.Screen() }
+        awaitReady(fixture)
+        compose.runOnIdle { fixture.ui.onAnnotationClick("highlight-one") }
+        compose.onNodeWithTag("annotation_detail").assertIsDisplayed()
+        compose.onNodeWithTag("annotation_resize_highlight-one").performScrollTo().performClick()
+        compose.onNodeWithTag("annotation_detail").assertDoesNotExist()
+        compose.runOnIdle {
+            assertEquals("highlight-one", fixture.ui.resizeRequest?.first)
+            fixture.ui.onResizeSelection("wrong-id", ANCHOR)
+            assertTrue(fixture.actions.resized.isEmpty())
+            fixture.ui.onResizeSelection("highlight-one", ANCHOR)
+            assertEquals(listOf("highlight-one"), fixture.actions.resized)
+        }
+    }
+
+    @Test fun automaticHighlightDefaultsOffAndUndoIsLocalExplicitAction() {
+        val fixture = Fixture()
+        compose.setContent { fixture.Screen() }
+        awaitReady(fixture)
+        compose.runOnIdle {
+            fixture.ui.onAutoCreateAnnotation(ANCHOR)
+            assertTrue(fixture.actions.automatic.isEmpty())
+            fixture.actions.autoHighlight.value = true
+        }
+        compose.waitUntil { fixture.ui.autoHighlightEnabled }
+        compose.runOnIdle { fixture.ui.onAutoCreateAnnotation(ANCHOR) }
+        compose.runOnIdle {
+            assertEquals(1, fixture.actions.automatic.size)
+            fixture.actions.automaticPending!!("auto-one", null)
+        }
+        compose.waitUntil { fixture.ui.undoAutoHighlight != null }
+        compose.runOnIdle { fixture.ui.undoAutoHighlight!!.invoke() }
+        compose.runOnIdle {
+            assertEquals(listOf("auto-one"), fixture.actions.removed)
+            fixture.actions.pending!!.invoke(null)
+        }
+        compose.waitUntil { fixture.ui.undoAutoHighlight == null }
+        compose.runOnIdle { assertTrue(fixture.ui.status!!.contains("Readwise copy")) }
+    }
+
+    @Test fun automaticThenAddNoteEditsSameIdEvenBeforeObservationArrives() {
+        val fixture = Fixture()
+        fixture.actions.autoHighlight.value = true
+        compose.setContent { fixture.Screen() }
+        awaitReady(fixture)
+        compose.waitUntil { fixture.ui.autoHighlightEnabled }
+        compose.runOnIdle { fixture.ui.onAutoCreateAnnotation(ANCHOR) }
+        compose.runOnIdle { fixture.actions.automaticPending!!("auto-one", null) }
+        compose.waitUntil { fixture.ui.undoAutoHighlight != null }
+        compose.runOnIdle { fixture.ui.onCreateAnnotation(ANCHOR, true) }
+        compose.onNodeWithTag("annotation_note_input").performTextInput("One note, not a second highlight")
+        compose.onNodeWithTag("annotation_note_save").performScrollTo().performClick()
+        compose.runOnIdle {
+            assertEquals(listOf("auto-one"), fixture.actions.edited)
+            assertTrue(fixture.actions.created.isEmpty())
+            assertEquals(1, fixture.actions.automatic.size)
+        }
+    }
+
+    @Test fun staleAutomaticCallbackCannotExposeUndoInAnotherArticle() {
+        val fixture = Fixture()
+        fixture.actions.autoHighlight.value = true
+        compose.setContent { fixture.Screen() }
+        awaitReady(fixture)
+        compose.waitUntil { fixture.ui.autoHighlightEnabled }
+        compose.runOnIdle { fixture.ui.onAutoCreateAnnotation(ANCHOR) }
+        compose.runOnIdle { fixture.source = fixture.source!!.copy(sourceId = "next"); fixture.revision = "next" }
+        compose.waitForIdle()
+        compose.runOnIdle { fixture.actions.automaticPending!!("old-auto", null) }
+        compose.runOnIdle { assertNull(fixture.ui.undoAutoHighlight) }
+    }
+
+    @Test fun requestedNotebookJumpWaitsForAnnotationsAndRunsOnlyOnce() {
+        val fixture = Fixture()
+        fixture.requested = "highlight-one"
+        fixture.actions.state.value = AnnotationDocumentState(loading = true)
+        compose.setContent { fixture.Screen() }
+        compose.runOnIdle { assertNull(fixture.ui.jumpRequest) }
+        compose.runOnIdle { fixture.actions.state.value = AnnotationDocumentState(listOf(annotation()), loading = false) }
+        compose.waitUntil { fixture.ui.jumpRequest != null }
+        val first = compose.runOnIdle { fixture.ui.jumpRequest }
+        compose.runOnIdle { fixture.actions.state.value = AnnotationDocumentState(listOf(annotation().copy(note = "updated")), loading = false) }
+        compose.waitForIdle()
+        compose.runOnIdle { assertEquals(first, fixture.ui.jumpRequest) }
+    }
+
+    @Test fun readerStatusFollowsExistingExportStateWithoutNewSyncMechanism() {
+        val fixture = Fixture()
+        fixture.actions.state.value = AnnotationDocumentState(listOf(annotation().copy(exportState = AnnotationExportState.QUEUED)), loading = false)
+        compose.setContent { fixture.Screen() }
+        awaitReady(fixture)
+        compose.runOnIdle { assertTrue(fixture.ui.status!!.contains("queued")) }
+        compose.runOnIdle { fixture.actions.state.value = AnnotationDocumentState(listOf(annotation().copy(exportState = AnnotationExportState.EXPORTED)), loading = false) }
+        compose.waitUntil { fixture.ui.status?.contains("exported") == true }
+    }
+
+    @Test fun repeatedQuoteAtAnotherOffsetIsNotTheAutomaticHighlight() {
+        val fixture = Fixture()
+        fixture.actions.autoHighlight.value = true
+        compose.setContent { fixture.Screen() }
+        awaitReady(fixture)
+        compose.waitUntil { fixture.ui.autoHighlightEnabled }
+        compose.runOnIdle { fixture.ui.onAutoCreateAnnotation(ANCHOR) }
+        compose.runOnIdle { fixture.actions.automaticPending!!("auto-one", null) }
+        compose.waitUntil { fixture.ui.undoAutoHighlight != null }
+        compose.runOnIdle { fixture.ui.onCreateAnnotation(ANCHOR.replace("\"start\":3", "\"start\":103").replace("\"end\":22", "\"end\":122"), false) }
+        compose.runOnIdle { assertEquals(1, fixture.actions.created.size) }
+    }
+
+    @Test fun successfulLatestExportDoesNotHideAnOlderFailure() {
+        val first = annotation().copy(exportState = AnnotationExportState.FAILED)
+        val second = annotation().copy(id = "second", updatedAt = 100, exportState = AnnotationExportState.EXPORTED)
+        assertTrue(annotationReaderStatus(listOf(first, second))!!.contains("1 failed"))
+        assertTrue(annotationReaderStatus(listOf(first, second))!!.contains("1 exported"))
+    }
+
+    @Test fun addNoteDuringAutomaticCommitWaitsAndEditsAcceptedId() {
+        val fixture = Fixture()
+        fixture.actions.autoHighlight.value = true
+        compose.setContent { fixture.Screen() }
+        awaitReady(fixture)
+        compose.waitUntil { fixture.ui.autoHighlightEnabled }
+        compose.runOnIdle { fixture.ui.onAutoCreateAnnotation(ANCHOR) }
+        compose.runOnIdle { fixture.ui.onCreateAnnotation(ANCHOR, true) }
+        compose.onNodeWithTag("annotation_note_editor").assertDoesNotExist()
+        compose.runOnIdle {
+            val guard = fixture.ui.canReplaceDocument
+            fixture.actions.automaticPending!!("auto-delayed", null)
+            assertFalse("The accepted note handoff owns input before its Compose effect runs", guard())
+        }
+        compose.waitUntil { fixture.ui.dialog is AnnotationDialogState.Note }
+        compose.onNodeWithTag("annotation_note_input").performTextInput("Keep this explicit action")
+        compose.onNodeWithTag("annotation_note_save").performScrollTo().performClick()
+        compose.runOnIdle {
+            assertEquals(listOf("auto-delayed"), fixture.actions.edited)
+            assertEquals(1, fixture.actions.automatic.size)
+            assertTrue(fixture.actions.created.isEmpty())
+        }
+    }
+
     private fun awaitReady(fixture: Fixture) { compose.waitUntil(5_000) { fixture.ui.available } }
 
     private class Fixture {
         var source by mutableStateOf<AnnotationSource?>(AnnotationSource(AnnotationSourceKind.RSS, "article-one", 7, "https://example.org/article", "Article"))
         var revision by mutableStateOf("first")
+        var requested by mutableStateOf<String?>(null)
         val actions = Actions()
         val readerOwner = Any()
         var exits = 0
+        var interactions = 0
         lateinit var ui: AnnotationReaderUi
         @Composable fun Screen() {
             MaterialTheme {
                 EInkReaderVolumeReservation(true, readerOwner)
                 BackHandler { exits += 1 }
-                ui = rememberAnnotationReaderUi(source, revision, actions)
+                ui = rememberAnnotationReaderUi(source, revision, actions, requested,
+                    onDocumentInteractionStarted = { interactions += 1 })
                 AnnotationReaderDialogs(ui)
             }
         }
     }
 
     private class Actions : AnnotationReaderActions {
+        override val autoHighlight = MutableStateFlow(false)
+        val automatic = mutableListOf<AnnotationDraft>()
+        val resized = mutableListOf<String>()
+        val edited = mutableListOf<String>()
+        var automaticPending: ((String?, String?) -> Unit)? = null
+        override fun createAutomatic(draft: AnnotationDraft, onResult: (String?, String?) -> Unit) { automatic += draft; automaticPending = onResult }
+        override fun updateSelection(id: String, quote: String, anchorJson: String, onResult: (String?) -> Unit) { resized += id; pending = onResult }
         val state = MutableStateFlow(AnnotationDocumentState(loading = false))
         val created = mutableListOf<AnnotationDraft>()
         val removed = mutableListOf<String>()
@@ -164,7 +407,7 @@ class AnnotationReaderUiTest {
         override fun observe(source: AnnotationSource?): Flow<AnnotationDocumentState> =
             if (source == null) flowOf(AnnotationDocumentState(loading = false)) else state
         override fun create(draft: AnnotationDraft, onResult: (String?) -> Unit) { created += draft; pending = onResult }
-        override fun updateNote(id: String, note: String, onResult: (String?) -> Unit) { pending = onResult }
+        override fun updateNote(id: String, note: String, onResult: (String?) -> Unit) { edited += id; pending = onResult }
         override fun remove(id: String, onResult: (String?) -> Unit) { removed += id; pending = onResult }
         override fun retry(id: String, onResult: (String?) -> Unit) { pending = onResult }
     }

@@ -22,6 +22,10 @@ import androidx.navigation3.ui.LocalNavAnimatedContentScope
 import androidx.navigation3.ui.NavDisplay
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import me.ash.reader.domain.annotation.AnnotationSourceKind
+import me.ash.reader.ui.page.annotation.AnnotationNotebookPage
+import me.ash.reader.ui.page.annotation.AnnotationNotebookReadingPage
+import me.ash.reader.ui.page.annotation.AnnotationNotebookSavedReadingPage
 import me.ash.reader.ui.page.adaptive.rememberArticleListNavigator
 import me.ash.reader.ui.page.adaptive.ArticleListReaderPage
 import me.ash.reader.ui.page.adaptive.ArticleListReaderViewModel
@@ -122,7 +126,27 @@ fun AppEntry(
                             onBack = onBack,
                             onOpen = { backStack.add(Route.SavedReading(it)) },
                             onCapture = { captureViewModel.enqueue(it, mode = LinkCaptureMode.SAVE) },
+                            onHighlights = { showRetainedDestination(backStack, Route.Highlights) },
                         )
+                    }
+                    Route.Highlights -> NavEntry(key) {
+                        AnnotationNotebookPage(onBack = onBack, onOpen = { annotation ->
+                            // Ignore any late lookup from a notebook that is no longer on top.
+                            if (backStack.lastOrNull() == key) when (annotation.source.kind) {
+                                AnnotationSourceKind.SAVED -> backStack.add(Route.SavedAnnotationReading(annotation.id, annotation.source.sourceId))
+                                AnnotationSourceKind.RSS -> annotation.source.accountId?.let { accountId ->
+                                    backStack.add(Route.AnnotationReading(annotation.id, annotation.source.sourceId, accountId))
+                                }
+                            }
+                        })
+                    }
+                    is Route.AnnotationReading -> NavEntry(key) {
+                        AnnotationNotebookReadingPage(annotationId = key.annotationId, sourceId = key.sourceId,
+                            accountId = key.accountId, onBack = onBack,
+                            onNavigateToStylePage = { backStack.add(Route.ReadingPageStyle) })
+                    }
+                    is Route.SavedAnnotationReading -> NavEntry(key) {
+                        AnnotationNotebookSavedReadingPage(annotationId = key.annotationId, itemId = key.itemId, onBack = onBack)
                     }
                     is Route.SavedReading -> NavEntry(key) {
                         SavedLibraryReadingPage(itemId = key.itemId, onBack = onBack)

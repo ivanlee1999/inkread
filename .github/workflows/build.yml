@@ -85,12 +85,14 @@ jobs:
           cat > release-notes.md <<EOF_NOTES
           Built by GitHub Actions from commit ${{ github.sha }}.
 
-          InkRead $VERSION fixes text selection in the paginated E-Ink reader for Saved and RSS articles. Long-press article text directly, adjust Android's native selection handles, then choose Copy, Highlight, or Add note. Opening a separate Select text mode is no longer required. Selection itself does not create a highlight or send anything to Readwise.
+          InkRead $VERSION improves article extraction without replacing the current Readability4J engine. Usable feed/server content is retained when extraction fails or is clearly less complete. The Source control offers feed/server content, the available full article, or an explicit fresh fetch. A failed or worse refresh does not destroy a useful offline extraction.
 
-          Short taps and horizontal article swipes retain their existing navigation behavior outside selection. Active selection owns touch input and blocks volume-key paging; Back or an outside tap dismisses selection before navigation resumes. Link touches do not become accidental page turns. Selection does not add a content-covering Done bar or resize the article viewport.
+          Full-text HTML now uses consistent bounded character decoding for RSS and Saved articles, including Chinese pages with HTML charset metadata. Relative images and links use the final redirected page URL and effective HTML base, preserving non-default ports and parent-directory references. Existing absolute proxy URLs are kept unchanged.
 
-          Existing local Saved articles, annotations, live formatting and reading positions remain supported. Optional one-way Readwise export is unchanged: the owner connects in Settings > Annotations & Readwise; explicit new highlights and notes can then be exported to the Readwise highlights library, not Readwise Reader document/library sync. No real account credentials or private exports were used in validation. Deleting a local annotation leaves an already-exported Readwise copy.
+          Saved articles choose useful responsive image sizes and try a bounded set of alternatives when an image is unavailable or too large. Existing image/storage limits remain in force; text survives partial image failure, retained images remain usable offline, and retries skip assets already stored successfully.
 
-          This correction targets the paginated E-Ink reader. Legacy scrolling-reader annotations are not included. Uses the existing application ID and signing identity, with no database migration. Native Android validation is required before publication; physical BOOX behavior remains unverified.
+          Source changes do not replace the visible body after selection, annotation capture/editing or formatting begins during a background fetch. Download/cache work can finish, and the Source dialog explains that new content is ready for a later explicit choice. Status-only refresh notices do not reset annotation drafts. The existing annotation notebook, highlight editing and separately opt-in Readwise export remain supported.
+
+          Uses the existing application ID, signing identity and database schemas. This app release does not change FreshRSS server configuration, bypass login/paywalls or change the sanitizer. Native Android validation is required before publication; physical BOOX behavior remains unverified. No private article content, credentials or real Readwise exports are used in validation.
           EOF_NOTES
           gh release create "$TAG" --target "${{ github.sha }}" --title "InkRead $VERSION ($COMMIT)" --notes-file release-notes.md ./apk/*.apk ./apk/*.sha256

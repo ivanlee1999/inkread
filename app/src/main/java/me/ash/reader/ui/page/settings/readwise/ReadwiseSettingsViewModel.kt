@@ -1,5 +1,9 @@
 package me.ash.reader.ui.page.settings.readwise
 
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
+import me.ash.reader.infrastructure.preference.AnnotationPreferences
+import me.ash.reader.ui.ext.dataStore
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -31,10 +35,18 @@ data class ReadwiseQueueSummary(
 
 @HiltViewModel
 class ReadwiseSettingsViewModel @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val manager: ReadwiseConnectionManager,
     repository: AnnotationRepository,
     @ApplicationScope private val applicationScope: CoroutineScope,
 ) : ViewModel() {
+    val autoHighlight = AnnotationPreferences.observeAutoHighlight(context.dataStore)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+    fun setAutoHighlight(enabled: Boolean) = action {
+        AnnotationPreferences.setAutoHighlight(context.dataStore, enabled)
+        mutableMessage.value = if (enabled) "Automatic highlights are on. Selecting text saves locally; Undo is available in the selection menu. Readwise export remains a separate choice."
+            else "Automatic highlights are off. Select text, then choose Highlight or Add note."
+    }
     val connection = manager.state
     val queue = repository.observeAll().map { annotations ->
         val counts = annotations.groupingBy { it.exportState }.eachCount()

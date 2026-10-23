@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
@@ -69,6 +70,8 @@ fun EInkPaginationBar(
     onLibraryActions: (() -> Unit)? = null,
     onSelectText: (() -> Unit)? = null,
     onAnnotationsClick: (() -> Unit)? = null,
+    annotationStatus: String? = null,
+    onUndoAutoHighlight: (() -> Unit)? = null,
 ) {
     // Bottom bar: page controls, font size, article nav, progress
     Column(
@@ -182,6 +185,14 @@ fun EInkPaginationBar(
                 }
             }
         }
+        if (annotationStatus != null) Text(annotationStatus,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).testTag("reader_annotation_status"),
+            color = Color.Black, style = MaterialTheme.typography.bodySmall)
+        if (onUndoAutoHighlight != null) Text("Undo highlight",
+            modifier = Modifier.fillMaxWidth().clickable(interactionSource = remember { MutableInteractionSource() },
+                indication = null, role = Role.Button, onClick = onUndoAutoHighlight)
+                .padding(horizontal = 12.dp, vertical = 14.dp).testTag("reader_annotation_undo"),
+            color = Color.Black)
         if (lastSyncTime != null && lastSyncTime > 0L) {
             val elapsed = (System.currentTimeMillis() - lastSyncTime) / 1000
             val timeText = when {

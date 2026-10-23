@@ -90,31 +90,9 @@ jobs:
           done
           if [ "$offline" -ne 1 ]; then echo 'Annotation fixtures require an offline AVD' >&2; exit 1; fi
           git rev-parse HEAD > article-annotations-evidence/source-sha.txt
-          if [ "${{ matrix.name }}" = phone ]; then
-            # Reproduce the specific released touch-overlay defect with the same
-            # real long-press test. This expected failure is isolated from all
-            # corrected-head matrix results and must match the exact diagnostic.
-            baseline=article-annotations-evidence/released-reader-baseline
-            mkdir -p "$baseline"
-            source=app/src/main/java/me/ash/reader/ui/page/home/reading/EInkPaginatedContent.kt
-            cp "$source" "$RUNNER_TEMP/current-eink-reader.kt"
-            trap 'cp "$RUNNER_TEMP/current-eink-reader.kt" "$source"' EXIT
-            git fetch --no-tags --depth=1 origin a09e07e185b635908d433b98602c2ac0a78fb804
-            git show a09e07e185b635908d433b98602c2ac0a78fb804:"$source" > "$source"
-            sha256sum "$source" > "$baseline/released-reader-source.sha256"
-            baseline_exit=0
-            ./gradlew --no-daemon --max-workers=2 connectedGithubDebugAndroidTest \
-              -Pandroid.testInstrumentationRunnerArguments.class=me.ash.reader.ui.page.home.reading.EInkReaderAnnotationUiTest#defaultLongPressShowsNativeAnnotationToolbar \
-              > "$baseline/gradle.log" 2>&1 || baseline_exit=$?
-            if [ -d app/build/outputs/androidTest-results ]; then
-              cp -R app/build/outputs/androidTest-results "$baseline/"
-            fi
-            cp "$RUNNER_TEMP/current-eink-reader.kt" "$source"
-            trap - EXIT
-            git diff --exit-code -- "$source"
-            python3 .github/scripts/verify-default-selection-baseline.py \
-              "$baseline/androidTest-results" "$baseline_exit" > "$baseline/expected-failure.json"
-          fi
+          # The released0.16.16 default-selection defect was reproduced and verified in
+          # run39904058620. Do not swap an old single source file into the newer public
+          # reader API: keep the same real long-press regression in this exact-head matrix.
           adb shell dumpsys webviewupdate > article-annotations-evidence/webview.txt
           adb shell wm size > article-annotations-evidence/size.txt
           adb shell wm density > article-annotations-evidence/density.txt
@@ -124,7 +102,7 @@ jobs:
           for scale in 1.0 1.6; do
             adb shell settings put system font_scale "$scale"
             export ANNOTATION_FONT_SCALE="$scale"
-            classes=me.ash.reader.ui.page.home.reading.EInkReaderAnnotationUiTest,me.ash.reader.ui.page.annotation.AnnotationReaderUiTest,me.ash.reader.ui.page.settings.readwise.ReadwiseSettingsUiTest
+            classes=me.ash.reader.ui.page.home.reading.EInkReaderAnnotationUiTest,me.ash.reader.ui.page.annotation.AnnotationReaderUiTest,me.ash.reader.ui.page.annotation.AnnotationNotebookUiTest,me.ash.reader.ui.page.settings.readwise.ReadwiseSettingsUiTest
             if [ "${{ matrix.name }}" = phone ] && [ "$scale" = 1.0 ]; then
               classes="$classes,me.ash.reader.infrastructure.annotation.AnnotationRoomPersistenceTest,me.ash.reader.infrastructure.readwise.ReadwiseCredentialStoreTest"
             fi
@@ -145,9 +123,9 @@ jobs:
           for path in reports:
               suite = ET.parse(path).getroot()
               for key in totals: totals[key] += int(suite.get(key, 0))
-          expected = 25 if "${{ matrix.name }}" == "phone" and os.environ["ANNOTATION_FONT_SCALE"] == "1.0" else 19
+          expected = 58 if "${{ matrix.name }}" == "phone" and os.environ["ANNOTATION_FONT_SCALE"] == "1.0" else 52
           assert totals == dict(tests=expected, failures=0, errors=0, skipped=0), totals
-          for name in ("native-selection", "native-adjusted-selection", "rendered-highlight", "note-editor", "readwise-settings"):
+          for name in ("native-selection", "native-adjusted-selection", "rendered-highlight", "note-editor", "readwise-settings", "notebook", "resize-selection", "auto-highlight-undo"):
               images = list(root.rglob(f"newspaper-annotation-{name}-*.png"))
               assert len(images) == 1, f"Missing/duplicate native annotation capture: {name}"
               data = images[0].read_bytes()

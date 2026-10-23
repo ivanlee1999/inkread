@@ -47,13 +47,15 @@ import me.ash.reader.ui.page.annotation.AnnotationStatus
 @Composable
 fun ReadwiseSettingsPage(onBack: () -> Unit, viewModel: ReadwiseSettingsViewModel = hiltViewModel()) {
     val connection by viewModel.connection.collectAsState()
+    val autoHighlight by viewModel.autoHighlight.collectAsState()
     val queue by viewModel.queue.collectAsState()
     val message by viewModel.message.collectAsState()
     val working by viewModel.working.collectAsState()
     val context = LocalContext.current
     ReadwiseSettingsContent(connection, queue, message, working, onBack,
         onOpenTokenPage = { context.openURL("https://readwise.io/access_token", OpenLinkPreference.AutoPreferDefaultBrowser) },
-        onConnect = viewModel::connect, onExportEnabled = viewModel::setExportEnabled, onDisconnect = viewModel::disconnect)
+        onConnect = viewModel::connect, onExportEnabled = viewModel::setExportEnabled, onDisconnect = viewModel::disconnect,
+        autoHighlight = autoHighlight, onAutoHighlight = viewModel::setAutoHighlight)
 }
 
 /** Native token entry only. Tests can use this seam without a network or credential store. */
@@ -68,6 +70,8 @@ internal fun ReadwiseSettingsContent(
     onConnect: (String, Boolean) -> Unit,
     onExportEnabled: (Boolean) -> Unit,
     onDisconnect: () -> Unit,
+    autoHighlight: Boolean = false,
+    onAutoHighlight: (Boolean) -> Unit = {},
 ) {
     var token by remember { mutableStateOf("") }
     var autoExport by remember { mutableStateOf(false) }
@@ -80,6 +84,12 @@ internal fun ReadwiseSettingsContent(
         Text("Annotations & Readwise", Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Text("Highlights and notes are stored on your device first and work offline without a Readwise account. Removing an RSS or Saved article does not delete its annotations.")
         Text("Available in Saved articles and the e-ink RSS reader. Annotation selection is not available in the legacy RSS scrolling reader.")
+        Text("Automatically highlight selected text: ${if (autoHighlight) "On" else "Off"}",
+            Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                .toggleable(value = autoHighlight, enabled = !busy, role = Role.Checkbox,
+                    interactionSource = remember { MutableInteractionSource() }, indication = null, onValueChange = onAutoHighlight)
+                .padding(vertical = 12.dp).testTag("annotation_auto_highlight"))
+        Text("Off by default. When enabled, a completed text selection saves one local highlight. Adjusting its handles does not create more highlights. Use Undo highlight in the selection menu or Annotations list. Automatic saves wait briefly before optional export; Undo deletes locally and cannot recall a Readwise copy already sent.")
         HorizontalDivider()
         AnnotationStatus(when {
             busy -> "Updating Readwise connection…"

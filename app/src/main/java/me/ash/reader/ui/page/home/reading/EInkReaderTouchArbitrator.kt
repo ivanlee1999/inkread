@@ -6,6 +6,7 @@ import kotlin.math.abs
  * A bounded recognizer, not a replacement for WebView's text selection. DOWN and
  * undecided motion belong to WebView. Only a pre-long-press drag claims/cancels
  * that stream; a held finger can never become a page tap on release.
+ * Synchronize the bounded state only: layout may revoke it off the UI thread.
  */
 internal class EInkReaderTouchArbitrator(
     private val touchSlop: Float,
@@ -29,9 +30,9 @@ internal class EInkReaderTouchArbitrator(
     private var width = 0f
     private var height = 0f
 
-    val permitsNativeSelection: Boolean get() = !cancelledNative
+    val permitsNativeSelection: Boolean @Synchronized get() = !cancelledNative
 
-    fun down(x: Float, y: Float, time: Long, width: Float, height: Float,
+    @Synchronized fun down(x: Float, y: Float, time: Long, width: Float, height: Float,
              navigationEnabled: Boolean, selectionActive: Boolean, leftEdge: Float, rightEdge: Float): Result {
         active = true
         downX = x; downY = y; downTime = time
@@ -47,12 +48,12 @@ internal class EInkReaderTouchArbitrator(
     }
 
     /** ActionMode may start before Compose observes its new selection state. */
-    fun claimSelection() {
+    @Synchronized fun claimSelection() {
         selectionClaimed = true
         navigationAllowed = false
     }
 
-    fun cancel(): Result {
+    @Synchronized fun cancel(): Result {
         active = false
         navigationAllowed = false
         horizontal = false
@@ -61,7 +62,7 @@ internal class EInkReaderTouchArbitrator(
         return Result(dispatch)
     }
 
-    fun move(x: Float, y: Float, time: Long): Result {
+    @Synchronized fun move(x: Float, y: Float, time: Long): Result {
         if (!active) return Result(if (cancelledNative) Dispatch.CONSUME else Dispatch.WEBVIEW)
         val dx = x - downX
         val dy = y - downY
@@ -87,7 +88,7 @@ internal class EInkReaderTouchArbitrator(
         return Result(if (cancelledNative) Dispatch.CONSUME else Dispatch.WEBVIEW)
     }
 
-    fun up(x: Float, y: Float, time: Long): Result {
+    @Synchronized fun up(x: Float, y: Float, time: Long): Result {
         if (!active) return Result(if (cancelledNative) Dispatch.CONSUME else Dispatch.WEBVIEW)
         val motion = move(x, y, time)
         active = false

@@ -40,6 +40,7 @@ import me.ash.reader.domain.model.article.ArticleFlowItem
 import me.ash.reader.domain.model.article.ArticleWithFeed
 import me.ash.reader.domain.model.feed.Feed
 import me.ash.reader.domain.model.general.MarkAsReadConditions
+import me.ash.reader.domain.service.AccountService
 import me.ash.reader.domain.service.GoogleReaderRssService
 import me.ash.reader.domain.service.LocalRssService
 import me.ash.reader.domain.service.RssService
@@ -63,6 +64,7 @@ class ArticleListReaderViewModel
 @Inject
 constructor(
     private val rssService: RssService,
+    private val accountService: AccountService,
     @IODispatcher private val ioDispatcher: CoroutineDispatcher,
     @ApplicationScope private val applicationScope: CoroutineScope,
     val diffMapHolder: DiffMapHolder,
@@ -323,7 +325,7 @@ constructor(
             })
     }
 
-    fun initData(articleId: String, listIndex: Int? = null) {
+    fun initData(articleId: String, listIndex: Int? = null, expectedAccountId: Int? = null) {
         articleLoadJob?.cancel()
         fullContentJob?.cancel()
         // Claim the visible reader immediately, including a suspended database lookup.
@@ -331,6 +333,10 @@ constructor(
         _readingUiState.value = ReadingUiState()
         _readerState.value = ReaderState(articleId = articleId)
         articleLoadJob = viewModelScope.launch {
+            if (expectedAccountId != null && accountService.currentAccountIdFlow.value != expectedAccountId) {
+                _readerState.update { it.copy(content = ReaderState.Error("Switch to this article's original RSS account to open its highlight.")) }
+                return@launch
+            }
             val snapshotList = articleListUseCase.itemSnapshotList
             val pagerIdentity = articleListUseCase.pagerFlow.value.pager
             readerArticleSequence.update(pagerIdentity, snapshotList.filterIsInstance<ArticleFlowItem.Article>().map { it.articleWithFeed })
@@ -368,6 +374,11 @@ constructor(
                 return@launch
             }
 
+            if (expectedAccountId != null && (item.article.accountId != expectedAccountId ||
+                    accountService.currentAccountIdFlow.value != expectedAccountId)) {
+                _readerState.update { it.copy(content = ReaderState.Error("This highlight belongs to a different RSS account.")) }
+                return@launch
+            }
             if (diffMapHolder.checkIfUnread(item)) {
                 diffMapHolder.updateDiff(item, isUnread = false)
             }

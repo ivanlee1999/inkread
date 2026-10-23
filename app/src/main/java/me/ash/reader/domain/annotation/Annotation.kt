@@ -18,7 +18,7 @@ data class AnnotationSource(
 data class AnnotationDraft(
     val source: AnnotationSource,
     val quote: String,
-    /** Immutable selection JSON, including exact quote, context and UTF-16 offsets. */
+    /** Exact selection JSON, including quote, context and UTF-16 offsets. */
     val anchorJson: String,
     val note: String = "",
 )
@@ -52,9 +52,20 @@ data class Annotation(
 interface AnnotationRepository {
     fun observeAll(): Flow<List<Annotation>>
     fun observeDocument(source: AnnotationSource): Flow<List<Annotation>>
-    suspend fun create(draft: AnnotationDraft): String
+    /**
+     * Saves immediately on this device. A bounded export delay gives automatic highlights time to
+     * be undone before their first claim; it never opts a local-only annotation into export.
+     * The persisted deadline starts at save time, not when the caller displays an Undo control.
+     */
+    suspend fun create(draft: AnnotationDraft, exportDelayMillis: Long = 0): String
     suspend fun updateNote(id: String, note: String)
+    /** Resize the existing highlight without replacing its ID, note, source, or export identity. */
+    suspend fun updateSelection(id: String, quote: String, anchorJson: String)
     suspend fun remove(id: String)
+
+    companion object {
+        const val AUTO_HIGHLIGHT_EXPORT_DELAY_MILLIS = 10_000L
+    }
 }
 
 /** A connection ID is an opaque local identifier, NOT a verified Readwise account identity. */

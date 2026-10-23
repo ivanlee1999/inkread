@@ -20,6 +20,33 @@ internal object AnnotationPayloadJson {
         }
     }
 
+    /** A resize must be a fresh, coherent selection from the same captured article body. */
+    fun validateReplacementAnchor(anchorJson: String, quote: String, previousAnchorJson: String) {
+        require(location(anchorJson, quote) != null) { "Highlight resize requires a matching v1 selection anchor" }
+        val anchor = Json.parseToJsonElement(anchorJson).jsonObject
+        val previous = Json.parseToJsonElement(previousAnchorJson).jsonObject
+        val previousFingerprint = (previous["documentFingerprint"] as? JsonPrimitive)
+            ?.takeIf { it.isString }?.content
+        // Older saved anchors may not have a body fingerprint. Never rewrite their source identity;
+        // the reader still has to resolve their exact quote/context before allowing a resize.
+        require(previousFingerprint.isNullOrBlank() || previousFingerprint == anchor["documentFingerprint"]?.jsonPrimitive?.content) {
+            "Highlight resize must stay in the original article body"
+        }
+        require(listOf("prefix", "suffix").all { (anchor[it] as? JsonPrimitive)?.isString == true }) {
+            "Highlight resize requires selection context"
+        }
+        fun integer(key: String): Int? = (anchor[key] as? JsonPrimitive)?.takeUnless { it.isString }?.intOrNull
+        val startNode = integer("startNode")
+        val endNode = integer("endNode")
+        val startOffset = integer("startOffset")
+        val endOffset = integer("endOffset")
+        require(startNode != null && startNode >= 0 && endNode != null && endNode >= startNode &&
+            startOffset != null && startOffset >= 0 && endOffset != null && endOffset >= 0 &&
+            (startNode != endNode || endOffset.toLong() - startOffset == anchor.getValue("rangeQuote").jsonPrimitive.content.length.toLong())) {
+            "Highlight resize requires coherent selection endpoints"
+        }
+    }
+
     /** Extract only a validated v1 raw-body UTF-16 start offset; never export context/anchor JSON. */
     fun location(anchorJson: String, quote: String): Int? = runCatching {
         val anchor = Json.parseToJsonElement(anchorJson).jsonObject
