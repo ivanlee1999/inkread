@@ -40,6 +40,7 @@ import me.ash.reader.domain.model.feed.Feed
 import me.ash.reader.domain.model.group.GroupWithFeed
 import me.ash.reader.domain.model.general.MarkAsReadConditions
 import me.ash.reader.domain.service.AbstractRssRepository
+import me.ash.reader.domain.service.AccountService
 import me.ash.reader.domain.service.RssService
 import me.ash.reader.domain.service.SyncWorker
 import me.ash.reader.infrastructure.rss.ReaderCacheHelper
@@ -331,6 +332,28 @@ class ArticleListReaderViewModelTest {
         verify(fixture.repository).markAsRead(a.feed.groupId, null, null, null, false)
     }
 
+    @Test fun notebookReaderRejectsWrongActiveAccountBeforeAnyReadMutation() = runTest(dispatcher) {
+        val item = article("guarded")
+        val fixture = fixture(item)
+        fixture.accountId.value = 2
+        fixture.viewModel.initData(item.article.id, expectedAccountId = 1)
+        runCurrent()
+        verify(fixture.diffs, never()).updateDiff(item, isUnread = false)
+        assertNull(fixture.viewModel.readingUiState.value.articleWithFeed)
+        org.junit.Assert.assertTrue(fixture.viewModel.readerStateStateFlow.value.content is ReaderState.Error)
+    }
+
+    @Test fun notebookReaderRejectsWrongArticleAccountBeforeAnyReadMutation() = runTest(dispatcher) {
+        val base = article("wrong-account")
+        val item = base.copy(article = base.article.copy(accountId = 2))
+        val fixture = fixture(item)
+        fixture.viewModel.initData(item.article.id, expectedAccountId = 1)
+        runCurrent()
+        verify(fixture.diffs, never()).updateDiff(item, isUnread = false)
+        assertNull(fixture.viewModel.readingUiState.value.articleWithFeed)
+        org.junit.Assert.assertTrue(fixture.viewModel.readerStateStateFlow.value.content is ReaderState.Error)
+    }
+
     private fun fixture(
         vararg articles: ArticleWithFeed,
         applicationScheduler: TestCoroutineScheduler = dispatcher.scheduler,
@@ -338,6 +361,9 @@ class ArticleListReaderViewModelTest {
         val cache: ReaderCacheHelper = mock()
         val repository: AbstractRssRepository = mock()
         val rssService: RssService = mock()
+        val accountService: AccountService = mock()
+        val accountId = MutableStateFlow<Int?>(1)
+        whenever(accountService.currentAccountIdFlow).thenReturn(accountId)
         val paging: ArticlePagingListUseCase = mock()
         val groups: GroupWithFeedsListUseCase = mock()
         val filters: FilterStateUseCase = mock()
@@ -364,6 +390,7 @@ class ArticleListReaderViewModelTest {
         applicationScopes += applicationScope
         val viewModel = ArticleListReaderViewModel(
             rssService = rssService,
+            accountService = accountService,
             ioDispatcher = applicationDispatcher,
             applicationScope = applicationScope,
             diffMapHolder = diffs,
@@ -377,7 +404,7 @@ class ArticleListReaderViewModelTest {
             workManager = workManager,
         )
         stores += ViewModelStore().apply { put("reader", viewModel) }
-        return Fixture(viewModel, cache, repository, paging, diffs)
+        return Fixture(viewModel, cache, repository, paging, diffs, accountId)
     }
 
     private fun article(name: String, fullContent: Boolean = false): ArticleWithFeed = ArticleWithFeed(
@@ -397,6 +424,7 @@ class ArticleListReaderViewModelTest {
         val repository: AbstractRssRepository,
         val paging: ArticlePagingListUseCase,
         val diffs: DiffMapHolder,
+        val accountId: MutableStateFlow<Int?>,
     )
 
     // Mockito strips the final continuation from ordinary arguments. Resume the raw

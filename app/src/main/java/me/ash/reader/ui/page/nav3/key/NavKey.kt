@@ -14,6 +14,12 @@ sealed interface Route : NavKey {
 
     @Serializable data object SavedLibrary : Route
 
+    @Serializable data object Highlights : Route
+
+    @Serializable data class AnnotationReading(val annotationId: String, val sourceId: String, val accountId: Int) : Route
+
+    @Serializable data class SavedAnnotationReading(val annotationId: String, val itemId: String) : Route
+
     @Serializable data class SavedReading(val itemId: String) : Route
 
     //    @Serializable data object Flow : Route

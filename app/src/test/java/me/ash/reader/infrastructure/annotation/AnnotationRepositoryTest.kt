@@ -17,6 +17,7 @@ import me.ash.reader.domain.annotation.AnnotationSource
 import me.ash.reader.domain.annotation.AnnotationSourceKind
 import me.ash.reader.domain.annotation.AnnotationSizeException
 import me.ash.reader.domain.annotation.AnnotationExportPayload
+import me.ash.reader.domain.annotation.AnnotationRepository
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.*
@@ -338,6 +339,411 @@ class AnnotationRepositoryTest {
         assertTrue(f.dao.annotations.isEmpty())
     }
 
+    @Test fun queuedResizeKeepsIdentityAndFrozenCreateWhileCoalescingLatestSelection() = runBlocking {
+        val f = Fixture()
+        val epoch = f.connect()
+        val id = f.repository.create(draft(note = "keep my note").copy(anchorJson = selectionAnchor(QUOTE)))
+        val before = f.repository.observeAll().first().single()
+        val frozenCreate = f.dao.rows.values.single()
+        f.time++
+        f.repository.updateSelection(id, "first resize", selectionAnchor("first resize", start = 12))
+        f.time++
+        val latestQuote = "final 🛰 selection"
+        val latestAnchor = selectionAnchor(latestQuote, start = 18)
+        f.repository.updateSelection(id, latestQuote, latestAnchor)
+        val after = f.repository.observeAll().first().single()
+        assertEquals(before.copy(quote = latestQuote, anchorJson = latestAnchor,
+            localRevision = 3, updatedAt = f.time), after)
+        assertEquals(frozenCreate, f.dao.rows[frozenCreate.id])
+        assertEquals(1, f.dao.annotations.size)
+        assertEquals(1, f.dao.rows.values.count { it.operation == "CREATE" })
+        assertEquals(1, f.dao.rows.values.count { it.operation == "UPDATE" && it.state == "PENDING" })
+        val create = f.repository.claim(epoch, f.time, 500)!!
+        assertEquals(QUOTE, create.payload.quote)
+        assertEquals(1L, create.payload.revision)
+        assertTrue(f.repository.acknowledge(create, "same-remote"))
+        val update = f.repository.claim(epoch, f.time, 500)!!
+        assertEquals(AnnotationExportOperation.UPDATE, update.operation)
+        assertEquals(id, update.payload.annotationId)
+        assertEquals("same-remote", update.remoteId)
+        assertEquals("keep my note", update.payload.note)
+        assertEquals(latestQuote, update.payload.quote)
+        assertEquals(18, update.payload.location)
+        assertEquals(3L, update.payload.revision)
+    }
+
+    @Test fun inFlightCreateAcknowledgmentPreservesResizedSelectionAndConcurrentNote() = runBlocking {
+        val f = Fixture()
+        val epoch = f.connect()
+        val id = f.repository.create(draft(note = "original note").copy(anchorJson = selectionAnchor(QUOTE)))
+        val create = f.repository.claim(epoch, f.time, 500)!!
+        val quote = "resized 🛰 selection"
+        val anchor = selectionAnchor(quote, start = 30)
+        listOf(
+            async { f.reopen().updateNote(id, "latest note") },
+            async { f.reopen().updateSelection(id, quote, anchor) },
+        ).awaitAll()
+        assertEquals(QUOTE, create.payload.quote)
+        assertEquals("original note", create.payload.note)
+        assertTrue(f.repository.acknowledge(create, "remote"))
+        val local = f.repository.observeAll().first().single()
+        assertEquals(quote, local.quote)
+        assertEquals(anchor, local.anchorJson)
+        assertEquals("latest note", local.note)
+        assertEquals(3L, local.localRevision)
+        assertEquals(1L, local.exportedRevision)
+        val patch = f.repository.claim(epoch, f.time, 500)!!
+        assertEquals(AnnotationExportOperation.UPDATE, patch.operation)
+        assertEquals("remote", patch.remoteId)
+        assertEquals(quote, patch.payload.quote)
+        assertEquals("latest note", patch.payload.note)
+        assertEquals(3L, patch.payload.revision)
+        assertTrue(f.repository.acknowledge(patch, "remote"))
+        assertEquals(AnnotationExportState.EXPORTED, f.repository.observeAll().first().single().exportState)
+        assertEquals(1, f.dao.rows.values.count { it.operation == "CREATE" })
+        assertNull(f.repository.claim(epoch, f.time, 500))
+    }
+
+    @Test fun exportedAnchorOnlyResizeUsesSameRemoteIdentityAndIdenticalEditIsNoOp() = runBlocking {
+        val f = Fixture()
+        val epoch = f.connect()
+        val id = f.repository.create(draft(note = "saved note").copy(anchorJson = selectionAnchor(QUOTE)))
+        assertTrue(f.repository.acknowledge(f.repository.claim(epoch, f.time, 500)!!, "remote"))
+        val before = f.repository.observeAll().first().single()
+        f.time++
+        val anchor = selectionAnchor(QUOTE, start = 20)
+        f.repository.updateSelection(id, QUOTE, anchor)
+        val resized = f.repository.observeAll().first().single()
+        assertEquals(before.copy(anchorJson = anchor, updatedAt = f.time, localRevision = 2,
+            exportState = AnnotationExportState.QUEUED), resized)
+        val rows = f.dao.rows.toMap()
+        f.time++
+        f.repository.updateSelection(id, QUOTE, anchor)
+        assertEquals(resized, f.repository.observeAll().first().single())
+        assertEquals(rows, f.dao.rows)
+        val patch = f.repository.claim(epoch, f.time, 500)!!
+        assertEquals(AnnotationExportOperation.UPDATE, patch.operation)
+        assertEquals("remote", patch.remoteId)
+        assertEquals(20, patch.payload.location)
+        assertEquals("saved note", patch.payload.note)
+        assertEquals(before.createdAt, patch.payload.highlightedAt)
+        assertTrue(f.repository.acknowledge(patch, "remote"))
+        assertEquals(1, f.dao.rows.values.count { it.operation == "CREATE" })
+    }
+
+    @Test fun resizingLocalOnlyAndReplacedConnectionHighlightsRequiresExplicitExistingExport() = runBlocking {
+        val f = Fixture()
+        val local = f.repository.create(draft())
+        val epoch = f.connect()
+        val quote = "local resized quote"
+        f.repository.updateSelection(local, quote, selectionAnchor(quote))
+        assertNull(f.repository.claim(epoch, f.time, 500))
+        assertTrue(f.dao.rows.isEmpty())
+        val bound = f.repository.create(draft())
+        assertTrue(f.repository.acknowledge(f.repository.claim(epoch, f.time, 500)!!, "old-remote"))
+        val replacement = f.connect("replacement")
+        f.repository.updateSelection(bound, quote, selectionAnchor(quote))
+        assertNull(f.repository.claim(replacement, f.time, 500))
+        val observed = f.repository.observeAll().first()
+        assertNull(observed.first { it.id == local }.exportEpoch)
+        assertEquals(AnnotationExportState.LOCAL_ONLY, observed.first { it.id == local }.exportState)
+        assertEquals("old-remote", observed.first { it.id == bound }.remoteId)
+        assertEquals(epoch, observed.first { it.id == bound }.exportEpoch)
+        assertEquals(AnnotationExportState.PAUSED, observed.first { it.id == bound }.exportState)
+        assertEquals(1, f.dao.rows.values.count { it.operation == "CREATE" })
+        // Only this separate, explicit existing-highlight opt-in can bind a new epoch.
+        f.repository.enqueueExisting(listOf(local))
+        val consented = f.repository.claim(replacement, f.time, 500)!!
+        assertEquals(local, consented.payload.annotationId)
+        assertEquals(quote, consented.payload.quote)
+        assertEquals(AnnotationExportOperation.CREATE, consented.operation)
+        assertFalse(f.dao.rows.values.any { it.annotationId == bound && it.epoch == replacement })
+    }
+
+    @Test fun resizingWhilePausedDoesNotExportThePausedEditWhenResumed() = runBlocking {
+        val f = Fixture()
+        val epoch = f.connect()
+        val id = f.repository.create(draft())
+        f.repository.setExportEnabled(false)
+        val quote = "private paused resize"
+        f.repository.updateSelection(id, quote, selectionAnchor(quote))
+        f.repository.setExportEnabled(true)
+        val create = f.repository.claim(epoch, f.time, 500)!!
+        assertEquals(QUOTE, create.payload.quote)
+        assertTrue(f.repository.acknowledge(create, "remote"))
+        assertNull(f.repository.claim(epoch, f.time, 500))
+        assertEquals(quote, f.repository.observeAll().first().single().quote)
+        assertEquals(2L, f.repository.observeAll().first().single().localRevision)
+        f.repository.enqueueExisting(listOf(id))
+        assertEquals(quote, f.repository.claim(epoch, f.time, 500)!!.payload.quote)
+    }
+
+    @Test fun ambiguousCreateReconciliationRetainsOriginalSelectionAfterResize() = runBlocking {
+        val f = Fixture()
+        val epoch = f.connect()
+        val id = f.repository.create(draft())
+        val create = f.repository.claim(epoch, f.time, 500)!!
+        assertTrue(f.repository.markUncertain(create, "response lost", f.time + 100))
+        val quote = "latest resize"
+        f.repository.updateSelection(id, quote, selectionAnchor(quote))
+        f.time += 100
+        val reconcile = f.reopen().claim(epoch, f.time, 500)!!
+        assertEquals(create.id, reconcile.id)
+        assertEquals(create.payload, reconcile.payload)
+        assertTrue(reconcile.needsReconciliation)
+        assertTrue(f.repository.requireReview(reconcile, "No unique remote match"))
+        f.repository.updateSelection(id, "another resize", selectionAnchor("another resize"))
+        f.repository.retryFailed(listOf(id), epoch)
+        f.repository.enqueueExisting(listOf(id))
+        assertEquals(AnnotationExportState.REVIEW_REQUIRED, f.repository.observeAll().first().single().exportState)
+        assertNull(f.repository.claim(epoch, f.time, 500))
+        assertNull(f.repository.nextWakeAt(epoch))
+        assertEquals(1, f.dao.rows.values.count { it.operation == "CREATE" })
+    }
+
+    @Test fun processDeathAfterResizeReconcilesFrozenCreateThenPatchesLatestSelection() = runBlocking {
+        val f = Fixture()
+        val epoch = f.connect()
+        val id = f.repository.create(draft())
+        val create = f.repository.claim(epoch, f.time, 100)!!
+        val quote = "resized before process death"
+        f.repository.updateSelection(id, quote, selectionAnchor(quote))
+        f.time += 101
+        val reopened = f.reopen()
+        val reconcile = reopened.claim(epoch, f.time, 500)!!
+        assertEquals(create.payload, reconcile.payload)
+        assertTrue(reconcile.needsReconciliation)
+        assertFalse(reopened.acknowledge(create, "remote"))
+        assertTrue(reopened.acknowledge(reconcile, "remote"))
+        val patch = reopened.claim(epoch, f.time, 500)!!
+        assertEquals(AnnotationExportOperation.UPDATE, patch.operation)
+        assertEquals("remote", patch.remoteId)
+        assertEquals(quote, patch.payload.quote)
+        assertEquals(id, patch.payload.annotationId)
+        assertEquals(1, f.dao.rows.values.count { it.operation == "CREATE" })
+    }
+
+    @Test fun failedOldSelectionUpdateCannotOverwriteNewerResize() = runBlocking {
+        val f = Fixture()
+        val epoch = f.connect()
+        val id = f.repository.create(draft())
+        assertTrue(f.repository.acknowledge(f.repository.claim(epoch, f.time, 500)!!, "remote"))
+        f.repository.updateSelection(id, "older resize", selectionAnchor("older resize"))
+        val older = f.repository.claim(epoch, f.time, 500)!!
+        f.repository.updateSelection(id, "latest resize", selectionAnchor("latest resize"))
+        assertTrue(f.repository.fail(older, "temporary failure", f.time + 100))
+        val latest = f.repository.claim(epoch, f.time, 500)!!
+        assertEquals("latest resize", latest.payload.quote)
+        assertTrue(f.repository.acknowledge(latest, "remote"))
+        f.time += 100
+        assertNull(f.repository.claim(epoch, f.time, 500))
+    }
+
+    @Test fun invalidResizeIsRejectedAtomicallyAndCannotCrossArticleBodyOrChangeQuote() = runBlocking {
+        val f = Fixture()
+        f.connect()
+        val id = f.repository.create(draft(note = "preserve").copy(anchorJson = selectionAnchor(QUOTE)))
+        val before = f.repository.observeAll().first().single()
+        val outbox = f.dao.rows.toMap()
+        val quote = "replacement"
+        val valid = selectionAnchor(quote)
+        listOf(
+            "" to selectionAnchor(""),
+            "   " to selectionAnchor("   "),
+            quote to "not JSON",
+            quote to "[]",
+            quote to "{}",
+            quote to selectionAnchor("different displayed quote"),
+            quote to selectionAnchor(quote, fingerprint = "another-article-body"),
+            quote to selectionAnchor(quote, start = -1),
+            quote to selectionAnchor(quote, end = 2),
+            quote to valid.replace("\"version\":1", "\"version\":2"),
+            quote to valid.replace("\"textMapVersion\":1", "\"textMapVersion\":2"),
+            quote to valid.replace("\"rangeQuote\":\"replacement\"", "\"rangeQuote\":\"wrong raw length\""),
+            quote to valid.replace("\"prefix\":\"before\"", "\"prefix\":[]"),
+            quote to valid.replace("\"startNode\":0", "\"startNode\":-1"),
+            quote to valid.replace("\"startNode\":0", "\"startNode\":\"0\""),
+            quote to valid.replace("\"endNode\":0", "\"endNode\":-1"),
+            quote to valid.replace("\"startOffset\":3", "\"startOffset\":-1"),
+            quote to valid.replace("\"endOffset\":14", "\"endOffset\":15"),
+        ).forEach { (replacement, anchor) ->
+            try { f.repository.updateSelection(id, replacement, anchor); fail("Expected resize rejection: $anchor") }
+            catch (_: IllegalArgumentException) { }
+            assertEquals(before, f.repository.observeAll().first().single())
+            assertEquals(outbox, f.dao.rows)
+        }
+        val oversized = "界".repeat(90_000)
+        try { f.repository.updateSelection(id, oversized, selectionAnchor(oversized)); fail("Expected size rejection") }
+        catch (_: AnnotationSizeException) { }
+        assertEquals(before, f.repository.observeAll().first().single())
+        assertEquals(outbox, f.dao.rows)
+    }
+
+    @Test fun resizePreservesExactDisplayQuoteAndDistinctRawUtf16BodyAnchor() = runBlocking {
+        val f = Fixture()
+        val epoch = f.connect()
+        val id = f.repository.create(draft(note = "e\u0301\n🛰").copy(anchorJson = selectionAnchor(QUOTE)))
+        assertTrue(f.repository.acknowledge(f.repository.claim(epoch, f.time, 500)!!, "remote"))
+        val quote = "A🛰B\nC"
+        val rawQuote = "A🛰BC"
+        val anchor = buildJsonObject {
+            put("version", 1); put("textMapVersion", 1); put("documentFingerprint", "same-article-body")
+            put("quote", quote); put("rangeQuote", rawQuote); put("start", 30); put("end", 30 + rawQuote.length)
+            put("prefix", "before"); put("suffix", "after")
+            put("startNode", 1); put("startOffset", 0); put("endNode", 2); put("endOffset", 1)
+        }.toString()
+        f.repository.updateSelection(id, quote, anchor)
+        val result = f.repository.observeAll().first().single()
+        assertEquals(quote, result.quote)
+        assertEquals(anchor, result.anchorJson)
+        assertEquals("e\u0301\n🛰", result.note)
+        val patch = f.repository.claim(epoch, f.time, 500)!!
+        assertEquals(quote, patch.payload.quote)
+        assertEquals(30, patch.payload.location)
+    }
+
+    @Test fun resizeQueueFailureRollsBackSelectionAndRevisionWithoutLosingNote() = runBlocking {
+        val f = Fixture()
+        f.connect()
+        val id = f.repository.create(draft(note = "preserved note"))
+        val before = f.repository.observeAll().first().single()
+        val rows = f.dao.rows.toMap()
+        f.dao.failInsertion = true
+        try { f.repository.updateSelection(id, "resize", selectionAnchor("resize")); fail("Expected transaction failure") }
+        catch (_: IllegalStateException) { }
+        assertEquals(before, f.repository.observeAll().first().single())
+        assertEquals(rows, f.dao.rows)
+    }
+
+    @Test fun removingOrMissingHighlightMakesResizeANoOpWithoutRecreation() = runBlocking {
+        val f = Fixture()
+        val epoch = f.connect()
+        val id = f.repository.create(draft())
+        val create = f.repository.claim(epoch, f.time, 500)!!
+        f.repository.remove(id)
+        val tombstone = f.dao.annotations[id]
+        f.repository.updateSelection(id, "must not return", selectionAnchor("must not return"))
+        f.repository.updateSelection("missing", "must not appear", selectionAnchor("must not appear"))
+        assertEquals(tombstone, f.dao.annotations[id])
+        assertFalse(f.repository.acknowledge(create, "remote"))
+        assertTrue(f.repository.observeAll().first().isEmpty())
+        assertNull(f.repository.claim(epoch, f.time, 500))
+        assertTrue(f.dao.rows.values.all { it.payloadJson == "{}" })
+    }
+
+    @Test fun delayedAutoHighlightSurvivesReopenAndEditsWithoutShorteningOrExtendingGrace() = runBlocking {
+        val f = Fixture()
+        val epoch = f.connect()
+        val deadline = f.time + AnnotationRepository.AUTO_HIGHLIGHT_EXPORT_DELAY_MILLIS
+        val id = f.repository.create(draft(), exportDelayMillis = AnnotationRepository.AUTO_HIGHLIGHT_EXPORT_DELAY_MILLIS)
+        assertEquals(AnnotationExportState.QUEUED, f.repository.observeAll().first().single().exportState)
+        assertNull(f.repository.claim(epoch, f.time, 500))
+        assertEquals(deadline, f.repository.nextWakeAt(epoch))
+        f.time += 5_000
+        val reopened = f.reopen()
+        reopened.updateNote(id, "latest note")
+        reopened.updateSelection(id, "latest selection", selectionAnchor("latest selection"))
+        reopened.enqueueExisting(listOf(id))
+        reopened.setExportEnabled(false)
+        assertNull(reopened.nextWakeAt(epoch))
+        reopened.setExportEnabled(true)
+        assertEquals(deadline, reopened.nextWakeAt(epoch))
+        f.time = deadline - 1
+        assertNull(f.reopen().claim(epoch, f.time, 500))
+        f.time = deadline
+        val create = f.reopen().claim(epoch, f.time, 500)!!
+        assertEquals(AnnotationExportOperation.CREATE, create.operation)
+        assertEquals(QUOTE, create.payload.quote)
+        assertEquals("", create.payload.note)
+        assertFalse(create.needsReconciliation)
+        assertEquals(1, create.attemptCount)
+        assertTrue(reopened.acknowledge(create, "remote"))
+        val latest = reopened.claim(epoch, f.time, 500)!!
+        assertEquals(AnnotationExportOperation.UPDATE, latest.operation)
+        assertEquals("latest selection", latest.payload.quote)
+        assertEquals("latest note", latest.payload.note)
+        assertEquals(3L, latest.payload.revision)
+    }
+
+    @Test fun undoBeforeFirstClaimCancelsDelayedExportDurablyAndErasesLocalContent() = runBlocking {
+        val f = Fixture()
+        val epoch = f.connect()
+        val deadline = f.time + AnnotationRepository.AUTO_HIGHLIGHT_EXPORT_DELAY_MILLIS
+        val id = f.repository.create(draft(note = "automatic note"), AnnotationRepository.AUTO_HIGHLIGHT_EXPORT_DELAY_MILLIS)
+        f.time = deadline - 1
+        assertNull(f.repository.claim(epoch, f.time, 500))
+        f.reopen().remove(id)
+        f.time = deadline + 5_000
+        assertNull(f.reopen().claim(epoch, f.time, 500))
+        assertNull(f.repository.nextWakeAt(epoch))
+        assertEquals(0, f.repository.observePendingCount().first())
+        assertTrue(f.repository.observeAll().first().isEmpty())
+        assertEquals("", f.dao.annotations[id]!!.quote)
+        assertEquals("", f.dao.annotations[id]!!.note)
+        assertEquals("{}", f.dao.annotations[id]!!.anchorJson)
+        assertTrue(f.dao.rows.values.all { it.state == "CANCELED" && it.payloadJson == "{}" && it.attemptCount == 0 })
+        f.repository.enqueueExisting(listOf(id))
+        assertNull(f.repository.claim(epoch, f.time, 500))
+    }
+
+    @Test fun delayedCreateDoesNotDelayUnrelatedManualHighlight() = runBlocking {
+        val f = Fixture()
+        val epoch = f.connect()
+        val deadline = f.time + AnnotationRepository.AUTO_HIGHLIGHT_EXPORT_DELAY_MILLIS
+        val auto = f.repository.create(draft(), AnnotationRepository.AUTO_HIGHLIGHT_EXPORT_DELAY_MILLIS)
+        val manual = f.repository.create(draft())
+        assertEquals(f.time, f.repository.nextWakeAt(epoch))
+        val immediate = f.repository.claim(epoch, f.time, 500)!!
+        assertEquals(manual, immediate.payload.annotationId)
+        assertTrue(f.repository.acknowledge(immediate, "manual-remote"))
+        assertEquals(deadline, f.repository.nextWakeAt(epoch))
+        assertNull(f.repository.claim(epoch, f.time, 500))
+        f.time = deadline
+        assertEquals(auto, f.repository.claim(epoch, f.time, 500)!!.payload.annotationId)
+    }
+
+    @Test fun delayedLocalOnlyHighlightDoesNotGainExportConsentAfterConnecting() = runBlocking {
+        val f = Fixture()
+        val local = f.repository.create(draft(), AnnotationRepository.AUTO_HIGHLIGHT_EXPORT_DELAY_MILLIS)
+        f.time += AnnotationRepository.AUTO_HIGHLIGHT_EXPORT_DELAY_MILLIS
+        val epoch = f.connect()
+        assertNull(f.repository.claim(epoch, f.time, 500))
+        assertNull(f.repository.nextWakeAt(epoch))
+        assertTrue(f.dao.rows.isEmpty())
+        assertEquals(AnnotationExportState.LOCAL_ONLY, f.repository.observeAll().first().single().exportState)
+        f.repository.enqueueExisting(listOf(local))
+        assertEquals(local, f.repository.claim(epoch, f.time, 500)!!.payload.annotationId)
+    }
+
+    @Test fun replacementDuringGraceNeverExportsDelayedHighlightToNewConnection() = runBlocking {
+        val f = Fixture()
+        val epoch = f.connect()
+        val id = f.repository.create(draft(), AnnotationRepository.AUTO_HIGHLIGHT_EXPORT_DELAY_MILLIS)
+        val replacement = f.connect("replacement")
+        f.time += AnnotationRepository.AUTO_HIGHLIGHT_EXPORT_DELAY_MILLIS
+        assertNull(f.repository.claim(epoch, f.time, 500))
+        assertNull(f.reopen().claim(replacement, f.time, 500))
+        assertNull(f.repository.nextWakeAt(replacement))
+        assertEquals(AnnotationExportState.PAUSED, f.repository.observeAll().first().single().exportState)
+        assertEquals(epoch, f.dao.annotations[id]!!.exportEpoch)
+        assertTrue(f.dao.rows.values.all { it.epoch == epoch && it.state == "PAUSED" && it.attemptCount == 0 })
+    }
+
+    @Test fun invalidExportDelayAndOverflowFailBeforeAnyMutation() = runBlocking {
+        val f = Fixture()
+        f.connect()
+        listOf(-1L, AnnotationRepository.AUTO_HIGHLIGHT_EXPORT_DELAY_MILLIS + 1, Long.MAX_VALUE).forEach { delay ->
+            try { f.repository.create(draft(), delay); fail("Expected invalid delay rejection") }
+            catch (_: IllegalArgumentException) { }
+        }
+        f.time = Long.MAX_VALUE - 1
+        try { f.repository.create(draft(), 2); fail("Expected deadline overflow rejection") }
+        catch (_: ArithmeticException) { }
+        assertTrue(f.dao.annotations.isEmpty())
+        assertTrue(f.dao.documents.isEmpty())
+        assertTrue(f.dao.rows.isEmpty())
+    }
+
     private class Fixture {
         val dao = MemoryDao()
         var time = 1_000L
@@ -420,5 +826,12 @@ class AnnotationRepositoryTest {
         private val RSS = AnnotationSource(AnnotationSourceKind.RSS, "article-id", 7, "HTTPS://EXAMPLE.TEST:443/a#section", "Article", "Ada", "Paper")
         private val SAVED = AnnotationSource(AnnotationSourceKind.SAVED, "saved-id", url = "https://example.test/a", title = "Saved title")
         private fun draft(source: AnnotationSource = RSS, note: String = "") = AnnotationDraft(source, QUOTE, ANCHOR, note)
+        private fun selectionAnchor(quote: String, start: Int = 3, end: Int = start + quote.length,
+            fingerprint: String = "same-article-body") = buildJsonObject {
+            put("version", 1); put("textMapVersion", 1); put("documentFingerprint", fingerprint)
+            put("quote", quote); put("rangeQuote", quote); put("start", start); put("end", end)
+            put("prefix", "before"); put("suffix", "after")
+            put("startNode", 0); put("startOffset", start); put("endNode", 0); put("endOffset", end)
+        }.toString()
     }
 }

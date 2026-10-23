@@ -39,7 +39,10 @@ internal class DefaultAnnotationRepository(
     override fun observePendingCount(): Flow<Int> = dao.observePendingCount()
     override suspend fun currentConnection(): AnnotationConnection = connection().model()
 
-    override suspend fun create(draft: AnnotationDraft): String {
+    override suspend fun create(draft: AnnotationDraft, exportDelayMillis: Long): String {
+        require(exportDelayMillis in 0..AnnotationRepository.AUTO_HIGHLIGHT_EXPORT_DELAY_MILLIS) {
+            "Annotation export delay must be between zero and ten seconds"
+        }
         require(draft.quote.isNotBlank()) { "Select some article text first" }
         AnnotationStorageLimits.validate(draft)
         AnnotationPayloadJson.validateAnchor(draft.anchorJson)
@@ -47,6 +50,7 @@ internal class DefaultAnnotationRepository(
         val documentId = annotationDocumentId(draft.source)
         return transactions.run {
             val time = now()
+            val exportAt = Math.addExact(time, exportDelayMillis)
             val connection = connection()
             val canExport = connection.connectionId != null && connection.exportEnabled
             dao.insertDocument(AnnotationDocumentEntity(documentId, identity, annotationUrl(draft.source.url), time))
@@ -60,7 +64,7 @@ internal class DefaultAnnotationRepository(
                 exportEpoch = connection.epoch.takeIf { canExport },
             )
             dao.insert(annotation)
-            if (canExport) enqueueLatest(annotation, time, explicitRetry = false)
+            if (canExport) enqueueLatest(annotation, time, explicitRetry = false, initialExportAt = exportAt)
             annotation.id
         }
     }
@@ -68,12 +72,24 @@ internal class DefaultAnnotationRepository(
     override suspend fun updateNote(id: String, note: String) = transactions.run {
         val previous = dao.get(id)?.takeIf { it.deletedAt == null } ?: return@run
         if (previous.note == note) return@run
-        AnnotationStorageLimits.validate(AnnotationDraft(
-            AnnotationSource(AnnotationSourceKind.valueOf(previous.sourceKind), previous.sourceId,
-                previous.sourceAccountId, previous.sourceUrl, previous.sourceTitle, previous.sourceAuthor, previous.sourceName),
-            previous.quote, previous.anchorJson, note,
-        ))
+        AnnotationStorageLimits.validate(previous.draft().copy(note = note))
         val updated = previous.copy(note = note, localRevision = Math.addExact(previous.localRevision, 1), updatedAt = now())
+        persistRevision(updated)
+    }
+
+    override suspend fun updateSelection(id: String, quote: String, anchorJson: String) = transactions.run {
+        val previous = dao.get(id)?.takeIf { it.deletedAt == null } ?: return@run
+        if (previous.quote == quote && previous.anchorJson == anchorJson) return@run
+        require(quote.isNotBlank()) { "Select some article text first" }
+        AnnotationStorageLimits.validate(previous.draft().copy(quote = quote, anchorJson = anchorJson))
+        AnnotationPayloadJson.validateReplacementAnchor(anchorJson, quote, previous.anchorJson)
+        // Preserve the latest note and all source/identity fields inside the same transaction.
+        val updated = previous.copy(quote = quote, anchorJson = anchorJson,
+            localRevision = Math.addExact(previous.localRevision, 1), updatedAt = now())
+        persistRevision(updated)
+    }
+
+    private suspend fun persistRevision(updated: AnnotationEntity) {
         dao.update(updated)
         val connection = connection()
         // Editing is not consent to export old/local-only annotations to a replacement connection.
@@ -238,13 +254,13 @@ internal class DefaultAnnotationRepository(
         eligible.minOrNull()?.let { maxOf(it, connection().retryAt ?: 0L) }
     }
 
-    private suspend fun enqueueLatest(annotation: AnnotationEntity, time: Long, explicitRetry: Boolean) {
+    private suspend fun enqueueLatest(annotation: AnnotationEntity, time: Long, explicitRetry: Boolean, initialExportAt: Long = time) {
         val epoch = requireNotNull(annotation.exportEpoch)
         val existing = dao.outboxFor(annotation.id, epoch)
         if (existing.any { it.state == REVIEW_REQUIRED }) return
         val create = existing.firstOrNull { it.operation == AnnotationExportOperation.CREATE.name && it.state != CANCELED }
         if (annotation.remoteId == null && create == null) {
-            insertOutbox(annotation, AnnotationExportOperation.CREATE, time)
+            insertOutbox(annotation, AnnotationExportOperation.CREATE, time, nextAttemptAt = initialExportAt)
             return
         }
         if (explicitRetry && create?.state == FAILED) {
@@ -252,7 +268,7 @@ internal class DefaultAnnotationRepository(
         }
         if (annotation.remoteId == null && create?.revision == annotation.localRevision) return
         if (annotation.remoteId != null && annotation.exportedRevision >= annotation.localRevision) return
-        // Preserve the in-flight payload; pending note updates can safely be superseded, never CREATE.
+        // Preserve frozen CREATE/in-flight payloads; pending selection/note UPDATEs can coalesce.
         existing.filter { it.operation == AnnotationExportOperation.UPDATE.name && it.revision < annotation.localRevision &&
             it.state in setOf(PENDING, FAILED) }.forEach { dao.updateOutbox(it.copy(state = CANCELED)) }
         val same = existing.firstOrNull { it.operation == AnnotationExportOperation.UPDATE.name && it.revision == annotation.localRevision }
@@ -260,13 +276,13 @@ internal class DefaultAnnotationRepository(
         else if (explicitRetry && same.state == FAILED) dao.updateOutbox(same.copy(state = PENDING, nextAttemptAt = time, lastError = null))
     }
 
-    private suspend fun insertOutbox(annotation: AnnotationEntity, operation: AnnotationExportOperation, time: Long) {
+    private suspend fun insertOutbox(annotation: AnnotationEntity, operation: AnnotationExportOperation, time: Long, nextAttemptAt: Long = time) {
         val payload = AnnotationExportPayload(annotation.id, annotation.localRevision, annotationUrl(annotation.sourceUrl),
             annotation.sourceTitle, annotation.sourceAuthor, annotation.sourceName, annotation.quote, annotation.note, annotation.createdAt,
             AnnotationPayloadJson.location(annotation.anchorJson, annotation.quote))
         dao.insertOutbox(AnnotationOutboxEntity(id = newId(), annotationId = annotation.id,
             epoch = requireNotNull(annotation.exportEpoch), revision = annotation.localRevision, operation = operation.name,
-            payloadJson = AnnotationPayloadJson.encode(payload), createdAt = time, nextAttemptAt = time))
+            payloadJson = AnnotationPayloadJson.encode(payload), createdAt = time, nextAttemptAt = nextAttemptAt))
     }
 
     private suspend fun validClaim(claim: AnnotationExportClaim): AnnotationOutboxEntity? {
@@ -309,6 +325,10 @@ internal class DefaultAnnotationRepository(
         }.distinctUntilChanged()
 
     private fun AnnotationConnectionEntity.model() = AnnotationConnection(epoch, connectionId, exportEnabled, retryAt)
+    private fun AnnotationEntity.draft() = AnnotationDraft(
+        AnnotationSource(AnnotationSourceKind.valueOf(sourceKind), sourceId, sourceAccountId,
+            sourceUrl, sourceTitle, sourceAuthor, sourceName), quote, anchorJson, note,
+    )
     private fun AnnotationOutboxEntity.claim(remoteId: String?) = AnnotationExportClaim(id, epoch,
         requireNotNull(leaseToken), requireNotNull(leaseUntil), attemptCount, needsReconciliation,
         AnnotationExportOperation.valueOf(operation), remoteId, AnnotationPayloadJson.decode(payloadJson))

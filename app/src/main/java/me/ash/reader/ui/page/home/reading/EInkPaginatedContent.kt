@@ -52,6 +52,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.launch
@@ -75,7 +76,9 @@ import androidx.activity.compose.BackHandler
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import org.json.JSONObject
 import org.json.JSONTokener
+import android.widget.Toast
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -137,6 +140,14 @@ fun EInkPaginatedContent(
     onAnnotationsClick: (() -> Unit)? = null,
     annotationJumpRequest: Pair<String, Long>? = null,
     onAnnotationJumpResult: ((id: String, attached: Boolean) -> Unit)? = null,
+    onAnnotationClick: ((id: String) -> Unit)? = null,
+    annotationResizeRequest: Pair<String, Long>? = null,
+    onAnnotationResizeResult: ((id: String, attached: Boolean) -> Unit)? = null,
+    onResizeSelection: ((id: String, anchorJson: String) -> Unit)? = null,
+    autoHighlightEnabled: Boolean = false,
+    onAutoCreateAnnotation: ((anchorJson: String) -> Unit)? = null,
+    onUndoAutoHighlight: (() -> Unit)? = null,
+    annotationStatus: String? = null,
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -177,6 +188,12 @@ fun EInkPaginatedContent(
     val currentOnAnnotationLocationsChanged by rememberUpdatedState(onAnnotationLocationsChanged)
     val currentOnAnnotationJumpResult by rememberUpdatedState(onAnnotationJumpResult)
     val currentAnnotationJumpRequest by rememberUpdatedState(annotationJumpRequest)
+    val currentOnAnnotationClick by rememberUpdatedState(onAnnotationClick)
+    val currentOnAnnotationResizeResult by rememberUpdatedState(onAnnotationResizeResult)
+    val currentOnResizeSelection by rememberUpdatedState(onResizeSelection)
+    val currentAutoHighlightEnabled by rememberUpdatedState(autoHighlightEnabled)
+    val currentOnAutoCreateAnnotation by rememberUpdatedState(onAutoCreateAnnotation)
+    val currentOnUndoAutoHighlight by rememberUpdatedState(onUndoAutoHighlight)
     val annotationCapture = remember { EInkAnnotationCapture<WebView>() }
     var annotationCapturePending by remember { mutableStateOf(false) }
     if ((editingFormatting || annotationEditing) && annotationCapture.hasPending) {
@@ -226,6 +243,8 @@ fun EInkPaginatedContent(
         UUID.randomUUID().toString()
     }
     val currentGeneration = rememberUpdatedState(documentGeneration)
+    var resizeSession by remember { mutableStateOf<Pair<String, Long>?>(null) }
+    val currentResizeSession by rememberUpdatedState(resizeSession)
     // Extracted navigation controller — keeps page-state decisions testable
     // and queues volume key events received while pagination is resetting.
     val navController = remember {
@@ -284,6 +303,7 @@ fun EInkPaginatedContent(
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_STOP) {
                 persistLatestReadingAnchor()
+                (webViewRef.value as? EInkAnnotationWebView)?.cancelAutomaticCapture()
                 webViewRef.value?.evaluateJavascript(
                     "window.InkReadFormatting && InkReadFormatting.publishReadingAnchor()", null)
             }
@@ -346,6 +366,7 @@ fun EInkPaginatedContent(
         lastHtmlKeyForReady.value = documentGeneration
         isInitialPaginationReady = false
         nativeSelectionActive = false
+        resizeSession = null
         annotationCapturePending = false
         annotationCapture.onEvent(EInkAnnotationCapture.Event.DOCUMENT_CHANGED)
         navController.onContentReset()
@@ -384,13 +405,35 @@ fun EInkPaginatedContent(
     fun selectionOwnsInput(): Boolean = annotationCapture.hasPending || nativeSelectionActive || currentSelectionMode ||
         (webViewRef.value as? EInkAnnotationWebView)?.hasActiveSelection == true
 
+    // The hidden controls still measure beneath Done during selection. Freeze
+    // only their annotation rows at the last idle frame: an automatic save,
+    // status refresh or Undo must not resize the WebView under native handles.
+    // Resolve Undo against the current callback when it becomes visible again.
+    var settledBarAnnotations by remember { mutableStateOf(annotationStatus to (onUndoAutoHighlight != null)) }
+    if (!selectionOwnsInput()) settledBarAnnotations = annotationStatus to (onUndoAutoHighlight != null)
+
     fun finishReaderSelection() {
+        val resizing = resizeSession
+        resizeSession = null
+        if (resizing != null) webViewRef.value?.evaluateJavascript(
+            "window.InkReadAnnotations && InkReadAnnotations.cancelResize(${EInkReaderFormatting.quote(resizing.first)}, ${EInkReaderFormatting.quote(resizing.second.toString())}, ${EInkReaderFormatting.quote(currentGeneration.value)})", null)
         nativeSelectionActive = false
         annotationCapture.onEvent(EInkAnnotationCapture.Event.EXPLICIT_DISMISSAL)
         annotationCapturePending = false
         (webViewRef.value as? EInkAnnotationWebView)?.finishSelection(clearNativeCache = true)
         webViewRef.value?.evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.setSelectionMode(false, ${EInkReaderFormatting.quote(currentGeneration.value)})", null)
         currentOnSelectionModeChange?.invoke(false)
+    }
+    fun undoAutomaticHighlight() {
+        (webViewRef.value as? EInkAnnotationWebView)?.cancelAutomaticCapture()
+        webViewRef.value?.evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.forgetLastAutoCapture(${EInkReaderFormatting.quote(currentGeneration.value)})", null)
+        currentOnUndoAutoHighlight?.invoke()
+    }
+    LaunchedEffect(annotationEditing, editingFormatting) {
+        if (annotationEditing || editingFormatting) {
+            (webViewRef.value as? EInkAnnotationWebView)?.cancelAutomaticCapture()
+            if (resizeSession != null) finishReaderSelection()
+        }
     }
     LaunchedEffect(documentGeneration, selectionActive, annotationCapturePending, isInitialPaginationReady) {
         // A committed snapshot keeps ownership after its native menu closes.
@@ -409,8 +452,13 @@ fun EInkPaginatedContent(
             view?.evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.setSelectionMode($selectionActive, ${EInkReaderFormatting.quote(documentGeneration)}, false)", null)
         }
     }
-    LaunchedEffect(onCreateAnnotation != null) {
+    LaunchedEffect(onCreateAnnotation != null, onResizeSelection != null, resizeSession, onUndoAutoHighlight != null) {
         (webViewRef.value as? EInkAnnotationWebView)?.refreshSelectionActions()
+    }
+    LaunchedEffect(documentGeneration, autoHighlightEnabled, onAutoCreateAnnotation != null, isInitialPaginationReady) {
+        if (isInitialPaginationReady) webViewRef.value?.evaluateJavascript(
+            "window.InkReadAnnotations && InkReadAnnotations.setAutoHighlightEnabled(${autoHighlightEnabled && onAutoCreateAnnotation != null}, ${EInkReaderFormatting.quote(documentGeneration)})", null)
+        if (!autoHighlightEnabled || onAutoCreateAnnotation == null) (webViewRef.value as? EInkAnnotationWebView)?.cancelAutomaticCapture()
     }
     LaunchedEffect(documentGeneration, annotationsJson, isInitialPaginationReady) {
         if (isInitialPaginationReady) webViewRef.value?.evaluateJavascript(
@@ -434,6 +482,50 @@ fun EInkPaginatedContent(
                 totalPages = navController.totalPages
             }
             currentOnAnnotationJumpResult?.invoke(request.first, page != null)
+        }
+    }
+
+    var handledAnnotationResize by remember { mutableStateOf<Pair<String, Long>?>(null) }
+    LaunchedEffect(documentGeneration, annotationResizeRequest, isInitialPaginationReady, annotationEditing, editingFormatting) {
+        val request = annotationResizeRequest ?: return@LaunchedEffect
+        if (!isInitialPaginationReady || annotationEditing || editingFormatting || handledAnnotationResize == request) return@LaunchedEffect
+        val view = webViewRef.value as? EInkAnnotationWebView ?: return@LaunchedEffect
+        handledAnnotationResize = request
+        finishReaderSelection()
+        if (currentOnResizeSelection == null) {
+            currentOnAnnotationResizeResult?.invoke(request.first, false)
+            return@LaunchedEffect
+        }
+        val generation = documentGeneration
+        val commandAtRequest = navController.lastIssuedCommandId
+        resizeSession = request
+        nativeSelectionActive = true // Back owns even the restored-but-no-toolbar interval.
+        currentOnSelectionModeChange?.invoke(true)
+        view.requestFocus()
+        view.evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.pageForAnnotation(${EInkReaderFormatting.quote(request.first)}, ${EInkReaderFormatting.quote(generation)})") pageResult@{ result ->
+            if (generation != currentGeneration.value || view !== webViewRef.value || resizeSession != request ||
+                currentAnnotationEditing || currentEditingFormatting) return@pageResult
+            val page = result.toIntOrNull()
+            if (page == null || !navController.navigateToPage(page, commandAtRequest)) {
+                finishReaderSelection()
+                currentOnAnnotationResizeResult?.invoke(request.first, false)
+                return@pageResult
+            }
+            currentPage = navController.currentPage
+            totalPages = navController.totalPages
+            view.evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.beginResize(${EInkReaderFormatting.quote(request.first)}, ${EInkReaderFormatting.quote(request.second.toString())}, ${EInkReaderFormatting.quote(generation)})") resizeResult@{ restored ->
+                if (generation != currentGeneration.value || view !== webViewRef.value || resizeSession != request ||
+                    currentAnnotationEditing || currentEditingFormatting) return@resizeResult
+                val attached = restored == "true" && currentOnResizeSelection != null
+                if (!attached) finishReaderSelection()
+                else {
+                    view.refreshSelectionActions()
+                    val guidance = "Tap the selected passage to adjust its handles, then Save highlight."
+                    Toast.makeText(context, guidance, Toast.LENGTH_LONG).show()
+                    view.announceForAccessibility(guidance)
+                }
+                currentOnAnnotationResizeResult?.invoke(request.first, attached)
+            }
         }
     }
 
@@ -581,6 +673,19 @@ fun EInkPaginatedContent(
                             // Keep the clicked native menu stable until capture completes.
                             // Duplicate actions are rejected at invocation, not by rebuilding it.
                             annotationActionsEnabled = { currentOnCreateAnnotation != null }
+                            resizeSessionActive = { currentResizeSession != null }
+                            resizeActionsEnabled = { currentResizeSession != null && currentOnResizeSelection != null }
+                            autoHighlightAvailable = { currentAutoHighlightEnabled && currentOnAutoCreateAnnotation != null &&
+                                currentResizeSession == null && !currentAnnotationEditing && !currentEditingFormatting }
+                            undoAutoHighlightAvailable = { currentOnUndoAutoHighlight != null && currentResizeSession == null }
+                            onUndoAutoHighlightAction = ::undoAutomaticHighlight
+                            onCancelResize = ::finishReaderSelection
+                            onAnnotationTapped = { id ->
+                                if (!selectionOwnsInput() && !currentAnnotationEditing && !currentEditingFormatting) {
+                                    bottomBarVisible = false
+                                    currentOnAnnotationClick?.invoke(id)
+                                }
+                            }
                             isSelectionActive = { selectionOwnsInput() }
                             navigationEnabled = { isInitialPaginationReadyState.value && !currentEditingFormatting &&
                                 !selectionOwnsInput() && !currentAnnotationEditing && !annotationCapturePending }
@@ -619,14 +724,25 @@ fun EInkPaginatedContent(
                                 annotationCapturePending = false
                             }
                             onSelectionFinished = {
+                                val resizing = resizeSession
+                                if (resizing != null && !annotationCapture.hasPending) {
+                                    resizeSession = null
+                                    // Native Copy may still be serializing its selection.
+                                    // Revoke resize identity, but let Chromium clear its range.
+                                    evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.cancelResize(${EInkReaderFormatting.quote(resizing.first)}, ${EInkReaderFormatting.quote(resizing.second.toString())}, ${EInkReaderFormatting.quote(currentGeneration.value)}, false)", null)
+                                }
                                 nativeSelectionActive = false
                                 if (!annotationCapture.hasPending) evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.setSelectionMode(false, ${EInkReaderFormatting.quote(currentGeneration.value)}, false)", null)
                                 currentOnSelectionModeChange?.invoke(false)
                             }
                             onAnnotationAction = annotation@{ addNote, _ ->
-                                if (currentOnCreateAnnotation == null || !selectionOwnsInput()) return@annotation
+                                val resizing = currentResizeSession
+                                if ((if (resizing == null) currentOnCreateAnnotation == null else currentOnResizeSelection == null) ||
+                                    !selectionOwnsInput()) return@annotation
+                                cancelAutomaticCapture()
                                 val view = this
-                                val ticket = annotationCapture.begin(currentGeneration.value, view, addNote) ?: return@annotation
+                                val ticket = annotationCapture.begin(currentGeneration.value, view, addNote,
+                                    annotationId = resizing?.first, resizeToken = resizing?.second?.toString()) ?: return@annotation
                                 annotationCapturePending = true
                                 val generation = ticket.generation
                                 val timeout = coroutineScope.launch {
@@ -635,10 +751,7 @@ fun EInkPaginatedContent(
                                         currentEditingFormatting || currentAnnotationEditing)
                                     annotationCapturePending = annotationCapture.hasPending
                                     if (accepted) {
-                                        nativeSelectionActive = false
-                                        view.finishSelection(clearNativeCache = true)
-                                        evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.clearSelection()", null)
-                                        currentOnSelectionModeChange?.invoke(false)
+                                        finishReaderSelection()
                                         showBoundaryText = "Selection could not be captured. Please try again."
                                         delay(1800)
                                         showBoundaryText = null
@@ -646,21 +759,26 @@ fun EInkPaginatedContent(
                                 }
                                 // Queue one atomic snapshot at the explicit click. Provider menu
                                 // replacement may precede its result; never recapture a later range.
-                                evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.setSelectionMode(true, ${EInkReaderFormatting.quote(generation)}) && InkReadAnnotations.captureSelection(${EInkReaderFormatting.quote(generation)})") { result ->
+                                val captureCommand = if (ticket.annotationId != null && ticket.resizeToken != null) {
+                                    "InkReadAnnotations.captureResize(${EInkReaderFormatting.quote(ticket.annotationId)}, ${EInkReaderFormatting.quote(ticket.resizeToken)}, ${EInkReaderFormatting.quote(generation)})"
+                                } else "InkReadAnnotations.captureSelection(${EInkReaderFormatting.quote(generation)})"
+                                evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.setSelectionMode(true, ${EInkReaderFormatting.quote(generation)}) && $captureCommand") { result ->
                                     timeout.cancel()
                                     val accepted = annotationCapture.consume(ticket, currentGeneration.value, webViewRef.value,
                                         currentEditingFormatting || currentAnnotationEditing)
                                     annotationCapturePending = annotationCapture.hasPending
                                     if (!accepted) return@evaluateJavascript
                                     val json = runCatching { JSONTokener(result).nextValue() as? String }.getOrNull()
-                                    nativeSelectionActive = false
-                                    view.finishSelection(clearNativeCache = true)
-                                    evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.clearSelection()", null)
-                                    currentOnSelectionModeChange?.invoke(false)
                                     // Availability can change while JS serializes the
                                     // range. Never call a removed host callback.
                                     val callback = currentOnCreateAnnotation
-                                    if (json != null && callback != null) callback(json, ticket.addNote)
+                                    val resizeCallback = currentOnResizeSelection
+                                    val stillResizing = ticket.annotationId != null && ticket.resizeToken != null &&
+                                        resizeSession?.first == ticket.annotationId && resizeSession?.second?.toString() == ticket.resizeToken
+                                    finishReaderSelection()
+                                    if (json != null && ticket.annotationId != null && stillResizing && resizeCallback != null) {
+                                        resizeCallback(ticket.annotationId, json)
+                                    } else if (json != null && ticket.annotationId == null && callback != null) callback(json, ticket.addNote)
                                     else coroutineScope.launch {
                                         showBoundaryText = if (json == null) "Select article text to annotate."
                                             else "Annotations are unavailable. Please try again."
@@ -723,6 +841,7 @@ fun EInkPaginatedContent(
                                     }
                                 }
                             }
+                            val bridgeView = this
                             addJavascriptInterface(
                                 EInkJsInterface(
                                     onTotalPages = { generation, pages, commandId ->
@@ -761,6 +880,17 @@ fun EInkPaginatedContent(
                                         Handler(Looper.getMainLooper()).post {
                                             if (generation != currentGeneration.value || webViewRef.value == null) return@post
                                             currentOnAnnotationLocationsChanged?.invoke(json)
+                                        }
+                                    },
+                                    onAutoAnnotation = { generation, token, json ->
+                                        Handler(Looper.getMainLooper()).post {
+                                            val view = webViewRef.value as? EInkAnnotationWebView ?: return@post
+                                            if (view !== bridgeView || generation != currentGeneration.value || !currentAutoHighlightEnabled ||
+                                                currentOnAutoCreateAnnotation == null || currentResizeSession != null ||
+                                                currentAnnotationEditing || currentEditingFormatting || annotationCapture.hasPending ||
+                                                !view.hasActiveSelection || !view.acceptAutomaticCapture(token)) return@post
+                                            // Do not clear native handles: Undo and deliberate manual adjustment remain available.
+                                            currentOnAutoCreateAnnotation?.invoke(json)
                                         }
                                     },
                                     onReadingAnchorRestore = { generation, status ->
@@ -904,6 +1034,8 @@ fun EInkPaginatedContent(
                             { if (!selectionOwnsInput() && !annotationCapturePending) onSelectionModeChange(true) }
                         } else null,
                         onAnnotationsClick = onAnnotationsClick?.let { action -> { if (!selectionOwnsInput() && !annotationCapturePending) { bottomBarVisible = false; action() } } },
+                        annotationStatus = settledBarAnnotations.first,
+                        onUndoAutoHighlight = if (settledBarAnnotations.second) ::undoAutomaticHighlight else null,
                     )
                     // Reuse only an already-open control bar's measured space.
                     // Default selection adds no bar and covers no article text.
@@ -957,6 +1089,13 @@ fun EInkPaginatedContent(
 internal class EInkAnnotationWebView(context: android.content.Context) : WebView(context) {
     var selectionEnabled: () -> Boolean = { false }
     var annotationActionsEnabled: () -> Boolean = { false }
+    var resizeSessionActive: () -> Boolean = { false }
+    var resizeActionsEnabled: () -> Boolean = { false }
+    var autoHighlightAvailable: () -> Boolean = { false }
+    var undoAutoHighlightAvailable: () -> Boolean = { false }
+    var onUndoAutoHighlightAction: () -> Unit = {}
+    var onCancelResize: () -> Unit = {}
+    var onAnnotationTapped: (String) -> Unit = {}
     var isSelectionActive: () -> Boolean = { false }
     var navigationEnabled: () -> Boolean = { false }
     var readerGestureKey: () -> Any = { Unit }
@@ -976,13 +1115,48 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
         56f * resources.displayMetrics.density,
         ViewConfiguration.getLongPressTimeout().toLong(),
     )
-    private var gestureSerial = 0L
+    private val gestureSerial = AtomicLong()
     private var gestureKey: Any? = null
     private var activePointer = -1
     private var nativeStreamOpen = false
+    private val autoHighlightGesture = EInkAutoHighlightGesture()
+
+    // Compose test/layout reflow can invalidate from a worker. Never move the
+    // token revocation behind this queue, or an already-queued bridge callback
+    // could save first. Only the WebView operation waits for its owner looper.
+    private val annotationHandler = Handler(checkNotNull(Looper.myLooper()))
+    private val annotationDispatch = EInkAnnotationScriptDispatch(
+        isOwnerThread = { Looper.myLooper() === annotationHandler.looper },
+        postToOwner = { command -> annotationHandler.post { command() } },
+        currentDocument = { selectionDocumentKey() },
+        currentRevision = { autoHighlightGesture.currentRevision },
+        currentSessionRevision = { autoHighlightGesture.currentSessionRevision },
+        isAttached = { isAttachedToWindow },
+    )
+
+    private fun annotationScript(method: String, token: Long? = null,
+                                 revision: Long = autoHighlightGesture.currentRevision, sessionReset: Boolean = false) {
+        val document = selectionDocumentKey()
+        val arguments = listOfNotNull(token?.toString(), document.toString())
+            .joinToString(", ") { EInkReaderFormatting.quote(it) }
+        annotationDispatch.dispatch(document, revision, sessionReset) {
+            evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.$method($arguments)", null)
+        }
+    }
+    private fun completeAutomaticCapture(token: Long?) {
+        if (token == null || !autoHighlightAvailable()) return
+        annotationScript("completeSelectionGesture", token)
+    }
+    fun cancelAutomaticCapture() {
+        val revision = autoHighlightGesture.cancelGesture()
+        annotationScript("cancelAutoCapture", revision = revision)
+    }
+    fun acceptAutomaticCapture(token: String): Boolean =
+        token.toLongOrNull()?.let(autoHighlightGesture::consume) == true
 
     fun invalidateReaderGesture() {
-        gestureSerial++
+        gestureSerial.incrementAndGet()
+        cancelAutomaticCapture()
         touch.cancel()
     }
 
@@ -1006,7 +1180,10 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
             // must remain dismissal-only, never turn a page as a side effect.
             val ownedAtDown = hasActiveSelection || isSelectionActive()
             onReaderDown()
-            gestureSerial++
+            cancelAutomaticCapture()
+            val autoToken = autoHighlightGesture.down(autoHighlightAvailable(), ownedAtDown)
+            if (autoToken != null) annotationScript("beginSelectionGesture", autoToken)
+            gestureSerial.incrementAndGet()
             gestureKey = readerGestureKey()
             activePointer = event.getPointerId(0)
             nativeStreamOpen = true
@@ -1016,7 +1193,8 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
                 (edges?.left ?: 0).toFloat(), (edges?.right ?: 0).toFloat())
         } else if (action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_POINTER_DOWN ||
             event.pointerCount != 1 || event.getPointerId(0) != activePointer || gestureKey != readerGestureKey()) {
-            gestureSerial++
+            gestureSerial.incrementAndGet()
+            cancelAutomaticCapture()
             touch.cancel()
         } else {
             if (hasActiveSelection || isSelectionActive()) touch.claimSelection()
@@ -1032,6 +1210,7 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
                 if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) nativeStreamOpen = false
             }
             EInkReaderTouchArbitrator.Dispatch.CANCEL_WEBVIEW, EInkReaderTouchArbitrator.Dispatch.CONSUME -> {
+                cancelAutomaticCapture()
                 if (nativeStreamOpen) {
                     val cancel = MotionEvent.obtain(event)
                     cancel.action = MotionEvent.ACTION_CANCEL
@@ -1041,9 +1220,12 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
                 }
             }
         }
+        if (action == MotionEvent.ACTION_UP && decision.dispatch == EInkReaderTouchArbitrator.Dispatch.WEBVIEW) {
+            completeAutomaticCapture(autoHighlightGesture.up())
+        }
         decision.action?.let { recognized ->
             when (recognized) {
-                EInkReaderTouchArbitrator.Action.DISMISS_SELECTION -> onReaderAction(recognized)
+                EInkReaderTouchArbitrator.Action.DISMISS_SELECTION -> dispatchSelectionTap(event.x, event.y)
                 EInkReaderTouchArbitrator.Action.PREVIOUS_ARTICLE, EInkReaderTouchArbitrator.Action.NEXT_ARTICLE ->
                     if (navigationEnabled() && !hasActiveSelection) onReaderAction(recognized)
                 else -> if (navigationEnabled() && !hasActiveSelection) dispatchPlainTap(event.x, event.y, recognized)
@@ -1052,36 +1234,45 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
         return true
     }
 
+    private fun dispatchSelectionTap(x: Float, y: Float) {
+        if (width <= 0 || height <= 0) return
+        val serial = gestureSerial.get()
+        val key = readerGestureKey()
+        // A real tap inside a programmatically restored range is Chromium's
+        // native route to reveal selection handles. Never turn it into a page
+        // tap or unconditional dismissal. Outside taps remain dismiss-only.
+        evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.selectionContainsPoint(${x / width}*innerWidth, ${y / height}*innerHeight, ${EInkReaderFormatting.quote(selectionDocumentKey().toString())})") { result ->
+            if (result != "true" && serial == gestureSerial.get() && key == readerGestureKey()) {
+                onReaderAction(EInkReaderTouchArbitrator.Action.DISMISS_SELECTION)
+            }
+        }
+    }
+
     private fun dispatchPlainTap(x: Float, y: Float, action: EInkReaderTouchArbitrator.Action) {
         if (width <= 0 || height <= 0) return
-        val serial = gestureSerial
+        val serial = gestureSerial.get()
         val key = readerGestureKey()
-        // Chromium updates native hitTestResult asynchronously, so it may still
-        // describe the previous touch (including a previous page's image). Use
-        // this coordinate-specific DOM result, not that stale native hit, as the
-        // authority. Standalone images retain page taps; linked images do not.
-        // Link taps keep the existing blocked external-navigation policy.
-        evaluateJavascript("""
-            (function(){
-                var s=window.getSelection(); if(s && !s.isCollapsed) return false;
-                var e=document.elementFromPoint(${x / width}*innerWidth,${y / height}*innerHeight);
-                if(!e) return false;
-                while(e){
-                    if(e.matches && e.matches('a,button,input,textarea,select,option,label,summary,video,audio,[contenteditable],[role="button"],[role="link"]')) return false;
-                    e=e.parentElement;
-                }
-                return true;
-            })()
-        """.trimIndent()) { result ->
-            if (result == "true" && serial == gestureSerial && key == readerGestureKey() &&
-                navigationEnabled() && !hasActiveSelection && !isSelectionActive()) onReaderAction(action)
+        // Geometry and interactive ancestors are read from the current DOM,
+        // never Chromium's potentially stale native hitTestResult.
+        evaluateJavascript("window.InkReadAnnotations && InkReadAnnotations.tapTarget(${x / width}*innerWidth, ${y / height}*innerHeight, ${EInkReaderFormatting.quote(selectionDocumentKey().toString())})") { result ->
+            if (serial != gestureSerial.get() || key != readerGestureKey() ||
+                !navigationEnabled() || hasActiveSelection || isSelectionActive()) return@evaluateJavascript
+            val json = runCatching { (JSONTokener(result).nextValue() as? String)?.let(::JSONObject) }.getOrNull()
+                ?: return@evaluateJavascript
+            when (json.optString("kind")) {
+                "page" -> onReaderAction(action)
+                "annotation" -> json.optString("id").takeIf { it.isNotBlank() }?.let(onAnnotationTapped)
+            }
         }
     }
 
     fun refreshSelectionActions() { selectionActionMode?.invalidate() }
 
     fun finishSelection(clearNativeCache: Boolean = false) {
-        gestureSerial++
+        cancelAutomaticCapture()
+        val revision = autoHighlightGesture.finishSession()
+        annotationScript("endSelectionSession", revision = revision, sessionReset = true)
+        gestureSerial.incrementAndGet()
         touch.claimSelection()
         // Explicit dismissal owns its token/state changes and immediately
         // cancels any deferred completion from an earlier native menu.
@@ -1099,23 +1290,31 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
 
     private inner class AnnotationActionModeCallback(private val original: ActionMode.Callback) : ActionMode.Callback2() {
         fun updateActions(menu: Menu): Boolean {
-            val highlightPresent = menu.findItem(HIGHLIGHT) != null
-            val notePresent = menu.findItem(ADD_NOTE) != null
-            if (!annotationActionsEnabled()) {
-                menu.removeItem(HIGHLIGHT)
-                menu.removeItem(ADD_NOTE)
-                return highlightPresent || notePresent
+            var changed = false
+            fun action(id: Int, title: String, order: Int, available: Boolean) {
+                val item = menu.findItem(id)
+                if (!available) {
+                    if (item != null) { menu.removeItem(id); changed = true }
+                } else if (item == null) {
+                    menu.add(Menu.NONE, id, order, title).setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM)
+                    changed = true
+                }
             }
-            if (!highlightPresent) menu.add(Menu.NONE, HIGHLIGHT, 1, "Highlight").setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM)
-            if (!notePresent) menu.add(Menu.NONE, ADD_NOTE, 2, "Add note").setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM)
-            return !highlightPresent || !notePresent
+            val resizing = resizeSessionActive()
+            action(HIGHLIGHT, "Highlight", 1, annotationActionsEnabled() && !resizing)
+            action(ADD_NOTE, "Add note", 2, annotationActionsEnabled() && !resizing)
+            action(SAVE_RESIZE, "Save highlight", 1, resizing && resizeActionsEnabled())
+            action(CANCEL_RESIZE, "Cancel", 2, resizing)
+            action(UNDO_AUTO, "Undo highlight", 3, undoAutoHighlightAvailable() && !resizing)
+            return changed
         }
         override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
             if (!selectionEnabled() || !touch.permitsNativeSelection || !original.onCreateActionMode(mode, menu)) return false
             selectionLifecycle.start(mode)
-            gestureSerial++
+            gestureSerial.incrementAndGet()
             touch.claimSelection()
             onSelectionStarted()
+            completeAutomaticCapture(autoHighlightGesture.selectionStarted())
             updateActions(menu)
             return true
         }
@@ -1124,13 +1323,24 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
             return updateActions(menu) || result
         }
         override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean = when (item.itemId) {
-            HIGHLIGHT, ADD_NOTE -> { if (selectionEnabled() && annotationActionsEnabled()) onAnnotationAction(item.itemId == ADD_NOTE, mode); true }
-            else -> original.onActionItemClicked(mode, item)
+            HIGHLIGHT, ADD_NOTE -> {
+                cancelAutomaticCapture()
+                if (selectionEnabled() && annotationActionsEnabled() && !resizeSessionActive()) onAnnotationAction(item.itemId == ADD_NOTE, mode)
+                true
+            }
+            SAVE_RESIZE -> {
+                cancelAutomaticCapture()
+                if (selectionEnabled() && resizeActionsEnabled()) onAnnotationAction(false, mode)
+                true
+            }
+            CANCEL_RESIZE -> { cancelAutomaticCapture(); onCancelResize(); true }
+            UNDO_AUTO -> { cancelAutomaticCapture(); if (undoAutoHighlightAvailable()) onUndoAutoHighlightAction(); true }
+            else -> { cancelAutomaticCapture(); original.onActionItemClicked(mode, item) }
         }
         override fun onDestroyActionMode(mode: ActionMode) {
             original.onDestroyActionMode(mode)
             val token = selectionLifecycle.destroyed(mode) ?: return
-            gestureSerial++
+            gestureSerial.incrementAndGet()
             val document = selectionDocumentKey()
             onSelectionModeEnded()
             // Chromium can destroy the old floating menu and start its
@@ -1139,6 +1349,9 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
             post {
                 if (selectionLifecycle.completeDismissal(token,
                         sameReader = document == selectionDocumentKey(), attached = isAttachedToWindow)) {
+                    cancelAutomaticCapture()
+                    val revision = autoHighlightGesture.finishSession()
+                    annotationScript("endSelectionSession", revision = revision, sessionReset = true)
                     onSelectionFinished()
                 }
             }
@@ -1161,7 +1374,13 @@ internal class EInkAnnotationWebView(context: android.content.Context) : WebView
         if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) false
         else super.onKeyUp(keyCode, event)
 
-    private companion object { const val HIGHLIGHT = 0x494E4B01; const val ADD_NOTE = 0x494E4B02 }
+    private companion object {
+        const val HIGHLIGHT = 0x494E4B01
+        const val ADD_NOTE = 0x494E4B02
+        const val SAVE_RESIZE = 0x494E4B03
+        const val CANCEL_RESIZE = 0x494E4B04
+        const val UNDO_AUTO = 0x494E4B05
+    }
 }
 
 private data class EInkReadingAnchorSnapshot(
@@ -1175,7 +1394,11 @@ private class EInkJsInterface(
     private val onReadingAnchor: (String, String, String, String) -> Unit,
     private val onReadingAnchorRestore: (String, String) -> Unit,
     private val onAnnotationLocations: (String, String) -> Unit,
+    private val onAutoAnnotation: (String, String, String) -> Unit,
 ) {
+    @JavascriptInterface
+    fun onAutoAnnotation(generation: String, token: String, json: String) = onAutoAnnotation.invoke(generation, token, json)
+
     @JavascriptInterface
     fun onAnnotationLocations(generation: String, json: String) = onAnnotationLocations.invoke(generation, json)
 

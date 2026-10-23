@@ -38,6 +38,22 @@ class ReadwiseSettingsUiTest {
         compose.runOnIdle { assertEquals("another-test-token" to true, connects.last()) }
     }
 
+    @Test fun automaticSelectionIsIndependentOfExportOptIn() {
+        var automatic by mutableStateOf(false)
+        val connects = mutableListOf<Pair<String, Boolean>>()
+        compose.setContent {
+            MaterialTheme {
+                ReadwiseSettingsContent(ReadwiseConnectionState(busy = false), ReadwiseQueueSummary(), null, false,
+                    onBack = {}, onOpenTokenPage = {}, onConnect = { token, export -> connects += token to export },
+                    onExportEnabled = {}, onDisconnect = {}, autoHighlight = automatic, onAutoHighlight = { automatic = it })
+            }
+        }
+        compose.onNodeWithTag("annotation_auto_highlight").performScrollTo().assertIsOff().performClick().assertIsOn()
+        compose.onNodeWithTag("readwise_token_input").performScrollTo().performTextInput("fake-not-a-secret")
+        compose.onNodeWithTag("readwise_connect").performScrollTo().performClick()
+        compose.runOnIdle { assertTrue(automatic); assertEquals(listOf("fake-not-a-secret" to false), connects) }
+    }
+
     @Test fun restorationNeverRestoresAnEnteredToken() {
         val restoration = StateRestorationTester(compose)
         restoration.setContent {

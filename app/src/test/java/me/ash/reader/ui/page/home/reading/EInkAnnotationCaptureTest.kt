@@ -119,4 +119,18 @@ class EInkAnnotationCaptureTest {
             assertEquals(listOf(if (timeoutFirst) "timeout" else "create"), effects)
         }
     }
+    @Test fun resizeSaveKeepsOriginalIdAndCannotRetargetAfterCancellation() {
+        val capture = EInkAnnotationCapture<Any>()
+        val view = Any()
+        val original = requireNotNull(capture.begin("document", view, false, "original", "request-1"))
+        assertNull(capture.begin("document", view, false, "other", "request-2"))
+        assertEquals("original", original.annotationId)
+        assertEquals("request-1", original.resizeToken)
+        capture.onEvent(EInkAnnotationCapture.Event.EXPLICIT_DISMISSAL)
+        val replacement = requireNotNull(capture.begin("document", view, false, "other", "request-2"))
+        assertFalse(capture.consume(original, "document", view, false))
+        assertTrue(capture.consume(replacement, "document", view, false))
+        assertEquals("other", replacement.annotationId)
+    }
+
 }
