@@ -7,7 +7,9 @@ import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import coil.decode.DataSource
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -122,7 +124,9 @@ import org.junit.Test
  * Article links are about:blank so
  * text-only fixtures never trigger external metadata fetches; photo URLs are seeded in Coil. */
 class NewspaperUiTest {
-    @get:Rule val compose = createComposeRule()
+    // Queue effects on the Compose test clock instead of resuming dialog disposal on DataStore IO.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @get:Rule val compose = createComposeRule(effectContext = StandardTestDispatcher())
 
     @Test fun publicationsRenderAndKeepActionsAtEveryWidth() {
         val opened = AtomicInteger()

@@ -1,9 +1,11 @@
 package me.ash.reader.ui.page.home.reading
 
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.PointF
+import android.graphics.Region
 import android.os.SystemClock
 import android.util.Log
 import android.view.InputDevice
@@ -34,6 +36,7 @@ import androidx.test.espresso.NoMatchingRootException
 import androidx.test.espresso.UiController
 import androidx.test.espresso.ViewAction
 import androidx.test.espresso.action.GeneralClickAction
+import androidx.test.espresso.action.GeneralLocation
 import androidx.test.espresso.action.Press
 import androidx.test.espresso.action.Tap
 import androidx.test.espresso.action.ViewActions.click
@@ -94,10 +97,23 @@ class EInkReaderAnnotationUiTest {
     private val note = AtomicReference<Boolean?>()
     private val locations = AtomicReference<String?>()
     private var nativeOverflowOpen = false
+    private var originalAccessibilityFlags: Int? = null
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
 
     @Before fun prepare() { VolumeKeyEventBus.resetForTest() }
-    @After fun cleanup() { VolumeKeyEventBus.resetForTest() }
+    @After fun cleanup() {
+        try {
+            originalAccessibilityFlags?.let { flags ->
+                val automation = instrumentation.uiAutomation
+                val info = automation.serviceInfo
+                info.flags = flags
+                automation.serviceInfo = info
+                originalAccessibilityFlags = null
+            }
+        } finally {
+            VolumeKeyEventBus.resetForTest()
+        }
+    }
 
     private fun startReader(fontSize: Int = ReaderFormatting.Default.fontSize, annotationsAvailable: Boolean = true) {
         compose.setContent {
@@ -542,7 +558,7 @@ class EInkReaderAnnotationUiTest {
             // Closing overflow is a toolbar action, not a Back press that could
             // destroy the entire ActionMode before the remaining menu assertions.
             onView(allOf(withContentDescription("Close overflow"), isDisplayed()))
-                .inRoot(nativeToolbarRoot()).perform(click())
+                .inRoot(nativeToolbarRoot()).perform(clickWhenNativeActionTouchable())
             nativeOverflowOpen = false
         }
     }
@@ -683,7 +699,7 @@ class EInkReaderAnnotationUiTest {
             // The floating toolbar's overflow is not the activity/action-bar
             // overflow searched by openContextualActionModeOverflowMenu().
             onView(allOf(withContentDescription("More options"), isDisplayed()))
-                .inRoot(nativeToolbarRoot()).perform(click())
+                .inRoot(nativeToolbarRoot()).perform(clickWhenNativeActionTouchable())
             nativeOverflowOpen = true
             // The platform overflow is a real ListView. At narrow widths / large
             // font scales its lower rows are partial or not bound at all. Let
@@ -702,7 +718,7 @@ class EInkReaderAnnotationUiTest {
     private fun assertNativeAnnotationActionsAbsent() {
         try {
             onView(allOf(withContentDescription("More options"), isDisplayed()))
-                .inRoot(nativeToolbarRoot()).perform(click())
+                .inRoot(nativeToolbarRoot()).perform(clickWhenNativeActionTouchable())
             nativeOverflowOpen = true
         } catch (_: NoMatchingViewException) {
             // No overflow is a valid native layout. The main toolbar still must
@@ -735,8 +751,77 @@ class EInkReaderAnnotationUiTest {
 
     private fun clickNativeAction(label: String) {
         nativeActionAvailable(label)
-        nativeAction(label).perform(click())
+        nativeAction(label).perform(clickWhenNativeActionTouchable())
         nativeOverflowOpen = false
+    }
+
+    private fun clickWhenNativeActionTouchable(): ViewAction {
+        if (originalAccessibilityFlags == null) {
+            val automation = instrumentation.uiAutomation
+            val info = automation.serviceInfo
+            originalAccessibilityFlags = info.flags
+            info.flags = info.flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+            automation.serviceInfo = info
+        }
+        val originalClick = click()
+        return object : ViewAction {
+            override fun getConstraints(): Matcher<View> = originalClick.constraints
+            override fun getDescription() = "one native click after its window can receive the click center"
+            override fun perform(uiController: UiController, view: View) {
+                val deadline = SystemClock.elapsedRealtime() + 5_000
+                while (true) {
+                    val (ready, state) = nativeActionTouchability(view)
+                    val remaining = deadline - SystemClock.elapsedRealtime()
+                    assertTrue("Native action was not touchable within 5000 ms: $state", remaining > 0)
+                    if (ready) {
+                        // Preserve the real Espresso gesture, coordinates and
+                        // exact-result assertions. Never retry a missed click.
+                        originalClick.perform(uiController, view)
+                        return
+                    }
+                    // Pump UI work between observations, rather than sleeping
+                    // through a fixed toolbar animation or blocking its frames.
+                    uiController.loopMainThreadForAtLeast(minOf(16L, remaining))
+                }
+            }
+        }
+    }
+
+    private fun nativeActionTouchability(target: View): Pair<Boolean, String> {
+        // isDisplayed alone is insufficient: Android can retain alpha=1 menu
+        // views while its floating toolbar's touchable region is empty.
+        val center = GeneralLocation.VISIBLE_CENTER.calculateCoordinates(target)
+        val ancestors = mutableListOf<String>()
+        var visible = true
+        var current: View? = target
+        while (current != null) {
+            val node = current
+            visible = visible && node.isAttachedToWindow && node.isShown && node.isEnabled && node.alpha == 1f
+            ancestors += "${node.javaClass.simpleName}(attached=${node.isAttachedToWindow}," +
+                "shown=${node.isShown},enabled=${node.isEnabled},alpha=${node.alpha})"
+            current = node.parent as? View
+        }
+        val accessibilityNode = target.createAccessibilityNodeInfo()
+        val targetWindow = accessibilityNode.windowId
+        accessibilityNode.recycle()
+        val windows = instrumentation.uiAutomation.windows
+        var containsCenter = false
+        val regions = mutableListOf<String>()
+        try {
+            for (window in windows) {
+                val region = Region()
+                window.getRegionInScreen(region)
+                if (window.id == targetWindow) {
+                    containsCenter = region.contains(center[0].toInt(), center[1].toInt())
+                }
+                regions += "${window.id}:$region"
+            }
+        } finally {
+            windows.forEach { it.recycle() }
+        }
+        return (visible && containsCenter) to "target=${(target as? TextView)?.text ?: target.contentDescription}," +
+            "center=${center.contentToString()},window=$targetWindow,containsCenter=$containsCenter," +
+            "ancestors=$ancestors,regions=$regions"
     }
     private fun volume(code: Int) = instrumentation.runOnMainSync {
         assertTrue(dispatchEInkVolumeKey(true, code, KeyEvent.ACTION_DOWN, 0))
