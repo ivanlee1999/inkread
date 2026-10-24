@@ -46,8 +46,8 @@ jobs:
 
       - name: Verify parser dependency resolution
         run: |
-          ./gradlew --no-daemon dependencyInsight --configuration githubReleaseRuntimeClasspath --dependency org.jsoup:jsoup
-          ./gradlew --no-daemon dependencyInsight --configuration githubReleaseRuntimeClasspath --dependency org.mozilla:rhino
+          ./gradlew --no-daemon :app:dependencyInsight --configuration githubReleaseRuntimeClasspath --dependency org.jsoup:jsoup
+          ./gradlew --no-daemon :app:dependencyInsight --configuration githubReleaseRuntimeClasspath --dependency org.mozilla:rhino
 
       - name: Run unit tests
         run: ./gradlew --stacktrace --no-daemon ${{ github.event.inputs.gradle-task || 'testGithubDebugUnitTest' }}
