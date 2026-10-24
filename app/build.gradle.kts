@@ -23,6 +23,7 @@ fun fetchGitCommitHash(): String {
 }
 
 val gitCommitHash = fetchGitCommitHash()
+val parserSmoke = providers.gradleProperty("parserSmoke").orNull == "true"
 val keyProps = Properties()
 val releaseKeyPropsFile: File = rootProject.file("signature/keystore_release.properties")
 val debugKeyPropsFile: File = rootProject.file("signature/keystore.properties")
@@ -37,13 +38,19 @@ if (releaseKeyPropsFile.exists()) {
 
 android {
     compileSdk = 36
+    // Opt-in exact minified-release parser runtime smoke; ordinary instrumentation stays debug.
+    testBuildType = if (parserSmoke) "release" else "debug"
+    sourceSets.getByName("androidTest") {
+        // Platform-only smoke avoids test-library APIs optimized out of the release APK.
+        if (parserSmoke) java.setSrcDirs(listOf("src/parserSmoke/java"))
+    }
 
     defaultConfig {
         applicationId = "me.ash.reader"
         minSdk = 26
         targetSdk = 34
-        versionCode = 65
-        versionName = "0.16.20"
+        versionCode = 66
+        versionName = "0.16.21"
 
         buildConfigField(
             "String",
@@ -51,7 +58,9 @@ android {
             "\"ReadYou/${versionName}(${versionCode})\"",
         )
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner = if (parserSmoke)
+            "me.ash.reader.infrastructure.html.ParserSmokeInstrumentation"
+        else "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
 
         room { schemaDirectory("$projectDir/schemas") }
@@ -87,6 +96,7 @@ android {
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
+                "proguard-readability.pro",
             )
             signingConfig = signingConfigs.getByName("release")
         }
@@ -127,13 +137,13 @@ dependencies {
     implementation(libs.compose.html)
     implementation(platform(libs.compose.bom.alpha))
     implementation(libs.androidx.ui.graphics)
-    androidTestImplementation(platform(libs.compose.bom.stable))
+    if (!parserSmoke) androidTestImplementation(platform(libs.compose.bom.stable))
     implementation(libs.compose.ui)
     implementation(libs.compose.ui.util)
     implementation(libs.compose.material)
     implementation(libs.compose.material.icons.extended)
     implementation(libs.compose.ui.tooling.preview)
-    androidTestImplementation(libs.compose.ui.test.junit4)
+    if (!parserSmoke) androidTestImplementation(libs.compose.ui.test.junit4)
     implementation(libs.compose.material3)
 
     // Coil
@@ -145,7 +155,7 @@ dependencies {
     // Hilt
     implementation(libs.hilt.work)
     implementation(libs.hilt.android)
-    androidTestImplementation(platform(libs.compose.bom.stable))
+    if (!parserSmoke) androidTestImplementation(platform(libs.compose.bom.stable))
     debugImplementation(libs.compose.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
     ksp(libs.hilt.android.compiler)
@@ -156,6 +166,8 @@ dependencies {
     implementation(libs.android.svg)
     implementation(libs.opml.parser)
     implementation(libs.readability4j)
+    implementation(libs.rhino)
+    implementation(libs.jsoup) // Explicit extraction baseline instead of Readability4J's old transitive version.
     implementation(libs.rome)
     implementation(libs.rome.modules)
     implementation(libs.telephoto)
@@ -199,8 +211,8 @@ dependencies {
 
     // Testing
     testImplementation(libs.junit)
-    androidTestImplementation(libs.junit.ext)
-    androidTestImplementation(libs.espresso)
+    if (!parserSmoke) androidTestImplementation(libs.junit.ext)
+    if (!parserSmoke) androidTestImplementation(libs.espresso)
     testImplementation(libs.mockito.core)
     testImplementation(libs.mockito.junit.jupiter)
     testImplementation(libs.mockito.kotlin)

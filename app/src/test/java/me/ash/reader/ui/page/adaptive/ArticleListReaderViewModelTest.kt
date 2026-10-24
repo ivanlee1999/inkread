@@ -75,6 +75,58 @@ class ArticleListReaderViewModelTest {
         Dispatchers.resetMain()
     }
 
+    @Test fun `explicit import wins over a delayed initial cache read`() = runTest(dispatcher) {
+        val a = article("A", fullContent = true)
+        val fixture = fixture(a)
+        val initial = CompletableDeferred<Result<String>>()
+        whenever(fixture.cache.readFullContent(a.article.id, 1)).thenSuspend {
+            withContext(NonCancellable) { initial.await() }
+        }
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        whenever(fixture.cache.importBrowserText(a.article.id, 1, "User chosen body"))
+            .thenReturn(Result.success("<p>User chosen body</p>"))
+        fixture.viewModel.importBrowserText("User chosen body"); runCurrent()
+        initial.complete(Result.success("<p>Older cached body</p>")); runCurrent()
+        assertEquals(ReaderState.FullContent("<p>User chosen body</p>", browserText = true), fixture.viewModel.readerStateStateFlow.value.content)
+    }
+
+    @Test fun `browser text is an explicit alternate source and feed remains available`() = runTest(dispatcher) {
+        val a = article("A")
+        val fixture = fixture(a)
+        fixture.viewModel.initData(a.article.id)
+        runCurrent()
+        whenever(fixture.cache.importBrowserText(a.article.id, 1, "Visible body"))
+            .thenReturn(Result.success("<p>Visible body</p>"))
+        fixture.viewModel.importBrowserText("Visible body")
+        runCurrent()
+        assertEquals(ReaderState.FullContent("<p>Visible body</p>", browserText = true), fixture.viewModel.readerStateStateFlow.value.content)
+        org.junit.Assert.assertTrue(fixture.viewModel.readerStateStateFlow.value.hasBrowserText)
+        fixture.viewModel.renderDescriptionContent()
+        assertEquals(ReaderState.Description("description A"), fixture.viewModel.readerStateStateFlow.value.content)
+    }
+
+    @Test fun `late imported text cannot replace a newer article`() = runTest(dispatcher) {
+        val a = article("A"); val b = article("B")
+        val fixture = fixture(a, b)
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        val imported = CompletableDeferred<Result<String>>()
+        whenever(fixture.cache.importBrowserText(a.article.id, 1, "Visible body")).thenSuspend {
+            withContext(NonCancellable) { imported.await() }
+        }
+        fixture.viewModel.importBrowserText("Visible body"); runCurrent()
+        fixture.viewModel.initData(b.article.id); runCurrent()
+        imported.complete(Result.success("<p>Old imported A</p>")); runCurrent()
+        assertEquals(b.article.id, fixture.viewModel.readerStateStateFlow.value.articleId)
+        assertEquals(ReaderState.Description("description B"), fixture.viewModel.readerStateStateFlow.value.content)
+    }
+
+    @Test fun `access limited extraction retains feed and exposes browser status`() {
+        val failure = me.ash.reader.infrastructure.html.ArticleRequiresBrowserException(
+            me.ash.reader.infrastructure.html.ArticleExtractionPreparation.AccessReason.PUBLISHER_RESTRICTED)
+        assertEquals(ReaderState.Description("<p>Feed original</p>", fallback = true, needsBrowser = true),
+            selectReaderContent("<p>Feed original</p>", null, failure))
+    }
+
     @Test fun `delayed article A cannot replace article B`() = runTest(dispatcher) {
         val a = article("A", fullContent = true)
         val b = article("B")
@@ -445,6 +497,8 @@ class ArticleListReaderViewModelTest {
         // Stubbing suspend APIs requires a coroutine context; these defaults do not suspend.
         kotlinx.coroutines.runBlocking {
             whenever(cache.readFullContent(any(), any())).thenReturn(Result.failure(FileNotFoundException()))
+            whenever(cache.readBrowserText(any(), any())).thenReturn(Result.failure(FileNotFoundException()))
+            whenever(cache.readPreviousContent(any(), any(), any())).thenReturn(Result.failure(FileNotFoundException()))
         }
         val applicationDispatcher = StandardTestDispatcher(applicationScheduler)
         val applicationScope = CoroutineScope(SupervisorJob() + applicationDispatcher)

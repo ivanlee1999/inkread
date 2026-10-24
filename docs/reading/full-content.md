@@ -26,6 +26,17 @@ Saved articles prefer useful responsive image sizes and try at most four candida
 
 ## Limits
 
-The engine remains Readability4J 1.0.8. Content comparison is conservative and language-independent, not a guarantee of perfect extraction. Short legitimate Chinese and English articles do not need a minimum word count. Login-only, paywalled or JavaScript-only pages may still be unavailable. This app update does not change FreshRSS configuration, supply credentials, or bypass access restrictions.
+Full-article extraction uses pinned Mozilla Readability 0.6.0 through a bounded interpreter-only Rhino adapter. The older Readability4J remains for existing feed-summary parsing, not the full-article pipeline. Content comparison is conservative and language-independent, not a guarantee of perfect extraction. Short legitimate Chinese and English articles do not need a minimum word count. Login-only, paywalled or JavaScript-only pages may still be unavailable. This app update does not change FreshRSS configuration, supply credentials, or bypass access restrictions.
 
 RSS full-text cache remains disposable app cache. The Saved library is the durable offline reading path. This update does not turn every RSS folder into a permanently downloaded edition.
+
+
+## Updated extraction and browser text (0.16.21)
+
+Existing cache is not silently invalidated. **Fetch full article again** uses the updated engine; failed, unrelated or materially incomplete candidates leave the usable source intact. The quality policy compares retained editorial paragraphs, links and relevant images, not just total length. A complete-looking server body can avoid automatic fetching, but this is a heuristic, not proof of completeness; explicit source controls remain available.
+
+Declared paid access and supported visible sign-in/subscription/challenge indicators stop automatic extraction before cleanup. Browser access may require the publisher's normal subscription or sign-in. **Import copied browser text** is a manual plain-text preview with a 128 KiB limit, not a background DOM capture or access bypass. Images and formatting are not copied. The app never reads the clipboard automatically.
+
+Imported text is a separate private source. Earlier exact bodies are retained before replacements, with at most five earlier versions per article/source. Earlier-source choices cycle through retained bodies, while feed and current extracted/imported choices remain separate. At the history limit, replacement is rejected rather than deleting old bodies. Extracted history is disposable cache; imports are private app files. Neither source switches nor imports delete or create annotation identities. Different bodies can require reattachment and may not contain every existing quote.
+
+Parser input is inert. Publisher JavaScript and page resource loads are not executed by the parser. The bundled trusted Mozilla code runs in an interpreter-only JVM runtime with no page Java/Android bridge. Extraction has byte, node/depth, instruction and cooperative time/output budgets and serial execution to limit e-ink memory pressure. Deadline limits are cooperative, not a hard operating-system sandbox or real-time guarantee.

@@ -1,0 +1,7 @@
+Mozilla Readability 0.6.0: https://github.com/mozilla/readability
+Readability.js: Copyright (c) 2010 Arc90 Inc, Apache License 2.0.
+JSDOMParser.js: Mozilla Public License 2.0.
+These files are syntax-transformed from the original 0.6.0 sources with Babel;
+no extraction logic is intentionally changed. Original source, licenses,
+locked transform dependencies and reproduction instructions are included in
+this application's source under tools/readability-vendor.

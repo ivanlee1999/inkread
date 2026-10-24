@@ -4,7 +4,13 @@ import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import me.ash.reader.infrastructure.html.Readability
+import me.ash.reader.infrastructure.html.ModernReadability
+import me.ash.reader.infrastructure.html.ArticleExtractionConcurrency
+import kotlinx.coroutines.sync.withPermit
+import me.ash.reader.infrastructure.html.ArticleExtractionPreparation
+import me.ash.reader.infrastructure.html.ArticleRequiresBrowserException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import me.ash.reader.infrastructure.html.readHtmlLimited
 import me.ash.reader.infrastructure.rss.articleImageHttpClient
 import me.ash.reader.infrastructure.rss.publicArticleUrl
@@ -27,7 +33,10 @@ internal class PublicSavedArticleDownloader(private val limits: SavedStorageLimi
             if (contentType != null && contentType.subtype !in setOf("html", "xhtml+xml")) throw IOException("Article is not an HTML page")
             response.request.url.toString() to response.body.readHtmlLimited(limits.maxHtmlBytes)
         }
-        extractSavedArticle(page.second, page.first, titleHint)
+        val jobContext = currentCoroutineContext()
+        ArticleExtractionConcurrency.permit.withPermit {
+            extractSavedArticle(page.second, page.first, titleHint, cancellationCheck = { jobContext.ensureActive() })
+        }
     }
     override suspend fun fetchImage(url: String): ByteArray = withContext(Dispatchers.IO) {
         imageClient.newCall(request(url).header("Accept", "image/*").build()).readResponse { response ->
@@ -44,14 +53,17 @@ internal class PublicSavedArticleDownloader(private val limits: SavedStorageLimi
     }
 }
 
-internal fun extractSavedArticle(html: String, url: String, titleHint: String?): SavedExtractedArticle {
+internal fun extractSavedArticle(html: String, url: String, titleHint: String?, cancellationCheck: () -> Unit = {}): SavedExtractedArticle {
     val document = Jsoup.parse(html, url)
     fun meta(vararg keys: String): String? = keys.firstNotNullOfOrNull { key ->
         document.selectFirst("meta[property='$key'], meta[name='$key']")?.attr("content")?.trim()?.takeIf { it.isNotBlank() }
     }
     val title = (meta("og:title", "twitter:title") ?: document.title().takeIf { it.isNotBlank() }
         ?: titleHint?.takeIf { it.isNotBlank() } ?: publicArticleUrl(url)?.host ?: "Saved article").take(512)
-    val article = Readability.parseToElement(html, url) ?: throw IOException("No readable article found")
+    val prepared = ArticleExtractionPreparation.prepareOrThrow(html, url)
+    val extracted = ModernReadability().extract(prepared, url, checkCancelled = cancellationCheck)
+        ?: throw IOException("No readable article found")
+    val article = Jsoup.parseBodyFragment(extracted.content, url).body()
     if (article.text().isBlank()) throw IOException("No readable article found")
     article.selectFirst("h1")?.takeIf { it.text() == title }?.remove()
     return SavedExtractedArticle(
@@ -73,6 +85,7 @@ private suspend fun <T> Call.readResponse(read: (Response) -> T): T = suspendCan
         override fun onResponse(call: Call, response: Response) {
             try {
                 val value = response.use {
+                    if (it.code == 401 || it.code == 403) throw ArticleRequiresBrowserException(ArticleExtractionPreparation.AccessReason.ACCESS_GATE)
                     if (!it.isSuccessful) throw IOException("Article download failed (HTTP ${it.code})")
                     read(it)
                 }

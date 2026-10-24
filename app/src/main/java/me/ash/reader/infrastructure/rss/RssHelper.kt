@@ -22,6 +22,13 @@ import me.ash.reader.domain.model.feed.Feed
 import me.ash.reader.domain.repository.FeedDao
 import me.ash.reader.infrastructure.di.IODispatcher
 import me.ash.reader.infrastructure.html.Readability
+import me.ash.reader.infrastructure.html.ModernReadability
+import me.ash.reader.infrastructure.html.ArticleExtractionConcurrency
+import kotlinx.coroutines.sync.withPermit
+import me.ash.reader.infrastructure.html.ArticleExtractionPreparation
+import me.ash.reader.infrastructure.html.ArticleRequiresBrowserException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import me.ash.reader.infrastructure.html.readHtmlLimited
 import me.ash.reader.ui.ext.currentAccountId
 import me.ash.reader.ui.ext.decodeHTML
@@ -115,11 +122,18 @@ constructor(
     suspend fun parseFullContent(link: String, title: String): String {
         return withContext(ioDispatcher) {
             response(okHttpClient, link).use { response ->
+                if (response.code == 401 || response.code == 403) throw ArticleRequiresBrowserException(ArticleExtractionPreparation.AccessReason.ACCESS_GATE)
                 if (!response.isSuccessful) throw IOException(response.message)
 
                 val content = response.body.readHtmlLimited(FULL_CONTENT_MAX_BYTES)
                 val finalUrl = response.request.url.toString()
-                val articleContent = Readability.parseToElement(content, finalUrl)
+                val jobContext = currentCoroutineContext()
+                val extracted = ArticleExtractionConcurrency.permit.withPermit {
+                    val prepared = ArticleExtractionPreparation.prepareOrThrow(content, finalUrl)
+                    ModernReadability().extract(prepared, finalUrl, checkCancelled = { jobContext.ensureActive() })
+                        ?: throw IOException("No readable article found")
+                }
+                val articleContent = Jsoup.parseBodyFragment(extracted.content, finalUrl).body()
                 articleContent?.let {
                     val h1Element = articleContent.selectFirst("h1")
                     if (h1Element != null && h1Element.hasText() && h1Element.text() == title) {

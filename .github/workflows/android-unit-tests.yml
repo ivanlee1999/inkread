@@ -44,6 +44,11 @@ jobs:
       - name: Install Android SDK packages
         run: sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
 
+      - name: Verify parser dependency resolution
+        run: |
+          ./gradlew --no-daemon :app:dependencyInsight --configuration githubReleaseRuntimeClasspath --dependency org.jsoup:jsoup
+          ./gradlew --no-daemon :app:dependencyInsight --configuration githubReleaseRuntimeClasspath --dependency org.mozilla:rhino
+
       - name: Run unit tests
         run: ./gradlew --stacktrace --no-daemon ${{ github.event.inputs.gradle-task || 'testGithubDebugUnitTest' }}
 

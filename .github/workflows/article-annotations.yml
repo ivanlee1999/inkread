@@ -102,9 +102,9 @@ jobs:
           for scale in 1.0 1.6; do
             adb shell settings put system font_scale "$scale"
             export ANNOTATION_FONT_SCALE="$scale"
-            classes=me.ash.reader.ui.page.home.reading.EInkReaderAnnotationUiTest,me.ash.reader.ui.page.annotation.AnnotationReaderUiTest,me.ash.reader.ui.page.annotation.AnnotationNotebookUiTest,me.ash.reader.ui.page.settings.readwise.ReadwiseSettingsUiTest
+            classes=me.ash.reader.ui.page.home.reading.BrowserTextImportDialogTest,me.ash.reader.ui.page.home.reading.EInkReaderAnnotationUiTest,me.ash.reader.ui.page.annotation.AnnotationReaderUiTest,me.ash.reader.ui.page.annotation.AnnotationNotebookUiTest,me.ash.reader.ui.page.settings.readwise.ReadwiseSettingsUiTest
             if [ "${{ matrix.name }}" = phone ] && [ "$scale" = 1.0 ]; then
-              classes="$classes,me.ash.reader.infrastructure.annotation.AnnotationRoomPersistenceTest,me.ash.reader.infrastructure.readwise.ReadwiseCredentialStoreTest"
+              classes="$classes,me.ash.reader.infrastructure.html.ModernReadabilitySmokeTest,me.ash.reader.infrastructure.annotation.AnnotationRoomPersistenceTest,me.ash.reader.infrastructure.readwise.ReadwiseCredentialStoreTest"
             fi
             phase="article-annotations-evidence/font-$scale"
             mkdir -p "$phase"
@@ -123,7 +123,7 @@ jobs:
           for path in reports:
               suite = ET.parse(path).getroot()
               for key in totals: totals[key] += int(suite.get(key, 0))
-          expected = 59 if "${{ matrix.name }}" == "phone" and os.environ["ANNOTATION_FONT_SCALE"] == "1.0" else 53
+          expected = 64 if "${{ matrix.name }}" == "phone" and os.environ["ANNOTATION_FONT_SCALE"] == "1.0" else 56
           assert totals == dict(tests=expected, failures=0, errors=0, skipped=0), totals
           for name in ("native-selection", "native-adjusted-selection", "rendered-highlight", "note-editor", "readwise-settings", "notebook", "resize-selection", "auto-highlight-undo"):
               images = list(root.rglob(f"newspaper-annotation-{name}-*.png"))
@@ -155,4 +155,104 @@ jobs:
           path: |
             article-annotations-evidence/**
             app/schemas/me.ash.reader.infrastructure.annotation.AnnotationsDatabase/**
+          if-no-files-found: error
+
+  minified-parser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - name: Install compile SDK
+        run: sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
+      - name: Build minified app and test APK before starting emulator
+        run: |
+          mkdir -p minified-parser-evidence
+          ./gradlew --no-daemon --max-workers=2 assembleGithubRelease
+          find app/build/outputs/apk/github/release -name '*.apk' -exec sha256sum {} \; > minified-parser-evidence/apk-sha256.txt
+          test -s minified-parser-evidence/apk-sha256.txt
+          ./gradlew --no-daemon --max-workers=2 assembleGithubRelease assembleGithubReleaseAndroidTest -PparserSmoke=true
+          sha256sum --check minified-parser-evidence/apk-sha256.txt
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Prepare bounded parser runtime verification
+        run: |
+          cat > "$RUNNER_TEMP/minified-parser-tests.sh" <<'SCRIPT'
+          #!/usr/bin/env bash
+          set +e
+          mkdir -p minified-parser-evidence
+          # Synthetic local fixtures only; prevent app startup from contacting real feeds.
+          timeout 20s adb shell svc wifi disable || exit 1
+          timeout 20s adb shell svc data disable || exit 1
+          offline=0
+          for attempt in $(seq 1 20); do
+            timeout 10s adb shell dumpsys connectivity > minified-parser-evidence/connectivity.txt
+            if grep -q 'Active default network: none' minified-parser-evidence/connectivity.txt; then offline=1; break; fi
+            sleep 1
+          done
+          if [ "$offline" -ne 1 ]; then echo 'Parser fixtures require an offline AVD' >&2; exit 1; fi
+          git rev-parse HEAD > minified-parser-evidence/source-sha.txt
+          timeout --signal=TERM --kill-after=30s 10m ./gradlew --no-daemon --max-workers=2 --info connectedGithubReleaseAndroidTest \
+            -PparserSmoke=true \
+            -Pandroid.testInstrumentationRunnerArguments.class=me.ash.reader.infrastructure.html.ModernReadabilitySmokeTest
+          result=$?
+          sha256sum --check minified-parser-evidence/apk-sha256.txt || result=1
+          timeout 20s adb logcat -d > minified-parser-evidence/logcat.txt 2>&1
+          timeout 20s adb devices -l > minified-parser-evidence/devices.txt 2>&1
+          timeout 20s adb shell getprop sys.boot_completed > minified-parser-evidence/boot.txt 2>&1
+          timeout 20s adb shell pm list instrumentation > minified-parser-evidence/instrumentation.txt 2>&1
+          ps -eo pid,comm,rss,args > minified-parser-evidence/processes.txt
+          free -m > minified-parser-evidence/memory.txt
+          python3 - <<'PYTHON' || result=1
+          import pathlib, xml.etree.ElementTree as ET
+          reports = list(pathlib.Path("app/build/outputs/androidTest-results").rglob("TEST-*.xml"))
+          assert reports, "Missing minified parser runtime results"
+          totals = {key: 0 for key in ("tests", "failures", "errors", "skipped")}
+          for path in reports:
+              suite = ET.parse(path).getroot()
+              for key in totals: totals[key] += int(suite.get(key, 0))
+          assert totals == dict(tests=2, failures=0, errors=0, skipped=0), totals
+          cases = [case for path in reports for case in ET.parse(path).getroot().iter("testcase")]
+          expected = {"bundledEngineExtractsChineseShortArticleAndRelativeImage", "instructionLimitWorksOnDevice"}
+          assert len(cases) == 2 and {case.get("name") for case in cases} == expected, [(case.get("name"), case.get("classname")) for case in cases]
+          assert all(case.get("classname") == "me.ash.reader.infrastructure.html.ModernReadabilitySmokeTest" for case in cases)
+          assert pathlib.Path("app/build/outputs/mapping/githubRelease/mapping.txt").is_file(), "Missing R8 mapping"
+          print("Verified minified parser:", totals)
+          PYTHON
+          exit "$result"
+          SCRIPT
+      - name: Execute parser in fresh native emulator after R8
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          avd-name: minified-parser
+          force-avd-creation: true
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: bash "$RUNNER_TEMP/minified-parser-tests.sh"
+      - name: Upload minified parser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: minified-parser-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            minified-parser-evidence/**
+            app/build/outputs/androidTest-results/**
+            app/build/outputs/mapping/githubRelease/**
           if-no-files-found: error

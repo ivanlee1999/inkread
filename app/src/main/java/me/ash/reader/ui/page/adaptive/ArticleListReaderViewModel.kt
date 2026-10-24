@@ -52,6 +52,7 @@ import me.ash.reader.infrastructure.di.IODispatcher
 import me.ash.reader.infrastructure.preference.PullToLoadNextFeedPreference
 import me.ash.reader.infrastructure.preference.SettingsProvider
 import me.ash.reader.infrastructure.rss.ReaderCacheHelper
+import me.ash.reader.infrastructure.html.ArticleRequiresBrowserException
 import me.ash.reader.infrastructure.rss.ArticleContentSelection
 import me.ash.reader.ui.page.home.flow.NewspaperViewportState
 import timber.log.Timber
@@ -160,6 +161,58 @@ constructor(
                         _readerState.update { it.prefetchArticleId() }
                     }
                 }
+        }
+    }
+
+    fun importBrowserText(text: String) {
+        val article = currentArticle ?: return
+        articleLoadJob?.cancel()
+        fullContentJob?.cancel()
+        fullContentJob = viewModelScope.launch {
+            val result = readerCacheHelper.importBrowserText(article.id, article.accountId, text)
+            val hasPrevious = readerCacheHelper.readPreviousContent(article.id, article.accountId, true).isSuccess
+            ensureActive()
+            if (currentArticle?.id != article.id || currentArticle?.accountId != article.accountId) return@launch
+            _readerState.update { state -> result.fold(
+                onSuccess = { state.copy(content = ReaderState.FullContent(it, browserText = true),
+                    hasBrowserText = true, hasPreviousBrowserText = hasPrevious, browserTextError = null) },
+                onFailure = { state.copy(browserTextError = it.message ?: "Could not save browser text") },
+            ) }
+        }
+    }
+
+    fun renderBrowserText() {
+        val article = currentArticle ?: return
+        articleLoadJob?.cancel()
+        fullContentJob?.cancel()
+        fullContentJob = viewModelScope.launch {
+            val result = readerCacheHelper.readBrowserText(article.id, article.accountId)
+            ensureActive()
+            if (currentArticle?.id != article.id || currentArticle?.accountId != article.accountId) return@launch
+            _readerState.update { state -> result.fold(
+                onSuccess = { state.copy(content = ReaderState.FullContent(it, browserText = true),
+                    hasBrowserText = true, browserTextError = null) },
+                onFailure = { state.copy(browserTextError = "Imported browser text is unavailable") },
+            ) }
+        }
+    }
+
+    fun renderPreviousFullContent() = renderPreviousSource(false)
+    fun renderPreviousBrowserText() = renderPreviousSource(true)
+
+    private fun renderPreviousSource(browserText: Boolean) {
+        val article = currentArticle ?: return
+        articleLoadJob?.cancel()
+        fullContentJob?.cancel()
+        fullContentJob = viewModelScope.launch {
+            val currentBody = _readerState.value.content.documentBody
+            val result = readerCacheHelper.readEarlierContent(article.id, article.accountId, browserText, currentBody)
+            ensureActive()
+            if (currentArticle?.id != article.id || currentArticle?.accountId != article.accountId) return@launch
+            _readerState.update { state -> result.fold(
+                onSuccess = { state.copy(content = ReaderState.FullContent(it, browserText = browserText, previousVersion = true), browserTextError = null) },
+                onFailure = { state.copy(browserTextError = "Earlier source is unavailable; current content is unchanged") },
+            ) }
         }
     }
 
@@ -396,6 +449,8 @@ constructor(
                     link = article.link,
                     publishedDate = article.date,
                     content = ReaderState.Loading,
+                    hasBrowserText = false, browserTextError = null,
+                    hasPreviousFullContent = false, hasPreviousBrowserText = false,
                 ).prefetchArticleId()
                 _readerState.value = base
                 val resolved = base.renderContent(this@run)
@@ -422,6 +477,8 @@ constructor(
                     readerCacheHelper.readFullContent(articleWithFeed.article.id, articleWithFeed.article.accountId).getOrNull()
                 if (fullContent != null) {
                     withContext(ioDispatcher) { selectReaderContent(articleWithFeed.article.rawDescription, fullContent) }
+                } else if (withContext(ioDispatcher) { ArticleContentSelection.isLikelyComplete(articleWithFeed.article.rawDescription) }) {
+                    ReaderState.Description(articleWithFeed.article.rawDescription)
                 } else {
                     ReaderState.Loading
                 }
@@ -429,7 +486,10 @@ constructor(
                 ReaderState.Description(articleWithFeed.article.rawDescription)
             }
 
-        return copy(content = contentState)
+        return copy(content = contentState, hasBrowserText = readerCacheHelper.readBrowserText(
+            articleWithFeed.article.id, articleWithFeed.article.accountId).isSuccess,
+            hasPreviousFullContent = readerCacheHelper.readPreviousContent(articleWithFeed.article.id, articleWithFeed.article.accountId, false).isSuccess,
+            hasPreviousBrowserText = readerCacheHelper.readPreviousContent(articleWithFeed.article.id, articleWithFeed.article.accountId, true).isSuccess)
     }
 
     fun renderDescriptionContent() {
@@ -444,6 +504,7 @@ constructor(
 
     fun renderFullContent(forceRefresh: Boolean = false) {
         val article = currentArticle ?: return
+        articleLoadJob?.cancel()
         fullContentJob?.cancel()
         fullContentJob = viewModelScope.launch {
             val loadingJob = launch {
@@ -463,13 +524,15 @@ constructor(
                         onFailure = { selectReaderContent(article.rawDescription, null, it) },
                     )
                 }
+                val hasPrevious = readerCacheHelper.readPreviousContent(article.id, article.accountId, false).isSuccess
                 ensureActive()
                 if (currentArticle?.id == article.id && currentArticle?.accountId == article.accountId) {
                     _readerState.update {
                         // A failed explicit refresh also keeps an already-open offline extraction.
                         val previous = it.content as? ReaderState.FullContent
                         it.copy(content = if (result.isFailure && previous != null)
-                            previous.copy(refreshFailed = true) else selected)
+                            previous.copy(refreshFailed = true, needsBrowser = result.exceptionOrNull() is ArticleRequiresBrowserException) else selected,
+                            hasPreviousFullContent = hasPrevious)
                     }
                 }
             } finally {
@@ -561,6 +624,10 @@ data class ReaderState(
     val previousArticle: PrefetchResult? = null,
     val articleOrdinal: Int? = null,
     val totalArticleCount: Int? = null,
+    val hasBrowserText: Boolean = false,
+    val hasPreviousFullContent: Boolean = false,
+    val hasPreviousBrowserText: Boolean = false,
+    val browserTextError: String? = null,
 ) {
     data class PrefetchResult(val articleId: String, val index: Int)
 
@@ -584,9 +651,10 @@ data class ReaderState(
             }
     }
 
-    data class FullContent(val content: String, val refreshFailed: Boolean = false) : ContentState
+    data class FullContent(val content: String, val refreshFailed: Boolean = false,
+        val browserText: Boolean = false, val needsBrowser: Boolean = false, val previousVersion: Boolean = false) : ContentState
 
-    data class Description(val content: String, val fallback: Boolean = false) : ContentState
+    data class Description(val content: String, val fallback: Boolean = false, val needsBrowser: Boolean = false) : ContentState
 
     data class Error(val message: String) : ContentState
 
@@ -597,7 +665,7 @@ data class ReaderState(
 internal fun selectReaderContent(feed: String, extracted: String?, failure: Throwable? = null): ReaderState.ContentState {
     val selected = ArticleContentSelection.select(feed, extracted, failed = failure != null)
     return when (selected.source) {
-        ArticleContentSelection.Source.FEED -> ReaderState.Description(selected.html.orEmpty(), fallback = true)
+        ArticleContentSelection.Source.FEED -> ReaderState.Description(selected.html.orEmpty(), fallback = true, needsBrowser = failure is ArticleRequiresBrowserException)
         ArticleContentSelection.Source.EXTRACTED -> ReaderState.FullContent(selected.html.orEmpty())
         ArticleContentSelection.Source.UNAVAILABLE -> ReaderState.Error(failure?.message ?: "No readable article content")
     }

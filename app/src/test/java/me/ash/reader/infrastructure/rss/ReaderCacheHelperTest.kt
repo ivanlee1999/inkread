@@ -23,8 +23,44 @@ class ReaderCacheHelperTest {
         shortDescription = "Summary", link = "https://example.com/article", feedId = "feed",
     )
     private fun helper(rss: RssHelper, accounts: AccountService = mock()) = ReaderCacheHelper(
-        mock<Context> { on { cacheDir } doReturn temporary.root }, Dispatchers.IO, rss, accounts,
+        mock<Context> { on { cacheDir } doReturn temporary.root; on { filesDir } doReturn temporary.root }, Dispatchers.IO, rss, accounts,
     )
+
+    @Test fun `browser text is a separate account scoped source and preserves extraction`() = runBlocking<Unit> {
+        val rss: RssHelper = mock()
+        whenever(rss.parseFullContent(any(), any())).thenReturn("<p>Publisher original</p>")
+        val cache = helper(rss)
+        cache.readOrFetchFullContent(article()).getOrThrow()
+        val imported = cache.importBrowserText("1:article", 1, "公开文章正文。\n\nVisible second paragraph.").getOrThrow()
+        assertTrue(imported.contains("公开文章正文"))
+        assertEquals(imported, cache.readBrowserText("1:article", 1).getOrThrow())
+        assertTrue(cache.readBrowserText("1:article", 2).isFailure)
+        assertEquals("<p>Publisher original</p>", cache.readFullContent("1:article", 1).getOrThrow())
+        cache.importBrowserText("1:article", 1, "An explicitly imported replacement.").getOrThrow()
+        assertTrue(temporary.root.walk().any { it.isFile && it.parentFile.name.endsWith("-versions") && it.readText() == imported })
+        assertTrue(cache.importBrowserText("1:article", 1, "https://example.com/article").isFailure)
+        assertTrue(cache.readBrowserText("1:article", 1).getOrThrow().contains("replacement"))
+    }
+
+    @Test fun `every archived browser source remains reachable through explicit cycling`() = runBlocking<Unit> {
+        val cache = helper(mock())
+        val first = cache.importBrowserText("item", 1, "Original visible text.").getOrThrow()
+        val second = cache.importBrowserText("item", 1, "Second visible text.").getOrThrow()
+        cache.importBrowserText("item", 1, "Third visible text.").getOrThrow()
+        val earlier = cache.readEarlierContent("item", 1, true, null).getOrThrow()
+        val next = cache.readEarlierContent("item", 1, true, earlier).getOrThrow()
+        assertEquals(setOf(first, second), setOf(earlier, next))
+        assertEquals(earlier, cache.readEarlierContent("item", 1, true, next).getOrThrow())
+    }
+
+    @Test fun `concurrent imports serialize archive and commit without losing accepted versions`() = runBlocking<Unit> {
+        val cache = helper(mock())
+        val values = listOf("First concurrent visible article.", "Second concurrent visible article.")
+        val imported = values.map { value -> async(Dispatchers.IO) { cache.importBrowserText("item", 1, value).getOrThrow() } }.awaitAll()
+        val current = cache.readBrowserText("item", 1).getOrThrow()
+        val previous = cache.readPreviousContent("item", 1, true).getOrThrow()
+        assertEquals(imported.toSet(), setOf(current, previous))
+    }
 
     @Test fun `hashing is deterministic under concurrent readers and keeps existing filenames`() {
         assertEquals("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad.html", readerCacheFileName("abc"))
