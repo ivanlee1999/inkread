@@ -1,7 +1,6 @@
 package me.ash.reader.infrastructure.html
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import org.jsoup.Jsoup
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -28,8 +27,7 @@ class ModernReadabilitySmokeTest {
         assertTrue(result.textContent.indexOf("第一段") >= 0)
         assertTrue(result.textContent.indexOf("最后一段") > result.textContent.indexOf("第一段"))
         assertFalse(result.content.contains("Publisher script"))
-        val image = Jsoup.parseBodyFragment(result.content).selectFirst("img")
-        assertEquals("https://example.org/images/photo.jpg", image?.attr("src"))
+        assertTrue(result.content.contains("src=\"https://example.org/images/photo.jpg\""))
     }
 
     @Test fun instructionLimitWorksOnDevice() {
