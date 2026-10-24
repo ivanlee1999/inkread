@@ -178,9 +178,12 @@ jobs:
         run: sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
       - name: Build minified app and test APK before starting emulator
         run: |
-          ./gradlew --no-daemon --max-workers=2 assembleGithubRelease assembleGithubReleaseAndroidTest -PparserSmoke=true
           mkdir -p minified-parser-evidence
+          ./gradlew --no-daemon --max-workers=2 assembleGithubRelease
           find app/build/outputs/apk/github/release -name '*.apk' -exec sha256sum {} \; > minified-parser-evidence/apk-sha256.txt
+          test -s minified-parser-evidence/apk-sha256.txt
+          ./gradlew --no-daemon --max-workers=2 assembleGithubRelease assembleGithubReleaseAndroidTest -PparserSmoke=true
+          sha256sum --check minified-parser-evidence/apk-sha256.txt
       - name: Enable emulator acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
