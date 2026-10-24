@@ -17,8 +17,10 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
@@ -47,6 +49,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.unit.sp
 import kotlin.math.abs
@@ -114,19 +117,35 @@ fun ReadingPage(
         incomingReaderState.sourceAccountId to incomingReaderState.articleId, incomingReaderState.content))
     // Do not restore a dialog without its live WebView ownership guard after recreation.
     var showContentSource by remember(readerState.articleId, readerState.sourceAccountId) { mutableStateOf(false) }
+    var showBrowserTextImport by remember(readerState.articleId, readerState.sourceAccountId) { mutableStateOf(false) }
     var contentSourceGuard by remember(readerState.articleId, readerState.sourceAccountId) {
         mutableStateOf<(() -> Boolean)?>(null)
     }
-    fun chooseContentSource(action: () -> Unit) {
-        val canReplace = contentPresentation.onExplicitSourceChoice { contentSourceGuard?.invoke() == true }
+    fun closeContentSource() {
         showContentSource = false
+        showBrowserTextImport = false
         contentSourceGuard = null
+    }
+    fun chooseContentSource(action: () -> Unit): Boolean {
+        // A pending dialog callback must not import into a newer article or account, including
+        // a navigation that reached the ViewModel before this composition has caught up.
+        val live = viewModel.readerStateStateFlow.value
+        val sameIdentity = readerState.articleId != null && readerState.sourceAccountId != null &&
+            live.articleId == readerState.articleId && live.sourceAccountId == readerState.sourceAccountId
+        val canReplace = sameIdentity && contentPresentation.onExplicitSourceChoice {
+            contentSourceGuard?.invoke() == true
+        }
         if (canReplace) {
+            closeContentSource()
             action()
         }
+        return canReplace
     }
     val feedFallback = (readerState.content as? ReaderState.Description)?.fallback == true
     val refreshFailed = (readerState.content as? ReaderState.FullContent)?.refreshFailed == true
+    val showingBrowserText = (readerState.content as? ReaderState.FullContent)?.browserText == true
+    val needsBrowser = (readerState.content as? ReaderState.FullContent)?.needsBrowser == true ||
+        (readerState.content as? ReaderState.Description)?.needsBrowser == true
     val postponedContentReady = incomingReaderState.content.documentBody?.let {
         it != readerState.content.documentBody
     } == true
@@ -134,16 +153,28 @@ fun ReadingPage(
     LaunchedEffect(readerState.articleId, readerState.sourceAccountId, feedFallback, refreshFailed) {
         if (feedFallback || refreshFailed) context.showToast(fallbackMessage)
     }
+    LaunchedEffect(readerState.articleId, readerState.sourceAccountId, readerState.browserTextError) {
+        readerState.browserTextError?.let { context.showToast(it) }
+    }
     if (showContentSource) {
         AlertDialog(
-            onDismissRequest = { showContentSource = false; contentSourceGuard = null },
+            onDismissRequest = ::closeContentSource,
             title = { Text(stringResource(R.string.reader_content_source)) },
             text = {
-                Column {
-                    Text(stringResource(if (readerState.content is ReaderState.FullContent)
-                        R.string.reader_content_extracted_current else R.string.reader_content_feed_current))
+                Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
+                    Text(stringResource(when {
+                        showingBrowserText -> R.string.reader_browser_text_current
+                        readerState.content is ReaderState.FullContent -> R.string.reader_content_extracted_current
+                        else -> R.string.reader_content_feed_current
+                    }))
+                    if ((readerState.content as? ReaderState.FullContent)?.previousVersion == true) {
+                        Text(stringResource(R.string.reader_browser_text_previous_current))
+                    }
                     if (feedFallback || refreshFailed) Text(fallbackMessage)
+                    if (needsBrowser) Text(stringResource(R.string.reader_browser_text_access_limited))
                     if (postponedContentReady) Text(stringResource(R.string.reader_content_update_ready))
+                    readerState.browserTextError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    Text(stringResource(R.string.reader_content_cache_preserved))
                     TextButton(onClick = { chooseContentSource { viewModel.renderDescriptionContent() } }) {
                         Text(stringResource(R.string.reader_content_use_feed))
                     }
@@ -153,9 +184,47 @@ fun ReadingPage(
                     TextButton(onClick = { chooseContentSource { viewModel.renderFullContent(forceRefresh = true) } }) {
                         Text(stringResource(R.string.reader_content_refresh))
                     }
+                    if (readerState.hasBrowserText) {
+                        TextButton(onClick = { chooseContentSource { viewModel.renderBrowserText() } }) {
+                            Text(stringResource(R.string.reader_browser_text_use))
+                        }
+                    }
+                    if (readerState.hasPreviousFullContent) {
+                        TextButton(onClick = { chooseContentSource { viewModel.renderPreviousFullContent() } }) {
+                            Text(stringResource(R.string.reader_browser_text_previous_full))
+                        }
+                    }
+                    if (readerState.hasPreviousBrowserText) {
+                        TextButton(onClick = { chooseContentSource { viewModel.renderPreviousBrowserText() } }) {
+                            Text(stringResource(R.string.reader_browser_text_previous_import))
+                        }
+                    }
+                    readerState.link?.takeIf(String::isNotBlank)?.let { url ->
+                        TextButton(onClick = {
+                            closeContentSource()
+                            context.openURL(url, openLink, openLinkSpecificBrowser)
+                        }) {
+                            Text(stringResource(R.string.reader_browser_text_open))
+                        }
+                    }
+                    TextButton(onClick = {
+                        // Keep the live ownership guard until Apply; opening a preview is not
+                        // an explicit replacement and must not release the presentation pin.
+                        showContentSource = false
+                        showBrowserTextImport = true
+                    }) {
+                        Text(stringResource(R.string.reader_browser_text_import))
+                    }
+                    Text(stringResource(R.string.reader_browser_text_limitations))
                 }
             },
-            confirmButton = { TextButton(onClick = { showContentSource = false; contentSourceGuard = null }) { Text(stringResource(R.string.close)) } },
+            confirmButton = { TextButton(onClick = ::closeContentSource) { Text(stringResource(R.string.close)) } },
+        )
+    }
+    if (showBrowserTextImport) {
+        BrowserTextImportDialog(
+            onDismiss = ::closeContentSource,
+            onApply = { text -> chooseContentSource { viewModel.importBrowserText(text) } },
         )
     }
     val annotationSource = if (usePaginatedReader && readerState.articleId != null && readerState.sourceAccountId != null &&

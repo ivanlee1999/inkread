@@ -46,6 +46,8 @@ kotlinxCoroutinesTest = "1.9.0"
 okhttp = "5.0.0-alpha.12"
 opmlParser = "3.1.0"
 readability4j = "1.0.8"
+rhino = "1.9.1"
+jsoup = "1.17.2"
 retrofit2 = "2.11.0"
 rome = "2.1.0"
 telephoto = "0.15.1"
@@ -96,6 +98,8 @@ hilt-viewmodel = { group = "androidx.hilt", name = "hilt-lifecycle-viewmodel-com
 # AndroidX
 android-svg = { group = "com.caverock", name = "androidsvg-aar", version.ref = "androidSVG" }
 opml-parser = { group = "be.ceau", name = "opml-parser", version.ref = "opmlParser" }
+rhino = { module = "org.mozilla:rhino", version.ref = "rhino" }
+jsoup = { module = "org.jsoup:jsoup", version.ref = "jsoup" }
 readability4j = { group = "net.dankito.readability4j", name = "readability4j", version.ref = "readability4j" }
 rome = { group = "com.rometools", name = "rome", version.ref = "rome" }
 rome-modules = { module = "com.rometools:rome-modules", version.ref = "rome" }

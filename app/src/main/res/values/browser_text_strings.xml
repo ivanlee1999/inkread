@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="reader_browser_text_import">Import copied browser text</string>
+    <string name="reader_browser_text_current">Showing imported browser text</string>
+    <string name="reader_browser_text_use">Use imported browser text</string>
+    <string name="reader_browser_text_open">Open in browser</string>
+    <string name="reader_browser_text_instructions">Open the article in your browser, copy the text you can read, then return here to paste and review it.</string>
+    <string name="reader_browser_text_limitations">Plain text only. Images, links, and formatting are not copied. Feed/server and extracted originals remain available.</string>
+    <string name="reader_browser_text_preview">Paste and preview article text</string>
+    <string name="reader_browser_text_bound">Maximum 128 KiB of text. Nothing is read from your clipboard automatically.</string>
+    <string name="reader_browser_text_too_large">That paste exceeds 128 KiB and was not added. Copy a smaller section.</string>
+    <string name="reader_browser_text_url_only">Paste article text, not only a web address.</string>
+    <string name="reader_browser_text_replace_blocked">Finish the current selection or annotation before changing the article source.</string>
+    <string name="reader_browser_text_access_limited">This page may need sign-in or may limit access. Open it in your browser to check what you can read.</string>
+    <string name="reader_browser_text_previous_current">Earlier saved version. Choose an earlier source again to cycle through retained versions.</string>
+    <string name="reader_browser_text_previous_full">Use earlier extracted version</string>
+    <string name="reader_browser_text_previous_import">Use earlier imported text</string>
+    <string name="reader_content_cache_preserved">Existing cached articles stay unchanged. Use Fetch full article again to retry with the updated parser.</string>
+</resources>

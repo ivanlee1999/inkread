@@ -37,13 +37,15 @@ if (releaseKeyPropsFile.exists()) {
 
 android {
     compileSdk = 36
+    // Opt-in exact minified-release parser runtime smoke; ordinary instrumentation stays debug.
+    testBuildType = if (providers.gradleProperty("parserSmoke").orNull == "true") "release" else "debug"
 
     defaultConfig {
         applicationId = "me.ash.reader"
         minSdk = 26
         targetSdk = 34
-        versionCode = 65
-        versionName = "0.16.20"
+        versionCode = 66
+        versionName = "0.16.21"
 
         buildConfigField(
             "String",
@@ -87,6 +89,7 @@ android {
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
+                "proguard-readability.pro",
             )
             signingConfig = signingConfigs.getByName("release")
         }
@@ -156,6 +159,8 @@ dependencies {
     implementation(libs.android.svg)
     implementation(libs.opml.parser)
     implementation(libs.readability4j)
+    implementation(libs.rhino)
+    implementation(libs.jsoup) // Explicit extraction baseline instead of Readability4J's old transitive version.
     implementation(libs.rome)
     implementation(libs.rome.modules)
     implementation(libs.telephoto)
