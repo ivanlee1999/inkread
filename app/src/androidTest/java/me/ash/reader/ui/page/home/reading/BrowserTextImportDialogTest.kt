@@ -10,6 +10,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextReplacement
 import me.ash.reader.infrastructure.rss.BrowserTextImport
 import me.ash.reader.ui.page.adaptive.ReaderContentPresentationGate
 import me.ash.reader.ui.theme.AppTheme
@@ -81,9 +82,10 @@ class BrowserTextImportDialogTest {
 
     @Test fun oversizedPasteIsRejectedRatherThanTruncatedOrApplied() {
         var imports = 0
+        var imported: String? = null
         compose.setContent {
             AppTheme(useDarkTheme = false) {
-                BrowserTextImportDialog(onDismiss = {}, onApply = { imports++; true })
+                BrowserTextImportDialog(onDismiss = {}, onApply = { imports++; imported = it; true })
             }
         }
         compose.onNodeWithTag("browser_text_preview").performTextInput("Short preview")
@@ -93,5 +95,20 @@ class BrowserTextImportDialogTest {
         compose.onNodeWithTag("browser_text_error").performScrollTo().assertIsDisplayed()
         compose.onNodeWithTag("browser_text_apply").assertIsNotEnabled()
         assertEquals(0, imports)
+
+        // Replaying the retained value is not a valid changed edit and cannot clear rejection.
+        compose.onNodeWithTag("browser_text_preview").performTextReplacement("Short preview")
+        compose.onNodeWithTag("browser_text_error").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("browser_text_apply").assertIsNotEnabled()
+        assertEquals(0, imports)
+
+        // A real, bounded edit recovers normally, and only that reviewed text can be applied.
+        compose.onNodeWithTag("browser_text_preview").performTextReplacement("Recovered short preview")
+        compose.onNodeWithTag("browser_text_error").assertDoesNotExist()
+        compose.onNodeWithTag("browser_text_apply").assertIsEnabled().performClick()
+        compose.runOnIdle {
+            assertEquals(1, imports)
+            assertEquals("Recovered short preview", imported)
+        }
     }
 }

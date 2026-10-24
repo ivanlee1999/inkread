@@ -49,11 +49,18 @@ internal fun BrowserTextImportDialog(
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { candidate ->
-                        replacementBlocked = false
-                        rejectedOversizePaste = BrowserTextImport.validate(candidate) ==
-                            BrowserTextImport.ValidationError.TOO_LARGE
-                        // Reject the entire oversized edit; never silently import truncated text.
-                        if (!rejectedOversizePaste) draft = candidate
+                        // Compose/IME may echo the retained value after a rejected edit. That is
+                        // not a new user edit and must not clear the warning or re-enable Apply.
+                        if (candidate != draft) {
+                            if (BrowserTextImport.validate(candidate) == BrowserTextImport.ValidationError.TOO_LARGE) {
+                                // Reject the entire edit; never silently import truncated text.
+                                rejectedOversizePaste = true
+                            } else {
+                                draft = candidate
+                                rejectedOversizePaste = false
+                                replacementBlocked = false
+                            }
+                        }
                     },
                     modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp)
                         .testTag("browser_text_preview"),
