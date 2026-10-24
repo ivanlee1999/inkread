@@ -210,6 +210,7 @@ jobs:
             -PparserSmoke=true \
             -Pandroid.testInstrumentationRunnerArguments.class=me.ash.reader.infrastructure.html.ModernReadabilitySmokeTest
           result=$?
+          sha256sum --check minified-parser-evidence/apk-sha256.txt || result=1
           timeout 20s adb logcat -d > minified-parser-evidence/logcat.txt 2>&1
           timeout 20s adb devices -l > minified-parser-evidence/devices.txt 2>&1
           timeout 20s adb shell getprop sys.boot_completed > minified-parser-evidence/boot.txt 2>&1
@@ -225,6 +226,10 @@ jobs:
               suite = ET.parse(path).getroot()
               for key in totals: totals[key] += int(suite.get(key, 0))
           assert totals == dict(tests=2, failures=0, errors=0, skipped=0), totals
+          cases = [case for path in reports for case in ET.parse(path).getroot().iter("testcase")]
+          expected = {"bundledEngineExtractsChineseShortArticleAndRelativeImage", "instructionLimitWorksOnDevice"}
+          assert len(cases) == 2 and {case.get("name") for case in cases} == expected, [(case.get("name"), case.get("classname")) for case in cases]
+          assert all(case.get("classname") == "me.ash.reader.infrastructure.html.ModernReadabilitySmokeTest" for case in cases)
           assert pathlib.Path("app/build/outputs/mapping/githubRelease/mapping.txt").is_file(), "Missing R8 mapping"
           print("Verified minified parser:", totals)
           PYTHON

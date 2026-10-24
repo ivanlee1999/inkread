@@ -41,9 +41,8 @@ android {
     // Opt-in exact minified-release parser runtime smoke; ordinary instrumentation stays debug.
     testBuildType = if (parserSmoke) "release" else "debug"
     sourceSets.getByName("androidTest") {
-        // The minified smoke uses the real app, without Compose-test coroutine providers.
+        // Platform-only smoke avoids test-library APIs optimized out of the release APK.
         if (parserSmoke) java.setSrcDirs(listOf("src/parserSmoke/java"))
-        else java.srcDir("src/parserSmoke/java")
     }
 
     defaultConfig {
@@ -59,7 +58,9 @@ android {
             "\"ReadYou/${versionName}(${versionCode})\"",
         )
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner = if (parserSmoke)
+            "me.ash.reader.infrastructure.html.ParserSmokeInstrumentation"
+        else "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
 
         room { schemaDirectory("$projectDir/schemas") }
@@ -210,8 +211,7 @@ dependencies {
 
     // Testing
     testImplementation(libs.junit)
-    androidTestImplementation(libs.junit.ext)
-    if (parserSmoke) androidTestImplementation("androidx.test:runner:1.5.2")
+    if (!parserSmoke) androidTestImplementation(libs.junit.ext)
     if (!parserSmoke) androidTestImplementation(libs.espresso)
     testImplementation(libs.mockito.core)
     testImplementation(libs.mockito.junit.jupiter)
