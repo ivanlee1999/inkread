@@ -44,6 +44,29 @@ class ModernReadabilityTest {
         // The engine is not the existing renderer sanitizer; caller must still sanitize event attributes.
     }
 
+    @Test fun actualEngineContextRejectsJavaObjectJsonConversion() {
+        // Inspect the real private factory without adding any production test hook or JS bridge.
+        val nested = ModernReadability::class.java.declaredClasses
+        val budgetClass = nested.single { it.simpleName == "Budget" }
+        val budgetConstructor = budgetClass.declaredConstructors.single().apply { isAccessible = true }
+        val budget = budgetConstructor.newInstance(ModernReadability.Limits(), {})
+        val factoryClass = nested.single { it.simpleName == "BoundedContextFactory" }
+        val constructor = factoryClass.getDeclaredConstructor(budgetClass).apply { isAccessible = true }
+        val factory = constructor.newInstance(budget) as org.mozilla.javascript.ContextFactory
+        factory.call { context ->
+            try {
+                context.javaToJSONConverter.apply(Any())
+                fail("Java object conversion must fail closed")
+            } catch (expected: SecurityException) {
+                assertEquals("Java object conversion is disabled", expected.message)
+            }
+            val scope = context.initSafeStandardObjects()
+            assertEquals(true, context.evaluateString(scope,
+                "typeof Packages === 'undefined' && typeof java === 'undefined'", "isolation-test", 1, null))
+            Unit
+        }
+    }
+
     @Test fun untrustedMarkupCannotBecomeEvaluatedJavaScript() {
         val payload = "\"; throw new Error('STRING_BREAKOUT'); //"
         val result = extract(page("<p>$paragraph $payload</p><p>$paragraph</p>"))

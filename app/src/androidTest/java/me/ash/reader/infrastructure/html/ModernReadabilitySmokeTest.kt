@@ -11,7 +11,9 @@ import org.junit.runner.RunWith
 class ModernReadabilitySmokeTest {
     @Test fun bundledEngineExtractsChineseShortArticleAndRelativeImage() {
         val html = """
-            <html lang="zh"><head><title>中文短文章</title></head><body><article>
+            <html lang="zh"><head><title>中文短文章</title>
+            <script type="application/ld+json">{"@context":"https://schema.org","@type":"NewsArticle","headline":"中文短文章","author":{"@type":"Person","name":"测试作者"}}</script>
+            </head><body><article>
             <h1>中文短文章</h1>
             <p>第一段：这是一篇中文短文章，包含说明和标点符号。图片应该正确保留。</p>
             <figure><img src="../images/photo.jpg"><figcaption>图片说明</figcaption></figure>
@@ -21,6 +23,7 @@ class ModernReadabilitySmokeTest {
         """.trimIndent()
         val result = checkNotNull(ModernReadability().extract(html, "https://example.org/news/story"))
         assertEquals("中文短文章", result.title)
+        assertEquals("测试作者", result.byline)
         assertEquals("zh", result.lang)
         assertTrue(result.textContent.indexOf("第一段") >= 0)
         assertTrue(result.textContent.indexOf("最后一段") > result.textContent.indexOf("第一段"))

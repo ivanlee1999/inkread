@@ -231,6 +231,9 @@ class ModernReadability(private val limits: Limits = Limits()) {
             maximumInterpreterStackDepth = 1_000
             instructionObserverThreshold = 10_000
             setClassShutter { false }
+            // Never enter Rhino's optional JavaBean JSON converter (java.beans is absent on Android).
+            // This is a fail-closed Java-side policy, not an object or callback exposed to the JS scope.
+            setJavaToJSONConverter { throw SecurityException("Java object conversion is disabled") }
         }
         override fun observeInstructionCount(cx: Context, instructionCount: Int) = budget.instructions(instructionCount)
     }
