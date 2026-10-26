@@ -33,7 +33,7 @@ class ModernReadabilityTest {
         val signed = "https://cdn.example.org/image?token=X%2FY+Z%3D&crop=1,2&format=avif"
         for (attribute in listOf("data-src", "data-original", "data-lazy-src")) {
             val result = extract(page("<p>FIRST $paragraph</p><figure>" +
-                "<img $attribute='${signed.replace("&", "&amp;")}' alt='Garden' data-credit='Photographer'>" +
+                "<img class='lazy' $attribute='${signed.replace("&", "&amp;")}' alt='Garden' data-credit='Photographer'>" +
                 "<figcaption>Garden caption</figcaption></figure><p>LAST $paragraph</p>"))
             val document = Jsoup.parseBodyFragment(result.content)
             val image = requireNotNull(document.selectFirst("img")) { attribute }
