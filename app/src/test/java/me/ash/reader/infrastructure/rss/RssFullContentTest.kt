@@ -1,5 +1,6 @@
 package me.ash.reader.infrastructure.rss
 
+import java.io.IOException
 import java.nio.charset.Charset
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -67,6 +68,43 @@ class RssFullContentTest {
         val result = Jsoup.parseBodyFragment(helper.parseFullContent(server.url("/story").toString(), "Fixture headline"))
 
         assertTrue(result.text().contains(paragraph))
+    }
+
+    @Test fun legacyHtmlEncodingRetainsEditorialPunctuationAfterExtraction() = runBlocking {
+        val passage = "“Garden reporting” — admission is €5, and it isn’t closed."
+        val html = article().replace(paragraph, "$passage " + paragraph.substringAfter("English reporting remain intact. "))
+        server.enqueue(MockResponse().setHeader("Content-Type", "text/html; charset=ISO-8859-1")
+            .setBody(Buffer().write(html.toByteArray(Charset.forName("windows-1252")))))
+
+        val result = Jsoup.parseBodyFragment(helper.parseFullContent(server.url("/story").toString(), "Fixture headline"))
+
+        assertTrue(result.text().contains(passage))
+        assertFalse(result.text().contains('\ufffd'))
+    }
+
+    @Test fun declaredNonHtmlSuccessResponsesCannotBecomeArticles() = runBlocking {
+        for (type in listOf("application/json", "text/plain", "image/html", "text/xhtml+xml")) {
+            server.enqueue(MockResponse().setHeader("Content-Type", type).setBody(article()))
+
+            try {
+                helper.parseFullContent(server.url("/story").toString(), "Fixture headline")
+                fail("Expected rejection of $type")
+            } catch (expected: IOException) {
+                assertEquals("Article is not an HTML page", expected.message)
+            }
+        }
+    }
+
+    @Test fun unlabelledAndXhtmlArticlesRemainReadable() = runBlocking {
+        for (type in listOf(null, "application/xhtml+xml")) {
+            val response = MockResponse().setBody(article())
+            if (type != null) response.setHeader("Content-Type", type)
+            server.enqueue(response)
+
+            val result = Jsoup.parseBodyFragment(helper.parseFullContent(server.url("/story").toString(), "Fixture headline"))
+
+            assertTrue(result.text().contains(paragraph))
+        }
     }
 
     private fun article(meta: String = "") = "<html><head><title>Fixture headline</title>$meta</head><body>" +

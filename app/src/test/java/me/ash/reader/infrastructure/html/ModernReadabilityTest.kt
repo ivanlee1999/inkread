@@ -29,6 +29,65 @@ class ModernReadabilityTest {
         assertEquals("https://example.org/assets/small.png 1x, https://example.org/assets/large.png 2x", document.selectFirst("img")!!.attr("srcset"))
     }
 
+    @Test fun knownLazyAttributesRetainExtensionlessImagesCaptionsAndBodyOrder() {
+        val signed = "https://cdn.example.org/image?token=X%2FY+Z%3D&crop=1,2&format=avif"
+        for (attribute in listOf("data-src", "data-original", "data-lazy-src")) {
+            val result = extract(page("<p>FIRST $paragraph</p><figure>" +
+                "<img $attribute='${signed.replace("&", "&amp;")}' alt='Garden' data-credit='Photographer'>" +
+                "<figcaption>Garden caption</figcaption></figure><p>LAST $paragraph</p>"))
+            val document = Jsoup.parseBodyFragment(result.content)
+            val image = requireNotNull(document.selectFirst("img")) { attribute }
+            assertEquals(attribute, signed, image.attr("src"))
+            assertEquals(signed, image.attr(attribute))
+            assertEquals("Photographer", image.attr("data-credit"))
+            assertEquals("Garden", image.attr("alt"))
+            assertTrue(result.textContent.indexOf("FIRST") < result.textContent.indexOf("Garden caption"))
+            assertTrue(result.textContent.indexOf("Garden caption") < result.textContent.indexOf("LAST"))
+        }
+    }
+
+    @Test fun relativeLazyImageAndResponsiveAlternativeUseDocumentBase() {
+        val result = extract(page("<p>$paragraph</p><figure>" +
+            "<img data-original='../image?id=42&amp;format=avif' data-srcset='small?id=1 1x, large?id=2 2x'>" +
+            "<figcaption>Responsive caption</figcaption></figure><p>$paragraph</p>", "<base href='/assets/photos/'>"))
+        val image = Jsoup.parseBodyFragment(result.content).selectFirst("img")!!
+        assertEquals("https://example.org/assets/image?id=42&format=avif", image.attr("src"))
+        assertEquals("https://example.org/assets/photos/small?id=1 1x, https://example.org/assets/photos/large?id=2 2x", image.attr("srcset"))
+        assertEquals("https://example.org/assets/photos/", result.baseUri)
+    }
+
+    @Test fun lazyNormalizationPreservesExistingImageAndUnknownAttributes() {
+        val result = extract(page("<p>$paragraph</p><figure>" +
+            "<img src='/original-image?id=1' data-src='/lazy-image?id=2' data-original='/other-image?id=3' data-credit='Credit'>" +
+            "<figcaption>Original photograph</figcaption></figure><p>$paragraph</p>"))
+        val image = Jsoup.parseBodyFragment(result.content).selectFirst("img")!!
+        assertEquals("https://example.org/original-image?id=1", image.attr("src"))
+        assertEquals("/lazy-image?id=2", image.attr("data-src"))
+        assertEquals("/other-image?id=3", image.attr("data-original"))
+        assertEquals("Credit", image.attr("data-credit"))
+    }
+
+    @Test fun lazyNormalizationReplacesOnlyMissingSourcesOrTinyRasterPlaceholders() {
+        val tinyGif = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+        for (source in listOf("", "null", tinyGif)) {
+            val result = extract(page("<p>$paragraph</p><figure><img src='$source' data-lazy-src='/image?id=2'>" +
+                "<figcaption>Photo caption</figcaption></figure><p>$paragraph</p>"))
+            assertEquals("https://example.org/image?id=2", Jsoup.parseBodyFragment(result.content).selectFirst("img")!!.attr("src"))
+        }
+        val svg = "data:image/svg+xml;base64,PHN2Zy8+"
+        val result = extract(page("<p>$paragraph</p><figure><img src='$svg' data-src='/image?id=2'>" +
+            "<figcaption>Vector caption</figcaption></figure><p>$paragraph</p>"))
+        assertEquals(svg, Jsoup.parseBodyFragment(result.content).selectFirst("img")!!.attr("src"))
+    }
+
+    @Test fun lazyNormalizationSkipsUnsupportedSourcesAndKeepsLaterHttpAlternative() {
+        val result = extract(page("<p>$paragraph</p><figure>" +
+            "<img data-src='javascript:throw new Error(&quot;EXECUTED&quot;)' data-original='file:///secret' data-lazy-src='//cdn.example.org/image?id=2'>" +
+            "<figcaption>Safe photograph</figcaption></figure><p>$paragraph</p>"))
+        assertEquals("https://cdn.example.org/image?id=2", Jsoup.parseBodyFragment(result.content).selectFirst("img")!!.attr("src"))
+        assertTrue(result.textContent.contains("Safe photograph"))
+    }
+
     @Test fun preservesLocalFragmentsWithoutBaseAndResolvesThemWithBase() {
         val body = "<p>$paragraph<a href='#end'>the ending</a></p><p id='end'>$paragraph</p>"
         assertEquals("#end", Jsoup.parseBodyFragment(extract(page(body)).content).selectFirst("a")!!.attr("href"))

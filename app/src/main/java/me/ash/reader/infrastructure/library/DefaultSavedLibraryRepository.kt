@@ -24,6 +24,8 @@ import me.ash.reader.domain.library.SavedItem
 import me.ash.reader.domain.library.SavedLibraryRepository
 import me.ash.reader.domain.library.SavedLocation
 import me.ash.reader.domain.library.SavedReadingDocument
+import me.ash.reader.infrastructure.html.ArticleExtractionPreparation
+import me.ash.reader.infrastructure.html.ArticleRequiresBrowserException
 import me.ash.reader.infrastructure.rss.publicArticleUrl
 import org.jsoup.Jsoup
 
@@ -306,9 +308,21 @@ internal class DefaultSavedLibraryRepository(
                         contentState = if (item.contentRevision == null) SavedContentState.FAILED.name else SavedContentState.READY.name,
                         imageState = if (item.contentRevision == null) SavedImageState.PENDING.name else SavedImageState.FAILED.name,
                         downloadToken = null,
-                        lastError = if (error is SavedStorageFullException) error.message else
-                            if (item.contentRevision == null) "Article text could not be saved. Retry to download it again."
-                            else "Text is saved, but images could not be kept offline. Retry to try again.",
+                        lastError = when {
+                            error is SavedStorageFullException -> error.message
+                            item.contentRevision != null -> "Text is saved, but images could not be kept offline. Retry to try again."
+                            error is ArticleRequiresBrowserException -> when (error.reason) {
+                                ArticleExtractionPreparation.AccessReason.PUBLISHER_RESTRICTED ->
+                                    "The publisher restricts access to this article. Open the original page in your browser."
+                                ArticleExtractionPreparation.AccessReason.ACCESS_GATE ->
+                                    "This page requires browser access. Open the original page in your browser."
+                                ArticleExtractionPreparation.AccessReason.BROWSER_CHALLENGE ->
+                                    "This site requires browser verification. Open the original page in your browser."
+                                ArticleExtractionPreparation.AccessReason.SOURCE_LIMIT ->
+                                    "This page exceeds the article download limits. Open the original page in your browser."
+                            }
+                            else -> "Article text could not be saved. Retry to download it again."
+                        },
                     )) }
                 }
             }

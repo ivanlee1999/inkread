@@ -2,6 +2,7 @@ package me.ash.reader.infrastructure.html
 
 import java.io.IOException
 import java.nio.charset.Charset
+import java.util.Locale
 import okhttp3.ResponseBody
 import okio.Buffer
 import org.jsoup.Jsoup
@@ -19,6 +20,13 @@ private val contentCharset = Regex("(?:^|;)\\s*charset\\s*=\\s*[\"']?([^\\s;\"']
 internal fun ResponseBody.readHtmlLimited(maxBytes: Long = DEFAULT_HTML_MAX_BYTES): String {
     require(maxBytes in 0..Int.MAX_VALUE.toLong()) { "Invalid HTML byte limit" }
     return source().use { source ->
+        // A successful HTTP response can still be an API/error document. Keep those bytes
+        // out of Readability and the offline article cache; unlabelled HTML remains supported.
+        val mediaType = contentType()
+        if (mediaType != null && !(mediaType.type == "text" && mediaType.subtype == "html" ||
+                mediaType.type == "application" && mediaType.subtype == "xhtml+xml")) {
+            throw IOException("Article is not an HTML page")
+        }
         if (contentLength() > maxBytes) throw IOException("Article HTML exceeds byte limit")
         val buffer = Buffer()
         while (true) {
@@ -29,7 +37,7 @@ internal fun ResponseBody.readHtmlLimited(maxBytes: Long = DEFAULT_HTML_MAX_BYTE
         val bytes = buffer.readByteArray()
         val bom = detectBom(bytes)
         val charset = bom?.first
-            ?: contentType()?.charset()
+            ?: mediaType?.parameter("charset")?.let(::charsetForHtmlLabel)
             ?: charsetFromMeta(bytes)
             ?: Charsets.UTF_8
         val offset = bom?.second ?: 0
@@ -63,8 +71,24 @@ private fun charsetFromMeta(bytes: ByteArray): Charset? {
             else -> null
         }
         if (!label.isNullOrBlank()) {
-            runCatching { Charset.forName(label.trim()) }.getOrNull()?.let { return it }
+            charsetForHtmlLabel(label)?.let { return it }
         }
     }
     return null
 }
+
+private fun charsetForHtmlLabel(label: String): Charset? {
+    val normalized = label.trim().lowercase(Locale.ROOT)
+    // Web Latin-1/ASCII labels mean Windows-1252, unlike Java's ISO-8859-1/US-ASCII.
+    // Match the HTML encoding labels so curly quotes, dashes and euro signs survive.
+    // https://encoding.spec.whatwg.org/#names-and-labels
+    return runCatching {
+        Charset.forName(if (normalized in windows1252Labels) "windows-1252" else normalized)
+    }.getOrNull()
+}
+
+private val windows1252Labels = setOf(
+    "ansi_x3.4-1968", "ascii", "cp1252", "cp819", "csisolatin1", "ibm819",
+    "iso-8859-1", "iso-ir-100", "iso8859-1", "iso88591", "iso_8859-1",
+    "iso_8859-1:1987", "l1", "latin1", "us-ascii", "windows-1252", "x-cp1252",
+)
