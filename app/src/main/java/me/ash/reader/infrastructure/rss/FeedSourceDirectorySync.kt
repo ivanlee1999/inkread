@@ -8,8 +8,9 @@ import javax.inject.Inject
 /** Android's directory fsync makes archive publication durable before the Room body update. */
 class FeedSourceDirectorySync @Inject constructor() {
     fun sync(directory: File) {
-        val descriptor = Os.open(directory.absolutePath, OsConstants.O_RDONLY or OsConstants.O_DIRECTORY, 0)
+        val descriptor = Os.open(directory.absolutePath, OsConstants.O_RDONLY, 0)
         try {
+            check(OsConstants.S_ISDIR(Os.fstat(descriptor).st_mode)) { "Earlier feed source parent is not a directory" }
             Os.fsync(descriptor)
         } finally {
             Os.close(descriptor)

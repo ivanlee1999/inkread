@@ -39,7 +39,7 @@ import org.junit.Test
 class NewsletterMigrationRoomTest {
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
 
-    @Test fun versionSevenUpgradePreservesEveryStoredColumnAndAnnotations() = runBlocking {
+    @Test fun versionSevenUpgradePreservesEveryStoredColumnAndAnnotations() = runBlocking<Unit> {
         withTimeout(20_000) {
             val name = "newsletter-upgrade-${UUID.randomUUID()}.db"
             val annotationsName = "$name-annotations"
@@ -117,7 +117,7 @@ class NewsletterMigrationRoomTest {
         }
     }
 
-    @Test fun newsletterMarkerSurvivesServerRefreshAndGroupPresetsCannotEnablePublisherAccess() = runBlocking {
+    @Test fun newsletterMarkerSurvivesServerRefreshAndGroupPresetsCannotEnablePublisherAccess() = runBlocking<Unit> {
         withTimeout(20_000) {
             val database = Room.inMemoryDatabaseBuilder(context, AndroidDatabase::class.java).build()
             try {
@@ -145,7 +145,7 @@ class NewsletterMigrationRoomTest {
         }
     }
 
-    @Test fun lateIconAndPreferenceWritesCannotRevertNewsletterMode() = runBlocking {
+    @Test fun lateIconAndPreferenceWritesCannotRevertNewsletterMode() = runBlocking<Unit> {
         withTimeout(20_000) {
             val database = Room.inMemoryDatabaseBuilder(context, AndroidDatabase::class.java).build()
             val iconStarted = CountDownLatch(1)

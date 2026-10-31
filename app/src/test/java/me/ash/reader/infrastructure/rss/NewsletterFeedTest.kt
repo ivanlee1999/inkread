@@ -32,7 +32,7 @@ class NewsletterFeedTest {
     private lateinit var client: OkHttpClient
     private lateinit var helper: RssHelper
 
-    @Before fun setUp() = runBlocking {
+    @Before fun setUp() = runBlocking<Unit> {
         server = MockWebServer().apply {
             dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
@@ -58,7 +58,7 @@ class NewsletterFeedTest {
         client.connectionPool.evictAll()
     }
 
-    @Test fun rssNewsletterRetainsDeliveredBodyWithoutFollowingArticleOrDeliveryLinks() = runBlocking {
+    @Test fun rssNewsletterRetainsDeliveredBodyWithoutFollowingArticleOrDeliveryLinks() = runBlocking<Unit> {
         val link = server.url("/tracking/article?recipient=synthetic").toString()
         val body = body()
         documents["/newsletter/rss"] = Document("""
@@ -85,7 +85,7 @@ class NewsletterFeedTest {
         verify(helper, never()).queryRssIconLink(any())
     }
 
-    @Test fun atomNewsletterRetainsHtmlBodyWithoutFetchingFeedIconOrStory() = runBlocking {
+    @Test fun atomNewsletterRetainsHtmlBodyWithoutFetchingFeedIconOrStory() = runBlocking<Unit> {
         val link = server.url("/tracking/atom-article?recipient=synthetic").toString()
         val body = body()
         documents["/newsletter/atom"] = Document("""
@@ -110,7 +110,7 @@ class NewsletterFeedTest {
         verify(helper, never()).queryRssIconLink(any())
     }
 
-    @Test fun newsletterHtmlLandingPageDoesNotFollowAnAlternateFeed() = runBlocking {
+    @Test fun newsletterHtmlLandingPageDoesNotFollowAnAlternateFeed() = runBlocking<Unit> {
         documents["/newsletter/landing"] = Document(
             "<html><head><link rel='alternate' type='application/rss+xml' href='/confirm-subscription'></head><body>Confirm delivery</body></html>",
             "text/html; charset=UTF-8",
@@ -127,7 +127,7 @@ class NewsletterFeedTest {
         verify(helper, never()).queryRssIconLink(any())
     }
 
-    @Test fun newsletterFetchRejectsMoreThanFourMiBWithoutDiscovery() = runBlocking {
+    @Test fun newsletterFetchRejectsMoreThanFourMiBWithoutDiscovery() = runBlocking<Unit> {
         documents["/newsletter/oversize"] = Document("x".repeat(4 * 1024 * 1024 + 1), "application/rss+xml")
 
         try {
