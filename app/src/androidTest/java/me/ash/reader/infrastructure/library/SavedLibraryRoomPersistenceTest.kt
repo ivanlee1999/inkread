@@ -94,7 +94,7 @@ class SavedLibraryRoomPersistenceTest {
                 rss.accountDao().delete(accountA)
                 assertEquals(52, rss.accountDao().queryAll().single().id)
                 assertTrue(cache.deleteRecursively())
-                assertEquals("Core RSS schema stays at released version", 7, rss.openHelper.readableDatabase.version)
+                assertEquals("Core RSS uses the additive newsletter schema", 8, rss.openHelper.readableDatabase.version)
                 assertEquals("Saved data uses a separate schema", 1, database.openHelper.readableDatabase.version)
 
                 database.close()
