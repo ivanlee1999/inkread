@@ -62,7 +62,11 @@ class ReaderCacheHelperTest {
             helper(rss).readOrFetchFullContent(article()) { throw cancellation }
             fail("Cancellation must propagate")
         } catch (actual: CancellationException) {
-            assertSame(cancellation, actual)
+            // Coroutine stacktrace recovery may copy the exception and retain it as a cause.
+            generateSequence<Throwable>(actual) { it.cause }.forEach { propagated ->
+                assertEquals(cancellation.javaClass, propagated.javaClass)
+                assertEquals(cancellation.message, propagated.message)
+            }
         }
         verifyNoInteractions(rss)
     }

@@ -1,5 +1,8 @@
 package me.ash.reader.infrastructure.rss
 
+import android.text.Html
+import android.text.Spanned
+
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -15,6 +18,8 @@ import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import org.mockito.MockedStatic
+import org.mockito.Mockito.mockStatic
 import org.mockito.kotlin.any
 import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.mock
@@ -31,8 +36,15 @@ class NewsletterFeedTest {
     private lateinit var server: MockWebServer
     private lateinit var client: OkHttpClient
     private lateinit var helper: RssHelper
+    private lateinit var androidHtml: MockedStatic<Html>
 
     @Before fun setUp() = runBlocking<Unit> {
+        // Local JVM tests have no Android text renderer. Only the fixture title crosses it;
+        // transport, Rome parsing and delivered body extraction remain real.
+        val title = mock<Spanned>()
+        whenever(title.toString()).thenReturn("Delivered issue")
+        androidHtml = mockStatic(Html::class.java)
+        androidHtml.`when`<Spanned> { Html.fromHtml("Delivered issue", Html.FROM_HTML_MODE_LEGACY) }.thenReturn(title)
         server = MockWebServer().apply {
             dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
@@ -53,6 +65,7 @@ class NewsletterFeedTest {
     }
 
     @After fun tearDown() {
+        if (::androidHtml.isInitialized) androidHtml.close()
         server.shutdown()
         client.dispatcher.executorService.shutdownNow()
         client.connectionPool.evictAll()
