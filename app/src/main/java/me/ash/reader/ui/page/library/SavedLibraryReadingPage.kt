@@ -45,6 +45,9 @@ import me.ash.reader.ui.page.annotation.AnnotationReaderDialogs
 import me.ash.reader.ui.page.annotation.rememberAnnotationReaderUi
 import me.ash.reader.domain.library.SavedContentState
 import me.ash.reader.domain.library.SavedLocation
+import me.ash.reader.infrastructure.preference.LocalOpenLink
+import me.ash.reader.infrastructure.preference.LocalOpenLinkSpecificBrowser
+import me.ash.reader.ui.ext.openURL
 import me.ash.reader.ui.page.home.reading.EInkPaginatedContent
 import me.ash.reader.ui.page.home.reading.EInkReaderVolumeReservation
 
@@ -94,6 +97,8 @@ internal fun SavedLibraryReadingContent(
     annotations: AnnotationReaderUi? = null,
 ) {
     val context = LocalContext.current
+    val openLink = LocalOpenLink.current
+    val specificBrowser = LocalOpenLinkSpecificBrowser.current
     val readerOwner = remember(state.itemId) { Any() }
     // Retain exclusive reader ownership through document and formatting loading,
     // errors and content retries. There is no hidden RSS list consumer here.
@@ -119,14 +124,19 @@ internal fun SavedLibraryReadingContent(
                     Text("Saved article", color = Color.Black)
                 }
                 Box(Modifier.weight(1f).fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Column(Modifier.verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(when {
                             state.loading -> "Opening saved article…"
                             state.error != null -> state.error
                             item == null -> "This saved article is no longer available."
-                            item.contentState == SavedContentState.FAILED -> "This article could not be saved."
+                            item.contentState == SavedContentState.FAILED -> item.lastError ?: "This article could not be saved."
                             else -> "Saving article for offline reading…"
                         }, color = Color.Black)
+                        if (!state.loading && item?.contentState == SavedContentState.FAILED && item.url.isNotBlank()) {
+                            SavedReaderAction("Open original page", "saved_reader_open_original") {
+                                context.openURL(item.url, openLink, specificBrowser)
+                            }
+                        }
                         if (!state.loading && (item != null || state.error != null)) SavedReaderAction("Retry", "saved_reader_retry", onRetry)
                     }
                 }

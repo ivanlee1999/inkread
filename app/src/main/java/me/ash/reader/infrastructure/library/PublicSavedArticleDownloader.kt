@@ -29,8 +29,6 @@ internal class PublicSavedArticleDownloader(private val limits: SavedStorageLimi
     override suspend fun extract(url: String, titleHint: String?): SavedExtractedArticle = withContext(Dispatchers.IO) {
         val request = request(url).header("Accept", "text/html,application/xhtml+xml").build()
         val page = pageClient.newCall(request).readResponse { response ->
-            val contentType = response.body.contentType()
-            if (contentType != null && contentType.subtype !in setOf("html", "xhtml+xml")) throw IOException("Article is not an HTML page")
             response.request.url.toString() to response.body.readHtmlLimited(limits.maxHtmlBytes)
         }
         val jobContext = currentCoroutineContext()

@@ -12,6 +12,19 @@ import org.junit.Test
 class HtmlResponseDecoderTest {
     private val bilingual = "<p>中文报道与 English reporting stay readable.</p>"
 
+    @Test fun htmlAndXhtmlMediaTypesAndMissingContentTypeAreAccepted() {
+        assertEquals(bilingual, bilingual.toResponseBody().readHtmlLimited())
+        for (type in listOf("text/html", "application/xhtml+xml", "TEXT/HTML; charset=UTF-8")) {
+            assertEquals(type, bilingual, decode(bilingual.toByteArray(), type))
+        }
+    }
+
+    @Test fun declaredNonHtmlResponsesAreRejectedEvenWithReadableMarkup() {
+        for (type in listOf("application/json", "text/plain", "application/xml", "image/html", "application/html", "text/xhtml+xml")) {
+            assertThrows(type, IOException::class.java) { decode(bilingual.toByteArray(), type) }
+        }
+    }
+
     @Test fun unlabelledUtf8PreservesChineseAndEnglish() {
         assertEquals(bilingual, decode(bilingual.toByteArray()))
     }
@@ -19,6 +32,26 @@ class HtmlResponseDecoderTest {
     @Test fun httpCharsetDecodesWesternPunctuation() {
         val html = "<p>Café, £5 and “quoted” reporting.</p>"
         assertEquals(html, decode(html.toByteArray(Charset.forName("windows-1252")), "text/html; charset=windows-1252"))
+    }
+
+    @Test fun htmlLatin1AndAsciiHttpLabelsPreserveBrowserPunctuation() {
+        val html = "<p>“Café” — €5 isn’t £5.</p>"
+        val bytes = html.toByteArray(Charset.forName("windows-1252"))
+        for (label in listOf("ISO-8859-1", "latin1", "ascii", "US-ASCII", "iso_8859-1:1987", "iso88591")) {
+            assertEquals(label, html, decode(bytes, "text/html; charset=\"$label\""))
+        }
+    }
+
+    @Test fun htmlLatin1AndAsciiMetaLabelsPreserveBrowserPunctuation() {
+        for (label in listOf("ISO-8859-1", "latin1", "ascii", "US-ASCII", "iso88591")) {
+            val html = "<meta charset=' $label '><p>“Café” — €5 isn’t £5.</p>"
+            assertEquals(label, html, decode(html.toByteArray(Charset.forName("windows-1252"))))
+        }
+    }
+
+    @Test fun httpEquivLatin1LabelPreservesBrowserPunctuation() {
+        val html = "<meta http-equiv='Content-Type' content='text/html; charset=iso-8859-1'><p>“Quoted” — €5.</p>"
+        assertEquals(html, decode(html.toByteArray(Charset.forName("windows-1252"))))
     }
 
     @Test fun httpCharsetDecodesChineseAndEnglish() {

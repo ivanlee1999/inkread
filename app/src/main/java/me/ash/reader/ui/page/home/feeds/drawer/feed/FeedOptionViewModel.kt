@@ -96,11 +96,10 @@ constructor(
     fun changeParseFullContentPreset() {
         viewModelScope.launch(ioDispatcher) {
             _feedOptionUiState.value.feed?.let {
+                if (it.isNewsletter) return@launch
                 val isFullContent = !it.isFullContent
                 val isBrowser = if (isFullContent) false else it.isBrowser
-                rssService
-                    .get()
-                    .updateFeed(it.copy(isFullContent = isFullContent, isBrowser = isBrowser))
+                feedDao.updateReaderPreferencesIfOrdinary(it.accountId, it.id, isFullContent, isBrowser)
                 fetchFeed(it.id)
             }
         }
@@ -109,11 +108,10 @@ constructor(
     fun changeOpenInBrowserPreset() {
         viewModelScope.launch(ioDispatcher) {
             _feedOptionUiState.value.feed?.let {
+                if (it.isNewsletter) return@launch
                 val isBrowser = !it.isBrowser
                 val isFullContent = if (isBrowser) false else it.isFullContent
-                rssService
-                    .get()
-                    .updateFeed(it.copy(isBrowser = isBrowser, isFullContent = isFullContent))
+                feedDao.updateReaderPreferencesIfOrdinary(it.accountId, it.id, isFullContent, isBrowser)
                 fetchFeed(it.id)
             }
         }
@@ -122,8 +120,17 @@ constructor(
     fun changeAllowNotificationPreset() {
         viewModelScope.launch(ioDispatcher) {
             _feedOptionUiState.value.feed?.let {
-                rssService.get().updateFeed(it.copy(isNotification = !it.isNotification))
+                feedDao.updateNotification(it.accountId, it.id, !it.isNotification)
                 fetchFeed(it.id)
+            }
+        }
+    }
+
+    fun changeNewsletterSource() {
+        viewModelScope.launch(ioDispatcher) {
+            _feedOptionUiState.value.feed?.let { feed ->
+                feedDao.updateNewsletter(feed.accountId, feed.id, !feed.isNewsletter)
+                fetchFeed(feed.id)
             }
         }
     }
@@ -213,9 +220,9 @@ constructor(
 
     fun reloadIcon() {
         _feedOptionUiState.value.feed?.let { feed ->
+            if (feed.isNewsletter) return
             viewModelScope.launch(ioDispatcher) {
-                val icon = rssHelper.queryRssIconLink(feed.url) ?: return@launch
-                feedDao.update(feed.copy(icon = icon))
+                rssHelper.fetchAndSaveRssIcon(feedDao, feed)
                 fetchFeed(feed.id)
             }
         }

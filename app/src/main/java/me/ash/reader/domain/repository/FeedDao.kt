@@ -8,6 +8,32 @@ import timber.log.Timber
 @Dao
 interface FeedDao {
 
+    // Remote operations may finish after local preferences change. Update only their own field.
+    @Query("UPDATE feed SET name = :name WHERE accountId = :accountId AND id = :id")
+    suspend fun updateName(accountId: Int, id: String, name: String)
+
+    @Query("UPDATE feed SET groupId = :groupId WHERE accountId = :accountId AND id = :id")
+    suspend fun updateGroup(accountId: Int, id: String, groupId: String)
+
+    @Query("UPDATE feed SET url = :url WHERE accountId = :accountId AND id = :id")
+    suspend fun updateUrl(accountId: Int, id: String, url: String)
+
+    @Query("SELECT url FROM feed WHERE accountId = :accountId AND id = :id AND url = :expectedUrl AND isNewsletter = 0")
+    suspend fun queryIconSource(accountId: Int, id: String, expectedUrl: String): String?
+
+    /** A delayed favicon result must never replace preferences captured before the request. */
+    @Query("UPDATE feed SET icon = :icon WHERE accountId = :accountId AND id = :id AND url = :expectedUrl AND isNewsletter = 0")
+    suspend fun updateIconIfOrdinary(accountId: Int, id: String, expectedUrl: String, icon: String): Int
+
+    @Query("UPDATE feed SET isFullContent = :isFullContent, isBrowser = :isBrowser WHERE accountId = :accountId AND id = :id AND isNewsletter = 0")
+    suspend fun updateReaderPreferencesIfOrdinary(accountId: Int, id: String, isFullContent: Boolean, isBrowser: Boolean)
+
+    @Query("UPDATE feed SET isNotification = :enabled WHERE accountId = :accountId AND id = :id")
+    suspend fun updateNotification(accountId: Int, id: String, enabled: Boolean)
+
+    @Query("UPDATE feed SET isNewsletter = :enabled, isFullContent = 0, isBrowser = 0, icon = CASE WHEN :enabled THEN NULL ELSE icon END WHERE accountId = :accountId AND id = :id")
+    suspend fun updateNewsletter(accountId: Int, id: String, enabled: Boolean)
+
     @Query(
         """
         UPDATE feed SET groupId = :targetGroupId
@@ -22,6 +48,7 @@ interface FeedDao {
         UPDATE feed SET isFullContent = :isFullContent
         WHERE accountId = :accountId
         AND groupId = :groupId
+        AND isNewsletter = 0
         """
     )
     suspend fun updateIsFullContentByGroupIdInternal(
@@ -51,6 +78,7 @@ interface FeedDao {
         UPDATE feed SET isBrowser = :isBrowser
         WHERE accountId = :accountId
         AND groupId = :groupId
+        AND isNewsletter = 0
         """
     )
     suspend fun updateIsBrowserByGroupIdInternal(
@@ -139,6 +167,7 @@ interface FeedDao {
         SELECT * FROM feed
         WHERE accountId = :accountId
         AND (icon IS NUll OR icon = '')
+        AND isNewsletter = 0
         """
     )
     suspend fun queryNoIcon(accountId: Int): List<Feed>
@@ -185,10 +214,11 @@ interface FeedDao {
                 val existing = localFeeds[new.id] ?: return@mapNotNull null
                 val updated =
                     new.copy(
-                        icon = if (new.icon.isNullOrEmpty()) existing.icon else new.icon,
+                        icon = if (existing.isNewsletter || new.icon.isNullOrEmpty()) existing.icon else new.icon,
                         isNotification = existing.isNotification,
                         isFullContent = existing.isFullContent,
                         isBrowser = existing.isBrowser,
+                        isNewsletter = existing.isNewsletter,
                     )
                 if (updated == existing) {
                     null

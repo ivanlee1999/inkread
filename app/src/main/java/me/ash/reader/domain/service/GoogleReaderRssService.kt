@@ -45,6 +45,8 @@ import me.ash.reader.infrastructure.html.Readability
 import me.ash.reader.infrastructure.net.onFailure
 import me.ash.reader.infrastructure.net.onSuccess
 import me.ash.reader.infrastructure.rss.RssHelper
+import me.ash.reader.infrastructure.rss.FeedArticleBodyRefresh
+import me.ash.reader.infrastructure.rss.FeedArticleRefreshResult
 import me.ash.reader.infrastructure.rss.provider.greader.GoogleReaderAPI
 import me.ash.reader.infrastructure.rss.provider.greader.GoogleReaderAPI.Companion.dbId
 import me.ash.reader.infrastructure.rss.provider.greader.GoogleReaderAPI.Companion.isValidItemId
@@ -77,6 +79,7 @@ constructor(
     private val workManager: WorkManager,
     private val accountService: AccountService,
     private val syncLogger: SyncLogger,
+    private val feedArticleBodyRefresh: FeedArticleBodyRefresh,
 ) :
     AbstractRssRepository(
         articleDao,
@@ -96,8 +99,8 @@ constructor(
     override val deleteSubscription: Boolean = true
     override val updateSubscription: Boolean = true
 
-    private suspend fun getGoogleReaderAPI() =
-        GoogleReaderSecurityKey(accountService.getCurrentAccount().securityKey).run {
+    private suspend fun getGoogleReaderAPI(account: Account = accountService.getCurrentAccount()) =
+        GoogleReaderSecurityKey(account.securityKey).run {
             GoogleReaderAPI.getInstance(
                 context = context,
                 serverUrl = serverUrl!!,
@@ -109,6 +112,20 @@ constructor(
                 syncLogger = syncLogger,
             )
         }
+
+    /** User-requested refresh of one known server ID; ordinary sync cursors are not consulted. */
+    suspend fun refreshArticleFeedBody(article: Article): FeedArticleRefreshResult {
+        val account = accountService.getAccountById(article.accountId)
+            ?: throw java.io.IOException("This RSS account is no longer available")
+        require(account.type.id == AccountType.GoogleReader.id || account.type.id == AccountType.FreshRSS.id) {
+            "This account does not support refreshing a server feed body"
+        }
+        // Capture the selected article's account, even if the user switches accounts in flight.
+        val api = getGoogleReaderAPI(account)
+        return feedArticleBodyRefresh.refresh(article) { remoteId ->
+            api.getItemsContents(listOf(remoteId), maxResponseBytes = 4L * 1024L * 1024L)
+        }
+    }
 
     override suspend fun validCredentials(account: Account): Boolean {
         return getGoogleReaderAPI().validCredentials().also { success ->
@@ -134,9 +151,10 @@ constructor(
         isNotification: Boolean,
         isFullContent: Boolean,
         isBrowser: Boolean,
+        isNewsletter: Boolean,
     ) {
         val accountId = accountService.getCurrentAccountId()
-        val quickAdd = getGoogleReaderAPI().subscriptionQuickAdd(feedLink)
+        val quickAdd = getGoogleReaderAPI().subscriptionQuickAdd(feedLink, isPrivateFeed = isNewsletter)
         val feedId = quickAdd.streamId?.ofFeedStreamIdToId()
         requireNotNull(feedId) { "feedId is null" }
         val feedTitle = searchedFeed.title
@@ -147,6 +165,7 @@ constructor(
                 destFeedId = feedId,
                 destCategoryId = groupId.dollarLast(),
                 destFeedName = feedTitle,
+                isPrivateFeed = isNewsletter,
             )
         feedDao.insert(
             Feed(
@@ -156,8 +175,9 @@ constructor(
                 groupId = groupId,
                 accountId = accountId,
                 isNotification = isNotification,
-                isFullContent = isFullContent,
-                isBrowser = isBrowser,
+                isFullContent = isFullContent && !isNewsletter,
+                isBrowser = isBrowser && !isNewsletter,
+                isNewsletter = isNewsletter,
             )
         )
         // TODO: When users need to subscribe to multiple feeds continuously, this makes them
@@ -172,6 +192,7 @@ constructor(
             .subscriptionEdit(
                 destFeedId = destFeed?.id?.dollarLast(),
                 destCategoryId = newGroupName,
+                isPrivateFeed = destFeed?.isNewsletter == true,
             )
         val id = accountId.spacerDollar(newGroupName.ofCategoryIdToStreamId())
         groupDao.insert(Group(id = id, name = newGroupName, accountId = accountId))
@@ -191,6 +212,7 @@ constructor(
                 destFeedId = feed.id.dollarLast(),
                 destCategoryId = feed.groupId.dollarLast().ofCategoryStreamIdToId(),
                 originCategoryId = originGroupId.dollarLast().ofCategoryStreamIdToId(),
+                isPrivateFeed = feed.isNewsletter,
             )
         super.moveFeed(originGroupId, feed)
     }
@@ -201,7 +223,7 @@ constructor(
 
     override suspend fun renameFeed(feed: Feed) {
         getGoogleReaderAPI()
-            .subscriptionEdit(destFeedId = feed.id.dollarLast(), destFeedName = feed.name)
+            .subscriptionEdit(destFeedId = feed.id.dollarLast(), destFeedName = feed.name, isPrivateFeed = feed.isNewsletter)
         // TODO: Whether to switch the old ID to the new ID?
         super.renameFeed(feed)
     }
@@ -216,7 +238,7 @@ constructor(
 
     override suspend fun deleteFeed(feed: Feed, onlyDeleteNoStarred: Boolean?) {
         getGoogleReaderAPI()
-            .subscriptionEdit(action = "unsubscribe", destFeedId = feed.id.dollarLast())
+            .subscriptionEdit(action = "unsubscribe", destFeedId = feed.id.dollarLast(), isPrivateFeed = feed.isNewsletter)
         super.deleteFeed(feed, false)
     }
 
@@ -443,26 +465,17 @@ constructor(
             val remoteGroups = async { groupWithFeedsMap.await().keys.toList() }
             val remoteFeeds = async { groupWithFeedsMap.await().values.flatten() }
 
-            // Handle empty icon for feeds
-            launch {
-                val localFeeds = feedDao.queryAll(accountId)
-                val remoteFeeds = remoteFeeds.await()
-                val newFeeds = remoteFeeds.filter { feed -> feed.id !in localFeeds.map { it.id } }
-
-                val feedsWithIconFetched =
-                    newFeeds
-                        .filter { it.icon == null }
-                        .map { feed ->
-                            async { feed.copy(icon = rssHelper.queryRssIconLink(feed.url)) }
-                        }
-                feedsWithIconFetched
-                    .awaitAll()
-                    .filterNot { it.icon.isNullOrEmpty() }
-                    .also { feedDao.update(*it.toTypedArray()) }
-            }
-
+            val newFeedIds = remoteFeeds.await().map { it.id }.toSet() -
+                feedDao.queryAll(accountId).map { it.id }.toSet()
             groupDao.insertOrUpdate(remoteGroups.await())
             feedDao.insertOrUpdate(remoteFeeds.await())
+
+            // Persist first, then recheck the current preference before each icon lookup.
+            launch {
+                remoteFeeds.await().filter { it.id in newFeedIds && it.icon == null }
+                    .map { feed -> async { rssHelper.fetchAndSaveRssIcon(feedDao, feed) } }
+                    .awaitAll()
+            }
 
             val notificationFeeds =
                 feedDao.queryNotificationEnabled(accountId).associateBy { it.id }

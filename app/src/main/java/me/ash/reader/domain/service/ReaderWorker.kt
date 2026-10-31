@@ -34,7 +34,9 @@ constructor(
                     batch
                         .map { article ->
                             async {
-                                cacheHelper.checkOrFetchFullContent(article)
+                                cacheHelper.checkOrFetchFullContent(article) {
+                                    rssService.canPrefetchFullContent(article)
+                                }
                             }
                         }
                         .awaitAll()

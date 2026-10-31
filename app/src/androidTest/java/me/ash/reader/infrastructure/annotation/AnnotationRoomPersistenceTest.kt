@@ -67,7 +67,7 @@ class AnnotationRoomPersistenceTest {
                 saved.savedLibraryDao().delete("saved-source")
                 assertNull(rss.articleDao().queryById(article.id))
                 assertNull(saved.savedLibraryDao().get("saved-source"))
-                assertEquals(7, rss.openHelper.readableDatabase.version)
+                assertEquals(8, rss.openHelper.readableDatabase.version)
                 assertEquals(1, saved.openHelper.readableDatabase.version)
                 assertEquals(1, database.openHelper.readableDatabase.version)
                 database.close()

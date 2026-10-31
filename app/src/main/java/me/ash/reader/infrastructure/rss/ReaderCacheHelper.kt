@@ -74,17 +74,30 @@ constructor(
     suspend fun readOrFetchFullContent(article: Article): Result<String> =
         readOrFetchFullContent(ArticleFullContentRequest(article.accountId, article.id, article.title, article.link))
 
+    suspend fun readOrFetchFullContent(article: Article, canFetch: suspend () -> Boolean): Result<String> =
+        readOrFetchFullContent(ArticleFullContentRequest(article.accountId, article.id, article.title, article.link), canFetch = canFetch)
+
     /** Explicit user retry; a failed refresh never destroys an existing offline cache. */
     suspend fun refreshFullContent(article: Article): Result<String> =
         readOrFetchFullContent(ArticleFullContentRequest(article.accountId, article.id, article.title, article.link), forceRefresh = true)
 
-    private suspend fun readOrFetchFullContent(article: ArticleFullContentRequest, forceRefresh: Boolean = false): Result<String> =
+    suspend fun refreshFullContent(article: Article, canFetch: suspend () -> Boolean): Result<String> =
+        readOrFetchFullContent(ArticleFullContentRequest(article.accountId, article.id, article.title, article.link), forceRefresh = true, canFetch = canFetch)
+
+    private suspend fun readOrFetchFullContent(
+        article: ArticleFullContentRequest,
+        forceRefresh: Boolean = false,
+        canFetch: suspend () -> Boolean = { true },
+    ): Result<String> =
         withContext(ioDispatcher) {
             val key = "${article.accountId}:${article.id}"
             fetchLocks[(key.hashCode() and Int.MAX_VALUE) % fetchLocks.size].withLock {
                 val cached = readFullContent(article.id, article.accountId)
-                if (cached.isSuccess && !forceRefresh) return@withLock cached
                 readerCacheResult {
+                    // A queued prefetch may have waited while the user marked its feed as a newsletter.
+                    // Recheck under the lock before exposing cached publisher content or fetching it.
+                    check(canFetch()) { "Automatic article fetching is no longer enabled" }
+                    if (cached.isSuccess && !forceRefresh) return@readerCacheResult cached.getOrThrow()
                     val fetched = rssHelper.parseFullContent(article.link, article.title)
                     check(fetched.isNotBlank()) { "Empty article content" }
                     // Explicit refresh must not replace a useful offline extraction with a
@@ -153,8 +166,10 @@ constructor(
             }
         }
 
-    suspend fun checkOrFetchFullContent(article: ArticleFullContentRequest): Boolean =
-        readOrFetchFullContent(article).isSuccess
+    suspend fun checkOrFetchFullContent(
+        article: ArticleFullContentRequest,
+        canFetch: suspend () -> Boolean,
+    ): Boolean = readOrFetchFullContent(article, canFetch = canFetch).isSuccess
 
     suspend fun deleteCacheFor(
         articleId: String,

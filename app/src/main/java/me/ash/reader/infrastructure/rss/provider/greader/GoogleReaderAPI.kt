@@ -3,18 +3,20 @@ package me.ash.reader.infrastructure.rss.provider.greader
 import android.content.Context
 import androidx.annotation.CheckResult
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import kotlin.text.hexToLong
 import kotlin.text.startsWith
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import me.ash.reader.domain.data.SyncLogger
 import me.ash.reader.infrastructure.di.USER_AGENT_STRING
 import me.ash.reader.infrastructure.exception.GoogleReaderAPIException
-import me.ash.reader.infrastructure.exception.RetryException
 import me.ash.reader.infrastructure.net.ApiResult
 import me.ash.reader.infrastructure.net.RetryConfig
 import me.ash.reader.infrastructure.net.RetryableTaskResult
 import me.ash.reader.infrastructure.net.getOrThrow
+import me.ash.reader.infrastructure.net.mapFailure
 import me.ash.reader.infrastructure.net.onFailure
 import me.ash.reader.infrastructure.net.onSuccess
 import me.ash.reader.infrastructure.net.withRetries
@@ -22,6 +24,8 @@ import me.ash.reader.infrastructure.rss.provider.ProviderAPI
 import me.ash.reader.ui.ext.dollarLast
 import me.ash.reader.ui.ext.spacerDollar
 import okhttp3.FormBody
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.executeAsync
 import okio.IOException
@@ -70,13 +74,21 @@ private constructor(
         }
 
     suspend fun validCredentials(): Boolean {
-        val result = reAuthenticate().onSuccess { authData = it }
-        return result.isSuccess
+        return try {
+            reAuthenticate().onSuccess { authData = it }.isSuccess
+        } catch (failure: Exception) {
+            throw safeGoogleReaderFailure(failure, "authentication")
+        }
     }
 
     suspend fun refreshCredentialsIfNeeded() {
         if (authData.clientLoginToken.isNullOrEmpty()) {
-            reAuthenticate().getOrThrow().let { authData = it }
+            // Sync also calls this directly, outside the redacted request wrappers.
+            try {
+                reAuthenticate().getOrThrow().let { authData = it }
+            } catch (failure: Exception) {
+                throw safeGoogleReaderFailure(failure, "authentication")
+            }
         }
     }
 
@@ -150,10 +162,10 @@ private constructor(
         return ApiResult.Success(AuthData(actionToken = actionToken, clientLoginToken = loginToken))
     }
 
-    private val retryConfig =
+    private fun requestRetryConfig(query: String) =
         RetryConfig(
             onRetry = {
-                Timber.e(it)
+                Timber.e(safeGoogleReaderFailure(it, query))
                 clearAuthData()
             }
         )
@@ -162,28 +174,22 @@ private constructor(
         query: String,
         params: List<Pair<String, String>>? = null,
     ): T {
-        return withRetries(retryConfig) { getRequest<T>(query, params) }.getOrThrow()
+        return withRetries(requestRetryConfig(query)) { getRequest<T>(query, params) }
+            .mapFailure { safeGoogleReaderFailure(it, query) }.getOrThrow()
     }
 
     private suspend inline fun <reified T> retryablePostRequest(
         query: String,
         params: List<Pair<String, String>>? = null,
         form: List<Pair<String, String>>? = null,
+        maxResponseBytes: Long? = null,
     ): T {
-        return withRetries(retryConfig) { postRequest<T>(query, params, form) }
+        return withRetries(requestRetryConfig(query)) {
+            postRequest<T>(query, params, form, maxResponseBytes)
+        }
+            .mapFailure { safeGoogleReaderFailure(it, query) }
             .onFailure {
-                if (it is GoogleReaderAPIException) {
-                    syncLogger.log(it.copy(query = query, params = params, form = form))
-                } else {
-                    syncLogger.log(
-                        GoogleReaderAPIException(
-                            message = it.message.toString(),
-                            query = query,
-                            params = params,
-                            form = form,
-                        )
-                    )
-                }
+                if (it !is CancellationException) syncLogger.log(it)
             }
             .getOrThrow()
     }
@@ -193,7 +199,8 @@ private constructor(
         query: String,
         params: List<Pair<String, String>>? = null,
     ): RetryableTaskResult<T> {
-        return withRetries(retryConfig) { getRequest<T>(query, params) }
+        return withRetries(requestRetryConfig(query)) { getRequest<T>(query, params) }
+            .mapFailure { safeGoogleReaderFailure(it, query) }
     }
 
     @CheckResult
@@ -202,8 +209,14 @@ private constructor(
         params: List<Pair<String, String>>? = null,
         form: List<Pair<String, String>>? = null,
     ): RetryableTaskResult<T> {
-        return withRetries(retryConfig) { postRequest<T>(query, params, form) }
+        return withRetries(requestRetryConfig(query)) { postRequest<T>(query, params, form) }
+            .mapFailure { safeGoogleReaderFailure(it, query) }
     }
+
+    private fun requestUrl(query: String, params: List<Pair<String, String>>?): HttpUrl =
+        "$serverUrl$query".toHttpUrl().newBuilder().addQueryParameter("output", "json").apply {
+            params?.forEach { (name, value) -> addQueryParameter(name, value) }
+        }.build()
 
     private suspend inline fun <reified T> getRequest(
         query: String,
@@ -215,9 +228,7 @@ private constructor(
             client
                 .newCall(
                     Request.Builder()
-                        .url(
-                            "$serverUrl$query?output=json${params?.joinToString(separator = "") { "&${it.first}=${it.second}" } ?: ""}"
-                        )
+                        .url(requestUrl(query, params))
                         .addHeader("Authorization", "GoogleLogin auth=${authData.clientLoginToken}")
                         .addHeader("User-Agent", USER_AGENT_STRING)
                         .get()
@@ -225,37 +236,25 @@ private constructor(
                 )
                 .executeAsync()
 
-        val body = response.body.string()
-        when (response.code) {
-            400 -> throw GoogleReaderAPIException("BadRequest")
-            401 -> throw RetryException("Unauthorized")
-            !in 200..299 -> {
-                val gReaderError =
-                    try {
-                        toDTO<GoogleReaderDTO.GReaderError>(body)
-                    } catch (ignore: Exception) {
-                        GoogleReaderDTO.GReaderError(listOf(body))
-                    }
-                throw GoogleReaderAPIException(gReaderError.errors.joinToString(";\n "))
-            }
+        return response.use {
+            // Status is enough for diagnostics. Error bodies may contain private feed URLs.
+            if (!it.isSuccessful) throw GoogleReaderHttpFailure(it.code)
+            toDTO(it.body.string())
         }
-
-        return toDTO(body)
     }
 
     private suspend inline fun <reified T> postRequest(
         query: String,
         params: List<Pair<String, String>>? = null,
         form: List<Pair<String, String>>? = null,
+        maxResponseBytes: Long? = null,
     ): T {
         refreshCredentialsIfNeeded()
         val response =
             client
                 .newCall(
                     Request.Builder()
-                        .url(
-                            "$serverUrl$query?output=json${params?.joinToString(separator = "") { "&${it.first}=${it.second}" } ?: ""}"
-                        )
+                        .url(requestUrl(query, params))
                         .addHeader("Authorization", "GoogleLogin auth=${authData.clientLoginToken}")
                         .addHeader("Content-Type", "application/x-www-form-urlencoded")
                         .addHeader("User-Agent", USER_AGENT_STRING)
@@ -269,18 +268,18 @@ private constructor(
                         )
                         .build()
                 )
+                .apply {
+                    // A byte cap alone cannot bound a slow-trickle single-item response.
+                    if (maxResponseBytes != null) timeout().timeout(30, TimeUnit.SECONDS)
+                }
                 .executeAsync()
 
-        val responseBody = response.body.string()
-        when (response.code) {
-            400 -> throw GoogleReaderAPIException("BadRequest")
-            401 -> throw RetryException("Unauthorized")
-            !in 200..299 -> {
-                throw GoogleReaderAPIException(responseBody)
-            }
+        return response.use {
+            if (!it.isSuccessful) throw GoogleReaderHttpFailure(it.code)
+            val responseBody = if (maxResponseBytes == null) it.body.string()
+                else it.body.readGoogleReaderBodyLimited(maxResponseBytes)
+            toDTO(responseBody)
         }
-
-        return toDTO(responseBody)
     }
 
     suspend fun getUserInfo(): GoogleReaderDTO.User =
@@ -386,17 +385,19 @@ private constructor(
             )
             .getOrNull()
 
-    suspend fun getItemsContents(ids: List<String>?) =
+    suspend fun getItemsContents(ids: List<String>?, maxResponseBytes: Long? = null) =
         retryablePostRequest<GoogleReaderDTO.ItemsContents>(
             query = "reader/api/0/stream/items/contents",
             form = ids?.map { Pair("i", it) },
+            maxResponseBytes = maxResponseBytes,
         )
 
-    suspend fun subscriptionQuickAdd(feedUrl: String): GoogleReaderDTO.QuickAddFeed =
+    suspend fun subscriptionQuickAdd(feedUrl: String, isPrivateFeed: Boolean = false): GoogleReaderDTO.QuickAddFeed =
         retryablePostRequest<GoogleReaderDTO.QuickAddFeed>(
             query = "reader/api/0/subscription/quickadd",
             params = listOf(Pair("quickadd", feedUrl)),
             form = listOf(Pair("quickadd", feedUrl)),
+            maxResponseBytes = if (isPrivateFeed) 1024L * 1024L else null,
         )
 
     @CheckResult
@@ -437,6 +438,7 @@ private constructor(
         destCategoryId: String? = null,
         originCategoryId: String? = null,
         destFeedName: String? = null,
+        isPrivateFeed: Boolean = false,
     ): String =
         retryablePostRequest<String>(
             query = "reader/api/0/subscription/edit",
@@ -447,6 +449,7 @@ private constructor(
                     originCategoryId?.let { add(Pair("r", it.ofCategoryIdToStreamId())) }
                     destFeedName?.takeIf { it.isNotBlank() }?.let { add(Pair("t", destFeedName)) }
                 },
+            maxResponseBytes = if (isPrivateFeed) 1024L * 1024L else null,
         )
 
     // Not all services support it

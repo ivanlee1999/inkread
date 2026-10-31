@@ -22,6 +22,8 @@ import kotlinx.coroutines.withTimeout
 import me.ash.reader.domain.library.SavedContentState
 import me.ash.reader.domain.library.SavedImageState
 import me.ash.reader.domain.library.SavedLocation
+import me.ash.reader.infrastructure.html.ArticleExtractionPreparation
+import me.ash.reader.infrastructure.html.ArticleRequiresBrowserException
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -137,6 +139,60 @@ class SavedLibraryRepositoryRegressionTest {
         assertEquals("Text readiness is not the same as image completeness", SavedContentState.READY, document.item.contentState)
         assertTrue(document.item.imageState == SavedImageState.FAILED || document.item.imageState == SavedImageState.PARTIAL)
         assertTrue(document.html.contains("A durable paragraph"))
+    }
+
+    @Test fun restrictedPagesChallengesAndSourceLimitsKeepAnActionableFailureAfterReopen() = runRepositoryTest {
+        val reasons = mapOf(
+            ArticleExtractionPreparation.AccessReason.PUBLISHER_RESTRICTED to
+                "The publisher restricts access to this article. Open the original page in your browser.",
+            ArticleExtractionPreparation.AccessReason.ACCESS_GATE to
+                "This page requires browser access. Open the original page in your browser.",
+            ArticleExtractionPreparation.AccessReason.BROWSER_CHALLENGE to
+                "This site requires browser verification. Open the original page in your browser.",
+            ArticleExtractionPreparation.AccessReason.SOURCE_LIMIT to
+                "This page exceeds the article download limits. Open the original page in your browser.",
+        )
+        for ((reason, message) in reasons) {
+            val fixture = Fixture()
+            val repository = fixture.repository(Dispatchers.Unconfined)
+            fixture.downloader.extract = { _, _ -> throw ArticleRequiresBrowserException(reason) }
+            val id = repository.saveUrl(URL, "Saved request")
+            repository.move(id, SavedLocation.LATER)
+            repository.setRead(id, true)
+            repository.download(id, fixture.scheduler.latest(id).token)
+
+            val reopened = fixture.repository(Dispatchers.Unconfined)
+            val item = reopened.observeItem(id).first()!!
+            assertEquals(SavedContentState.FAILED, item.contentState)
+            assertEquals(message, item.lastError)
+            assertEquals(SavedLocation.LATER, item.location)
+            assertTrue(item.isRead)
+            assertNull(reopened.loadDocument(id))
+            assertNull("A browser requirement must not leave an active download token", fixture.dao.get(id)!!.downloadToken)
+            assertEquals("Reopening does not automatically retry the restricted page", 1, fixture.scheduler.requests.size)
+            assertFalse("Rejected source text must not be persisted", fixture.root.walkTopDown().any { it.isFile })
+        }
+    }
+
+    @Test fun restrictedImageDoesNotChangeSavedTextItsAnchorOrSuggestTheArticleIsUnavailable() = runRepositoryTest {
+        val fixture = Fixture()
+        val repository = fixture.repository(Dispatchers.Unconfined)
+        val id = repository.saveRssSnapshot(URL, "Offline article", "Ada", "Paper",
+            "$HTML<img src='https://example.test/restricted-image.png'>")
+        val before = requireNotNull(repository.loadDocument(id))
+        repository.saveReadingAnchor(id, before.contentRevision, ANCHOR)
+        fixture.downloader.extract = { _, _ -> error("Already saved text must not be downloaded again") }
+        fixture.downloader.image = { throw ArticleRequiresBrowserException(ArticleExtractionPreparation.AccessReason.ACCESS_GATE) }
+        repository.download(id, fixture.scheduler.latest(id).token)
+
+        val reopened = fixture.repository(Dispatchers.Unconfined)
+        val after = requireNotNull(reopened.loadDocument(id))
+        assertEquals(SavedContentState.READY, after.item.contentState)
+        assertEquals(SavedImageState.FAILED, after.item.imageState)
+        assertEquals(before.html, after.html)
+        assertEquals(before.contentRevision, after.contentRevision)
+        assertEquals(ANCHOR, after.readingAnchor)
+        assertEquals("Text is saved. 0 of 1 images available offline.", after.item.lastError)
     }
 
     @Test fun removalWhileExtractionIsSuspendedCannotResurrectItemOrDocument() = runRepositoryTest {

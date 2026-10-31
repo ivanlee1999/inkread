@@ -14,6 +14,7 @@ import java.io.ByteArrayInputStream
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.nio.charset.Charset
 import java.util.*
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.withContext
@@ -45,6 +46,7 @@ import org.jsoup.Jsoup
 
 private const val FULL_CONTENT_MAX_BYTES = 2L * 1024L * 1024L
 private const val READ_BUFFER_BYTES = 8L * 1024L
+private const val NEWSLETTER_MAX_FEED_BYTES = 4L * 1024L * 1024L
 
 /** Some operations on RSS. */
 class RssHelper
@@ -54,6 +56,9 @@ constructor(
     @IODispatcher private val ioDispatcher: CoroutineDispatcher,
     private val okHttpClient: OkHttpClient,
 ) {
+    private val newsletterClient by lazy { okHttpClient.newBuilder()
+        .callTimeout(minOf(okHttpClient.callTimeoutMillis.takeIf { it > 0 } ?: 30_000, 30_000).toLong(), TimeUnit.MILLISECONDS)
+        .build() }
 
     data class SearchFeedResult(
         val feed: SyndFeed,
@@ -61,12 +66,12 @@ constructor(
     )
 
     @Throws(Exception::class)
-    suspend fun searchFeed(feedLink: String): SearchFeedResult {
+    suspend fun searchFeed(feedLink: String, newsletter: Boolean = false): SearchFeedResult {
         return withContext(ioDispatcher) {
-            val (directBody, directHttpContentType, directFeedLink) = response(okHttpClient, feedLink).use {
+            val (directBody, directHttpContentType, directFeedLink) = response(if (newsletter) newsletterClient else okHttpClient, feedLink).use {
                 if (!it.isSuccessful) throw IOException(it.message)
                 Triple(
-                    it.body.bytes(),
+                    if (newsletter) it.body.source().readByteArrayLimited(NEWSLETTER_MAX_FEED_BYTES) else it.body.bytes(),
                     toHttpContentType(it.header("Content-Type")),
                     it.request.url.toString(),
                 )
@@ -75,6 +80,7 @@ constructor(
             val (feed, resolvedFeedLink) =
                 if (parsedDirectFeed != null) parsedDirectFeed to directFeedLink
                 else {
+                    if (newsletter) throw IOException("Enter a direct RSS or Atom newsletter feed URL")
                     val discoveredFeedLink = discoverFeedLink(directFeedLink, directBody)
                         ?: throw IOException("Unable to detect RSS feed URL")
                     response(okHttpClient, discoveredFeedLink).use {
@@ -86,7 +92,7 @@ constructor(
 
             feed.also {
                 it.icon = SyndImageImpl()
-                it.icon.link = queryRssIconLink(resolvedFeedLink)
+                it.icon.link = if (newsletter) null else queryRssIconLink(resolvedFeedLink)
                 it.icon.url = it.icon.link
             }
 
@@ -152,7 +158,8 @@ constructor(
     ): List<Article> =
         try {
             val accountId = context.currentAccountId
-            response(okHttpClient, feed.url).use { response ->
+            response(if (feed.isNewsletter) newsletterClient else okHttpClient, feed.url).use { response ->
+                if (feed.isNewsletter && !response.isSuccessful) throw IOException("Newsletter feed refresh failed")
                 val contentType = response.header("Content-Type")
 
                 val httpContentType =
@@ -161,7 +168,10 @@ constructor(
                         else "$it; charset=UTF-8"
                     } ?: "text/xml; charset=UTF-8"
 
-                response.body.byteStream().use { inputStream ->
+                val feedStream = if (feed.isNewsletter)
+                    ByteArrayInputStream(response.body.source().readByteArrayLimited(NEWSLETTER_MAX_FEED_BYTES))
+                else response.body.byteStream()
+                feedStream.use { inputStream ->
                     SyndFeedInput()
                         .apply { isPreserveWireFeed = true }
                         .build(XmlReader(inputStream, httpContentType))
@@ -172,9 +182,12 @@ constructor(
                         .toList()
                 }
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
-            e.printStackTrace()
-            Log.e("RLog", "queryRssXml[${feed.name}]: ${e.message}")
+            // A queued refresh may predate a change to newsletter mode. Never log feed URLs,
+            // throwable text, or response messages, even for a captured ordinary-feed snapshot.
+            Log.e("RLog", "Feed could not be refreshed")
             listOf()
         }
 
@@ -264,12 +277,19 @@ constructor(
         val iconFinder = BestIconFinder(okHttpClient)
         val domain = feedLink.extractDomain()
         return iconFinder.findBestIcon(domain ?: feedLink).also {
-            Log.i("RLog", "queryRssIconByLink: get $it from $domain")
+            Log.i("RLog", "Feed icon lookup completed")
         }
     }
 
+    suspend fun fetchAndSaveRssIcon(feedDao: FeedDao, feed: Feed) {
+        // Read immediately before discovery, because a sync may have retained an older Feed.
+        val source = feedDao.queryIconSource(feed.accountId, feed.id, feed.url) ?: return
+        val icon = queryRssIconLink(source) ?: return
+        saveRssIcon(feedDao, feed, icon)
+    }
+
     suspend fun saveRssIcon(feedDao: FeedDao, feed: Feed, iconLink: String) {
-        feedDao.update(feed.copy(icon = iconLink))
+        feedDao.updateIconIfOrdinary(feed.accountId, feed.id, feed.url, iconLink)
     }
 
     private suspend fun response(client: OkHttpClient, url: String): okhttp3.Response =

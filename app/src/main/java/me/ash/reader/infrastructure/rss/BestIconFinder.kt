@@ -32,7 +32,7 @@ class BestIconFinder(private val client: OkHttpClient) {
             val html = fetchHtml(url)
             findIconLinks(url, html)
         } catch (e: Exception) {
-            Log.w("RLog", "fetchIcons: $e")
+            Log.w("RLog", "Feed icon lookup failed")
             // Fallback to default icon paths if HTML fetch fails
             defaultIconUrls(url)
         }

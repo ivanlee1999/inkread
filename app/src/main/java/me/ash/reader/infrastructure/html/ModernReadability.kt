@@ -3,6 +3,7 @@ package me.ash.reader.infrastructure.html
 import java.io.StringReader
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.CancellationException
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Entities
@@ -85,6 +86,7 @@ class ModernReadability(private val limits: Limits = Limits()) {
                 }
             }
             document.select("style").remove()
+            normalizeLazyImages(document, budget)
             resolveUrls(document, baseUri, finalUrl, budget)
             document.outputSettings()
                 .syntax(Document.OutputSettings.Syntax.xml)
@@ -175,6 +177,31 @@ class ModernReadability(private val limits: Limits = Limits()) {
         }
     }
 
+    private fun normalizeLazyImages(document: Document, budget: Budget) {
+        // Readability's lazy-image fallback recognizes filename extensions. Known publisher
+        // attributes also carry extensionless/signed URLs; promote them before it drops the img.
+        // Match the reader's existing attribute priority and keep the original retry attributes.
+        for (image in document.select("img")) {
+            budget.check()
+            val source = image.attr("src").trim()
+            if (source.isNotEmpty() && !source.equals("null", ignoreCase = true) &&
+                !TINY_RASTER_PLACEHOLDER.matches(source)) continue
+            val lazySource = LAZY_IMAGE_ATTRIBUTES.firstNotNullOfOrNull { attribute ->
+                val value = image.attr(attribute).trim()
+                if (value.isEmpty() || value.equals("null", ignoreCase = true) ||
+                    value.any { it <= '\u001f' || it == '\u007f' }) null
+                else if (value.toHttpUrlOrNull() != null) value // Preserve signed absolute URLs.
+                else image.baseUri().toHttpUrlOrNull()?.resolve(value)?.toString()
+            } ?: continue
+            image.attr("src", lazySource)
+            // Having src makes Mozilla skip its lazy-image loop. Preserve the responsive
+            // alternative that loop would otherwise promote, including extensionless URLs.
+            if (image.attr("srcset").isBlank() && image.attr("data-srcset").isNotBlank()) {
+                image.attr("srcset", image.attr("data-srcset"))
+            }
+        }
+    }
+
     private fun utf8Length(value: String, budget: Budget): Long {
         var bytes = 0L
         var index = 0
@@ -239,9 +266,15 @@ class ModernReadability(private val limits: Limits = Limits()) {
     }
 
     companion object {
-        const val ENGINE_VERSION = "mozilla-readability-0.6.0-rhino-1"
+        const val ENGINE_VERSION = "mozilla-readability-0.6.0-rhino-2"
         // Same srcset tokenization as pinned Readability 0.6.0, including commas in image URLs.
         private val SRCSET = Regex("(\\S+)(\\s+[\\d.]+[xw])?(\\s*(?:,|$))")
+        private val LAZY_IMAGE_ATTRIBUTES = listOf("data-src", "data-original", "data-lazy-src")
+        // Same small-raster heuristic as Mozilla's 133-byte base64 threshold. SVG can be
+        // meaningful at this size, and ordinary image URLs are never guessed to be placeholders.
+        private val TINY_RASTER_PLACEHOLDER = Regex(
+            "data:image/(?:gif|png|jpe?g|webp|avif);base64,[a-z0-9+/=]{1,132}", RegexOption.IGNORE_CASE,
+        )
         private val domSource: String by lazy { resource("JSDOMParser.js") }
         private val readabilitySource: String by lazy { resource("Readability.js") }
         private fun resource(name: String): String = checkNotNull(

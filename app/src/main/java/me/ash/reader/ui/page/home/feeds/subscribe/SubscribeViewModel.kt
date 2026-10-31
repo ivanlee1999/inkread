@@ -9,6 +9,7 @@ import java.io.InputStream
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -101,7 +102,7 @@ constructor(
     fun toggleParseFullContentPreset() {
         _subscribeState.update { state ->
             when (state) {
-                is SubscribeState.Configure ->
+                is SubscribeState.Configure -> if (state.newsletter) state else
                     state.copy(fullContent = !state.fullContent, browser = false)
 
                 else -> state
@@ -112,7 +113,7 @@ constructor(
     fun toggleOpenInBrowserPreset() {
         _subscribeState.update { state ->
             when (state) {
-                is SubscribeState.Configure ->
+                is SubscribeState.Configure -> if (state.newsletter) state else
                     state.copy(browser = !state.browser, fullContent = false)
 
                 else -> state
@@ -124,6 +125,17 @@ constructor(
         _subscribeState.update { state ->
             when (state) {
                 is SubscribeState.Configure -> state.copy(notification = !state.notification)
+                else -> state
+            }
+        }
+    }
+
+    fun toggleNewsletter() {
+        _subscribeState.update { state ->
+            when (state) {
+                is SubscribeState.Idle -> state.copy(newsletter = !state.newsletter, errorMessage = null)
+                is SubscribeState.Configure -> state.copy(newsletter = !state.newsletter,
+                    fullContent = false, browser = false, errorMessage = null)
                 else -> state
             }
         }
@@ -148,7 +160,7 @@ constructor(
 
             val job =
                 viewModelScope.launch {
-                    runCatching { rssHelper.searchFeed(feedLink) }
+                    runCatching { rssHelper.searchFeed(feedLink, newsletter = currentState.newsletter) }
                         .onSuccess {
                             if (rssService.get().isFeedExist(it.feedLink)) {
                                 _subscribeState.value =
@@ -167,15 +179,19 @@ constructor(
                                     feedLink = it.feedLink,
                                     groups = groups,
                                     selectedGroupId = firstGroupId,
+                                    newsletter = currentState.newsletter,
                                 )
                         }
                         .onFailure {
-                            _subscribeState.value = currentState.copy(errorMessage = it.message)
+                            if (it is CancellationException) throw it
+                            _subscribeState.value = currentState.copy(errorMessage =
+                                if (currentState.newsletter) "Could not read this newsletter feed. Enter a direct RSS or Atom feed URL."
+                                else it.message)
                         }
                 }
 
             _subscribeState.value =
-                SubscribeState.Fetching(linkState = currentState.linkState, job = job)
+                SubscribeState.Fetching(linkState = currentState.linkState, job = job, newsletter = currentState.newsletter)
         }
     }
 
@@ -193,17 +209,24 @@ constructor(
 
         applicationScope.launch {
             val searchedFeed = state.searchedFeed
-            rssService
+            try { rssService
                 .get()
                 .subscribe(
                     searchedFeed = searchedFeed,
                     feedLink = state.feedLink,
                     groupId = state.selectedGroupId,
                     isNotification = state.notification,
-                    isFullContent = state.fullContent,
-                    isBrowser = state.browser,
+                    isFullContent = state.fullContent && !state.newsletter,
+                    isBrowser = state.browser && !state.newsletter,
+                    isNewsletter = state.newsletter,
                 )
-            hideDrawer()
+                hideDrawer()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // Backend exception messages may contain the entire private feed URL.
+                _subscribeState.value = state.copy(errorMessage = "The feed could not be added. Check your connection and try again.")
+            }
         }
     }
 
@@ -285,15 +308,17 @@ sealed interface SubscribeState {
 
     sealed interface Input : SubscribeState, Visible {
         val linkState: TextFieldState
+        val newsletter: Boolean
     }
 
     data class Idle(
         override val linkState: TextFieldState = TextFieldState(),
         val importFromOpmlEnabled: Boolean = false,
         val errorMessage: String? = null,
+        override val newsletter: Boolean = false,
     ) : SubscribeState, Input
 
-    data class Fetching(override val linkState: TextFieldState, val job: Job) :
+    data class Fetching(override val linkState: TextFieldState, val job: Job, override val newsletter: Boolean = false) :
         SubscribeState, Input
 
     data class Configure(
@@ -304,5 +329,7 @@ sealed interface SubscribeState {
         val fullContent: Boolean = false,
         val browser: Boolean = false,
         val selectedGroupId: String,
+        val newsletter: Boolean = false,
+        val errorMessage: String? = null,
     ) : SubscribeState, Visible
 }

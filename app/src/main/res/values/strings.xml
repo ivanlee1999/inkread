@@ -429,4 +429,12 @@
     <string name="reader_content_refresh">Fetch full article again</string>
     <string name="reader_content_previous_kept">Refresh failed. Kept the already-open article.</string>
     <string name="reader_content_update_ready">New content is ready. Choose a source below to update the article.</string>
+    <string name="reader_feed_refresh">Refresh feed content</string>
+    <string name="reader_feed_refreshing">Refreshing feed content…</string>
+    <string name="reader_feed_previous">Use earlier feed source</string>
+    <string name="reader_feed_previous_current">Showing an earlier feed source. Choose the action again to cycle through retained versions.</string>
+    <string name="reader_newsletter_current">Showing newsletter body from the feed</string>
+    <string name="reader_newsletter_use_body">Use newsletter body</string>
+    <string name="reader_newsletter_images_notice">Newsletter images are blocked. Loading them contacts the sender or image hosts and may enable tracking.</string>
+    <string name="reader_newsletter_load_images">Load newsletter images</string>
 </resources>

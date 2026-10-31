@@ -98,6 +98,7 @@ constructor(
         isNotification: Boolean,
         isFullContent: Boolean,
         isBrowser: Boolean,
+        isNewsletter: Boolean,
     ) {
         throw FeverAPIException("Unsupported")
     }
@@ -208,11 +209,7 @@ constructor(
 
             // Handle empty icon for feeds
             val noIconFeeds = feedDao.queryNoIcon(accountId)
-            feedDao.update(
-                *noIconFeeds
-                    .map { it.copy(icon = rssHelper.queryRssIconLink(it.url)) }
-                    .toTypedArray()
-            )
+            noIconFeeds.forEach { rssHelper.fetchAndSaveRssIcon(feedDao, it) }
 
             // 3. Fetch the Fever articles (up to unlimited counts)
             val allArticles = mutableListOf<Article>()

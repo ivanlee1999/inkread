@@ -200,6 +200,7 @@ public final class ParserSmokeInstrumentation extends Instrumentation {
                 + "</head><body><article><h1>中文短文章</h1>"
                 + "<p>第一段：这是一篇中文短文章，包含说明和标点符号。图片应该正确保留。</p>"
                 + "<figure><img src=\"../images/photo.jpg\"><figcaption>图片说明</figcaption></figure>"
+                + "<figure><img class=\"lazy\" data-original=\"../image?id=42&amp;format=avif\"><figcaption>延迟图片说明</figcaption></figure>"
                 + "<p>最后一段：短文章不应该因为字数少而丢失，原有段落顺序需要保留。</p>"
                 + "<script>throw new Error(\"Publisher script must not execute\");</script>"
                 + "</article></body></html>";
@@ -215,6 +216,9 @@ public final class ParserSmokeInstrumentation extends Instrumentation {
         require(!result.getContent().contains("Publisher script"), "Publisher script retained");
         require(result.getContent().contains("src=\"https://example.org/images/photo.jpg\""),
                 "Relative image URL was not resolved");
+        require(result.getContent().contains("src=\"https://example.org/image?id=42&amp;format=avif\""),
+                "Extensionless lazy image URL was not retained and resolved");
+        require(result.getTextContent().contains("延迟图片说明"), "Lazy image caption was lost");
     }
 
     private void instructionLimitWorksOnDevice() {

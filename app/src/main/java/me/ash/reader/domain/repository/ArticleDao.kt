@@ -669,6 +669,7 @@ interface ArticleDao {
         LEFT JOIN feed AS f ON a.feedId = f.id
         WHERE f.accountId = :accountId
         AND f.isFullContent = 1
+        AND f.isNewsletter = 0
         AND a.isUnread = 1
         ORDER BY a.date DESC
         LIMIT :limit
@@ -679,6 +680,19 @@ interface ArticleDao {
         limit: Int,
     ): List<ArticleFullContentRequest>
 
+    /** Recheck queued work immediately before fetching; settings can change after the list query. */
+    @Query(
+        """
+        SELECT EXISTS(
+            SELECT 1 FROM article AS a JOIN feed AS f ON a.feedId = f.id
+            WHERE a.accountId = :accountId AND f.accountId = :accountId
+            AND a.id = :id AND a.link = :link AND a.isUnread = 1
+            AND f.isFullContent = 1 AND f.isNewsletter = 0
+        )
+        """
+    )
+    suspend fun canPrefetchFullContent(accountId: Int, id: String, link: String): Boolean
+
     @Transaction
     @Query(
         """
@@ -687,6 +701,23 @@ interface ArticleDao {
         """
     )
     suspend fun queryById(id: String): ArticleWithFeed?
+
+    @Query("SELECT * FROM article WHERE accountId = :accountId AND id = :id")
+    suspend fun queryByAccountAndId(accountId: Int, id: String): Article?
+
+    /** Body-only compare-and-set: never REPLACE an annotated article or reset local state. */
+    @Query(
+        """
+        UPDATE article SET rawDescription = :body, shortDescription = :description, img = :image
+        WHERE accountId = :accountId AND id = :id
+        AND feedId = :expectedFeedId AND link = :expectedLink
+        AND rawDescription = :expectedBody
+        """
+    )
+    suspend fun replaceFeedBodyIfUnchanged(
+        accountId: Int, id: String, expectedFeedId: String, expectedLink: String, expectedBody: String,
+        body: String, description: String, image: String?,
+    ): Int
 
 
     @Transaction

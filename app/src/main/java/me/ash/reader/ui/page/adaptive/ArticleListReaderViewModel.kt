@@ -13,6 +13,7 @@ import javax.inject.Inject
 import kotlin.collections.any
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -52,9 +53,13 @@ import me.ash.reader.infrastructure.di.IODispatcher
 import me.ash.reader.infrastructure.preference.PullToLoadNextFeedPreference
 import me.ash.reader.infrastructure.preference.SettingsProvider
 import me.ash.reader.infrastructure.rss.ReaderCacheHelper
+import me.ash.reader.infrastructure.rss.FeedSourceHistory
+import me.ash.reader.infrastructure.rss.FeedArticleRefreshStatus
 import me.ash.reader.infrastructure.html.ArticleRequiresBrowserException
 import me.ash.reader.infrastructure.rss.ArticleContentSelection
+import me.ash.reader.infrastructure.rss.NewsletterBodyPresentation
 import me.ash.reader.ui.page.home.flow.NewspaperViewportState
+import me.ash.reader.ui.page.library.RssLibrarySnapshot
 import timber.log.Timber
 
 private const val TAG = "FlowViewModel"
@@ -73,11 +78,14 @@ constructor(
     private val groupWithFeedsListUseCase: GroupWithFeedsListUseCase,
     private val settingsProvider: SettingsProvider,
     private val readerCacheHelper: ReaderCacheHelper,
+    private val feedSourceHistory: FeedSourceHistory,
     val textToSpeechManager: TextToSpeechManager,
     private val imageDownloader: AndroidImageDownloader,
     private val articleListUseCase: ArticlePagingListUseCase,
     workManager: WorkManager,
 ) : ViewModel() {
+
+    val sourceFeedsFlow = groupWithFeedsListUseCase.feedsFlow
 
     val flowUiState: StateFlow<FlowUiState?> =
         articleListUseCase.pagerFlow
@@ -146,6 +154,11 @@ constructor(
 
     init {
         viewModelScope.launch {
+            accountService.currentAccountIdFlow.drop(1).collect { activeAccount ->
+                if (_readerState.value.sourceAccountId?.let { it != activeAccount } == true) clearReadingData()
+            }
+        }
+        viewModelScope.launch {
             syncWorkerStatusFlow.debounce(500L).collect { _isSyncingFlow.value = it }
         }
         // Re-run prefetchArticleId() when the paging snapshot list changes so that
@@ -166,6 +179,7 @@ constructor(
 
     fun importBrowserText(text: String) {
         val article = currentArticle ?: return
+        clearFeedRefreshNotice()
         articleLoadJob?.cancel()
         fullContentJob?.cancel()
         fullContentJob = viewModelScope.launch {
@@ -183,6 +197,7 @@ constructor(
 
     fun renderBrowserText() {
         val article = currentArticle ?: return
+        clearFeedRefreshNotice()
         articleLoadJob?.cancel()
         fullContentJob?.cancel()
         fullContentJob = viewModelScope.launch {
@@ -202,6 +217,7 @@ constructor(
 
     private fun renderPreviousSource(browserText: Boolean) {
         val article = currentArticle ?: return
+        clearFeedRefreshNotice()
         articleLoadJob?.cancel()
         fullContentJob?.cancel()
         fullContentJob = viewModelScope.launch {
@@ -215,6 +231,77 @@ constructor(
             ) }
         }
     }
+
+    fun renderPreviousFeedContent() {
+        val article = currentArticle ?: return
+        if (!isCurrentArticle(article)) return
+        articleLoadJob?.cancel()
+        fullContentJob?.cancel()
+        clearFeedRefreshNotice()
+        fullContentJob = viewModelScope.launch {
+            val result = feedSourceHistory.readEarlier(article.id, article.accountId, _readerState.value.content.documentBody)
+            ensureActive()
+            if (!isCurrentArticle(article)) return@launch
+            _readerState.update { state -> result.fold(
+                onSuccess = { state.copy(content = ReaderState.Description(it, previousVersion = true), hasPreviousFeedContent = true) },
+                onFailure = { state.copy(feedSourceMessage = "Earlier feed content is unavailable. Current content is unchanged.") },
+            ) }
+        }
+    }
+
+    fun refreshFeedContent() {
+        val article = currentArticle ?: return
+        if (!isCurrentArticle(article)) return
+        val service = rssService.get() as? GoogleReaderRssService ?: return
+        articleLoadJob?.cancel()
+        fullContentJob?.cancel()
+        // An update can commit before cancellation is delivered. Always consult Room when
+        // reopening an explicitly refreshed ID, including after a late/cancelled response.
+        explicitlyRefreshedArticles.add(article.accountId to article.id)
+        _readerState.update { it.copy(isRefreshingFeed = true, feedSourceMessage = null) }
+        fullContentJob = viewModelScope.launch {
+            try {
+                val result = service.refreshArticleFeedBody(article)
+                val hasEarlier = feedSourceHistory.readEarlier(article.id, article.accountId).isSuccess
+                ensureActive()
+                if (!isCurrentArticle(article)) return@launch
+                check(result.article.id == article.id && result.article.accountId == article.accountId)
+                _readingUiState.update { state ->
+                    state.copy(articleWithFeed = state.articleWithFeed?.copy(article = result.article.copy(
+                        link = article.link, isUnread = state.isUnread, isStarred = state.isStarred)))
+                }
+                _readerState.update { state ->
+                    state.copy(
+                        // A competing writer is not permission to replace the chosen source.
+                        content = if (result.status == FeedArticleRefreshStatus.CONCURRENT_CHANGE) state.content
+                            else ReaderState.Description(result.article.rawDescription),
+                        hasPreviousFeedContent = hasEarlier, isRefreshingFeed = false,
+                        feedSourceMessage = when (result.status) {
+                            FeedArticleRefreshStatus.UPDATED -> "Feed content updated. The earlier feed source is retained."
+                            FeedArticleRefreshStatus.UNCHANGED -> "The server has the same feed content."
+                            FeedArticleRefreshStatus.KEPT_CURRENT -> "Kept the current feed content because the server returned an empty or less complete body."
+                            FeedArticleRefreshStatus.CONCURRENT_CHANGE -> "Another update changed this article. Current displayed content is unchanged."
+                        },
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                ensureActive()
+                if (isCurrentArticle(article)) _readerState.update { it.copy(isRefreshingFeed = false,
+                    feedSourceMessage = "Feed content could not be refreshed. Current content is unchanged.") }
+            }
+        }
+    }
+
+    private fun clearFeedRefreshNotice() {
+        _readerState.update { it.copy(isRefreshingFeed = false, feedSourceMessage = null) }
+    }
+
+    private fun isCurrentArticle(article: Article): Boolean =
+        currentArticle?.id == article.id && currentArticle?.accountId == article.accountId &&
+            accountService.currentAccountIdFlow.value == article.accountId &&
+            _readerState.value.articleId == article.id && _readerState.value.sourceAccountId == article.accountId
 
     fun updateReadStatus(
         groupId: String?,
@@ -362,6 +449,8 @@ constructor(
 
     private var articleLoadJob: Job? = null
     private var fullContentJob: Job? = null
+    // IDs only, scoped to this reader VM; never duplicate bodies or reorder the retained edition.
+    private val explicitlyRefreshedArticles = mutableSetOf<Pair<Int, String>>()
 
     private val currentArticle: Article?
         get() = readingUiState.value.articleWithFeed?.article
@@ -379,6 +468,7 @@ constructor(
     }
 
     fun initData(articleId: String, listIndex: Int? = null, expectedAccountId: Int? = null) {
+        val accountAtStart = accountService.currentAccountIdFlow.value
         articleLoadJob?.cancel()
         fullContentJob?.cancel()
         // Claim the visible reader immediately, including a suspended database lookup.
@@ -403,6 +493,8 @@ constructor(
             // 3. The retained reader/edition identity
             // 4. Query the database
             val foundItem = when {
+                accountService.currentAccountIdFlow.value?.let { (it to articleId) in explicitlyRefreshedArticles } == true ->
+                    rssService.get().findArticleById(articleId)
                 itemByIndex != null && itemByIndex.articleWithFeed.article.id == articleId ->
                     itemByIndex.articleWithFeed
                 else -> {
@@ -415,8 +507,33 @@ constructor(
                         ?: rssService.get().findArticleById(articleId)
                 }
             }
-            val item = foundItem?.let {
-                if (newspaperViewportState.ownsPager(pagerIdentity)) newspaperViewportState.currentArticle(it) else it
+            ensureActive()
+            if (accountAtStart != accountService.currentAccountIdFlow.value) {
+                clearReadingData()
+                return@launch
+            }
+            val item = foundItem?.let { found ->
+                // A retained edition owns its layout and article identities, but the current
+                // source preference must win after a feed was marked as a newsletter.
+                val latestFeed = try {
+                    rssService.get().findFeedById(found.feed.id)
+                        ?.takeIf { it.accountId == found.article.accountId && it.id == found.article.feedId }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    null
+                }
+                ensureActive()
+                if (accountAtStart != accountService.currentAccountIdFlow.value) {
+                    clearReadingData()
+                    return@launch
+                }
+                if (latestFeed == null) {
+                    _readerState.update { it.copy(content = ReaderState.Error("The current feed settings could not be loaded. Reopen this article to try again.")) }
+                    return@launch
+                }
+                val current = found.copy(feed = latestFeed)
+                if (newspaperViewportState.ownsPager(pagerIdentity)) newspaperViewportState.currentArticle(current) else current
             }
 
             ensureActive()
@@ -430,6 +547,11 @@ constructor(
             if (expectedAccountId != null && (item.article.accountId != expectedAccountId ||
                     accountService.currentAccountIdFlow.value != expectedAccountId)) {
                 _readerState.update { it.copy(content = ReaderState.Error("This highlight belongs to a different RSS account.")) }
+                return@launch
+            }
+            if (accountAtStart != accountService.currentAccountIdFlow.value ||
+                item.article.accountId != accountService.currentAccountIdFlow.value) {
+                clearReadingData()
                 return@launch
             }
             if (diffMapHolder.checkIfUnread(item)) {
@@ -451,6 +573,7 @@ constructor(
                     content = ReaderState.Loading,
                     hasBrowserText = false, browserTextError = null,
                     hasPreviousFullContent = false, hasPreviousBrowserText = false,
+                    isNewsletter = feed.isNewsletter, canRefreshFeed = rssService.get() is GoogleReaderRssService,
                 ).prefetchArticleId()
                 _readerState.value = base
                 val resolved = base.renderContent(this@run)
@@ -472,7 +595,7 @@ constructor(
 
     suspend fun ReaderState.renderContent(articleWithFeed: ArticleWithFeed): ReaderState {
         val contentState =
-            if (articleWithFeed.feed.isFullContent) {
+            if (articleWithFeed.feed.isFullContent && !articleWithFeed.feed.isNewsletter) {
                 val fullContent =
                     readerCacheHelper.readFullContent(articleWithFeed.article.id, articleWithFeed.article.accountId).getOrNull()
                 if (fullContent != null) {
@@ -489,12 +612,14 @@ constructor(
         return copy(content = contentState, hasBrowserText = readerCacheHelper.readBrowserText(
             articleWithFeed.article.id, articleWithFeed.article.accountId).isSuccess,
             hasPreviousFullContent = readerCacheHelper.readPreviousContent(articleWithFeed.article.id, articleWithFeed.article.accountId, false).isSuccess,
-            hasPreviousBrowserText = readerCacheHelper.readPreviousContent(articleWithFeed.article.id, articleWithFeed.article.accountId, true).isSuccess)
+            hasPreviousBrowserText = readerCacheHelper.readPreviousContent(articleWithFeed.article.id, articleWithFeed.article.accountId, true).isSuccess,
+            hasPreviousFeedContent = feedSourceHistory.readEarlier(articleWithFeed.article.id, articleWithFeed.article.accountId).isSuccess)
     }
 
     fun renderDescriptionContent() {
         articleLoadJob?.cancel()
         fullContentJob?.cancel()
+        clearFeedRefreshNotice()
         _readerState.update {
             it.copy(
                 content = ReaderState.Description(content = currentArticle?.rawDescription ?: "")
@@ -504,9 +629,31 @@ constructor(
 
     fun renderFullContent(forceRefresh: Boolean = false) {
         val article = currentArticle ?: return
+        clearFeedRefreshNotice()
         articleLoadJob?.cancel()
         fullContentJob?.cancel()
         fullContentJob = viewModelScope.launch {
+            // Recheck at the network boundary as a feed's source setting may have changed
+            // since this article entered the retained edition or the Source dialog opened.
+            val latestFeed = try {
+                rssService.get().findFeedById(article.feedId)
+                    ?.takeIf { it.accountId == article.accountId && it.id == article.feedId }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
+            }
+            ensureActive()
+            if (!isCurrentArticle(article)) return@launch
+            if (latestFeed == null) {
+                _readerState.update { it.copy(feedSourceMessage = "The current feed settings could not be loaded. Current content is unchanged.") }
+                return@launch
+            }
+            if (latestFeed.isNewsletter) {
+                _readingUiState.update { state -> state.copy(articleWithFeed = state.articleWithFeed?.copy(feed = latestFeed)) }
+                _readerState.update { it.copy(isNewsletter = true, content = ReaderState.Description(article.rawDescription)) }
+                return@launch
+            }
             val loadingJob = launch {
                 delay(100L)
                 // Keep an already readable source on screen during explicit retries. This avoids
@@ -516,8 +663,23 @@ constructor(
                     _readerState.value.content !is ReaderState.FullContent) setLoading()
             }
             try {
-                val result = if (forceRefresh) readerCacheHelper.refreshFullContent(article)
-                    else readerCacheHelper.readOrFetchFullContent(article)
+                val canFetch: suspend () -> Boolean = {
+                    // Cache requests can wait behind another fetch. Recheck after that wait,
+                    // at the actual network boundary, rather than reuse the pre-queue policy.
+                    if (!isCurrentArticle(article)) false else {
+                        val activeFeed = rssService.get().findFeedById(article.feedId)
+                            ?.takeIf { it.id == article.feedId && it.accountId == article.accountId }
+                        if (!isCurrentArticle(article)) false else {
+                            if (activeFeed?.isNewsletter == true) {
+                                _readingUiState.update { state -> state.copy(articleWithFeed = state.articleWithFeed?.copy(feed = activeFeed)) }
+                                _readerState.update { it.copy(isNewsletter = true) }
+                            }
+                            activeFeed != null && !activeFeed.isNewsletter
+                        }
+                    }
+                }
+                val result = if (forceRefresh) readerCacheHelper.refreshFullContent(article, canFetch)
+                    else readerCacheHelper.readOrFetchFullContent(article, canFetch)
                 val selected = withContext(ioDispatcher) {
                     result.fold(
                         onSuccess = { selectReaderContent(article.rawDescription, it) },
@@ -601,6 +763,26 @@ constructor(
     }
 }
 
+/** Prepare a display copy off the main thread; failures are never article bodies. */
+internal fun newsletterReaderContent(content: ReaderState.ContentState, allowImages: Boolean = false): ReaderState.ContentState {
+    val body = content.documentBody ?: return content
+    val filtered = NewsletterBodyPresentation.withoutRemoteMedia(body, allowImages).getOrNull()
+        ?: return ReaderState.Error("This newsletter could not be displayed safely. Open the original page in your browser.")
+    return when (content) {
+        is ReaderState.Description -> content.copy(content = filtered)
+        is ReaderState.FullContent -> content.copy(content = filtered)
+        else -> content
+    }
+}
+
+/** Capture only the body presented to the user; newsletters never enqueue a publisher fallback. */
+internal fun ReaderState.savedLibrarySnapshot(): RssLibrarySnapshot? {
+    val url = link?.takeIf { it.isNotBlank() } ?: return null
+    val html = content.documentBody
+    if (isNewsletter && html.isNullOrBlank()) return null
+    return RssLibrarySnapshot(url, title.orEmpty(), author, feedName, html)
+}
+
 data class FlowUiState(val pagerData: PagerData, val nextFilterState: FilterState? = null)
 
 data class ReadingUiState(
@@ -628,6 +810,11 @@ data class ReaderState(
     val hasPreviousFullContent: Boolean = false,
     val hasPreviousBrowserText: Boolean = false,
     val browserTextError: String? = null,
+    val hasPreviousFeedContent: Boolean = false,
+    val canRefreshFeed: Boolean = false,
+    val isRefreshingFeed: Boolean = false,
+    val feedSourceMessage: String? = null,
+    val isNewsletter: Boolean = false,
 ) {
     data class PrefetchResult(val articleId: String, val index: Int)
 
@@ -654,7 +841,8 @@ data class ReaderState(
     data class FullContent(val content: String, val refreshFailed: Boolean = false,
         val browserText: Boolean = false, val needsBrowser: Boolean = false, val previousVersion: Boolean = false) : ContentState
 
-    data class Description(val content: String, val fallback: Boolean = false, val needsBrowser: Boolean = false) : ContentState
+    data class Description(val content: String, val fallback: Boolean = false, val needsBrowser: Boolean = false,
+        val previousVersion: Boolean = false) : ContentState
 
     data class Error(val message: String) : ContentState
 

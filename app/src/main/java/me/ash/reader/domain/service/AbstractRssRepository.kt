@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.flowOn
 import me.ash.reader.domain.model.account.Account
 import me.ash.reader.domain.model.article.ArchivedArticle
 import me.ash.reader.domain.model.article.Article
+import me.ash.reader.domain.model.article.ArticleFullContentRequest
 import me.ash.reader.domain.model.article.ArticleWithFeed
 import me.ash.reader.domain.model.feed.Feed
 import me.ash.reader.domain.model.group.Group
@@ -58,6 +59,7 @@ abstract class AbstractRssRepository(
         isNotification: Boolean,
         isFullContent: Boolean,
         isBrowser: Boolean,
+        isNewsletter: Boolean = false,
     ) {
         val accountId = accountService.getCurrentAccountId()
         val feed =
@@ -67,10 +69,11 @@ abstract class AbstractRssRepository(
                 url = feedLink,
                 groupId = groupId,
                 accountId = accountId,
-                icon = searchedFeed.icon?.link,
-                isBrowser = isBrowser,
+                icon = if (isNewsletter) null else searchedFeed.icon?.link,
+                isBrowser = isBrowser && !isNewsletter,
                 isNotification = isNotification,
-                isFullContent = isFullContent,
+                isFullContent = isFullContent && !isNewsletter,
+                isNewsletter = isNewsletter,
             )
         val articles =
             searchedFeed.entries.map { rssHelper.buildArticleFromSyndEntry(feed, accountId, it) }
@@ -313,19 +316,15 @@ abstract class AbstractRssRepository(
     }
 
     open suspend fun renameFeed(feed: Feed) {
-        updateFeed(feed)
+        feedDao.updateName(feed.accountId, feed.id, feed.name)
     }
 
     open suspend fun moveFeed(originGroupId: String, feed: Feed) {
-        updateFeed(feed)
+        feedDao.updateGroup(feed.accountId, feed.id, feed.groupId)
     }
 
     open suspend fun changeFeedUrl(feed: Feed) {
-        updateFeed(feed)
-    }
-
-    internal suspend fun updateFeed(feed: Feed) {
-        feedDao.update(feed)
+        feedDao.updateUrl(feed.accountId, feed.id, feed.url)
     }
 
     open suspend fun deleteGroup(group: Group, onlyDeleteNoStarred: Boolean? = false) {
@@ -486,4 +485,7 @@ abstract class AbstractRssRepository(
 
     suspend fun queryUnreadFullContentArticles(limit: Int) =
         articleDao.queryUnreadFullContentArticles(accountService.getCurrentAccountId(), limit)
+
+    suspend fun canPrefetchFullContent(article: ArticleFullContentRequest): Boolean =
+        articleDao.canPrefetchFullContent(article.accountId, article.id, article.link)
 }
