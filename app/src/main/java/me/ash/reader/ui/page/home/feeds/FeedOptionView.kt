@@ -23,6 +23,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import me.ash.reader.R
 import me.ash.reader.domain.model.group.Group
+import me.ash.reader.infrastructure.rss.newsletterFeedUrlSummary
 import me.ash.reader.ui.component.base.RYSelectionChip
 import me.ash.reader.ui.component.base.Subtitle
 import me.ash.reader.ui.theme.palette.alwaysLight
@@ -35,6 +36,9 @@ fun FeedOptionView(
     selectedAllowNotificationPreset: Boolean = false,
     selectedParseFullContentPreset: Boolean = false,
     selectedOpenInBrowserPreset: Boolean = false,
+    selectedNewsletter: Boolean = false,
+    newsletterOnClick: () -> Unit = {},
+    errorMessage: String? = null,
     isMoveToGroup: Boolean = false,
     showGroup: Boolean = true,
     showUnsubscribe: Boolean = true,
@@ -52,13 +56,25 @@ fun FeedOptionView(
 ) {
 
     Column(modifier = modifier.verticalScroll(rememberScrollState())) {
-        EditableUrl(text = link, onClick = onFeedUrlClick, onLongClick = onFeedUrlLongClick)
+        EditableUrl(text = if (selectedNewsletter) newsletterFeedUrlSummary(link) else link,
+            onClick = onFeedUrlClick, onLongClick = onFeedUrlLongClick)
+        errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        Spacer(modifier = Modifier.height(12.dp))
+        RYSelectionChip(content = "Newsletter feed", selected = selectedNewsletter, onClick = newsletterOnClick)
+        if (selectedNewsletter) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text("Reads the delivered feed body. Linked pages are opened only when you choose them. Removing this feed does not stop email delivery. Private newsletter URLs are excluded from OPML exports.",
+                style = MaterialTheme.typography.bodySmall)
+            if (!notSubscribeMode) Text("For a synced account, this feed URL is also sent to your existing sync server.",
+                style = MaterialTheme.typography.bodySmall)
+        }
         Spacer(modifier = Modifier.height(26.dp))
 
         Preset(
             selectedAllowNotificationPreset = selectedAllowNotificationPreset,
             selectedParseFullContentPreset = selectedParseFullContentPreset,
             selectedOpenInBrowserPreset = selectedOpenInBrowserPreset,
+            selectedNewsletter = selectedNewsletter,
             showUnsubscribe = showUnsubscribe,
             notSubscribeMode = notSubscribeMode,
             allowNotificationPresetOnClick = allowNotificationPresetOnClick,
@@ -107,6 +123,7 @@ private fun Preset(
     selectedAllowNotificationPreset: Boolean = false,
     selectedParseFullContentPreset: Boolean = false,
     selectedOpenInBrowserPreset: Boolean = false,
+    selectedNewsletter: Boolean = false,
     showUnsubscribe: Boolean = true,
     notSubscribeMode: Boolean = false,
     allowNotificationPresetOnClick: () -> Unit = {},
@@ -117,7 +134,8 @@ private fun Preset(
 ) {
     Subtitle(text = stringResource(R.string.reading_page))
     Spacer(modifier = Modifier.height(10.dp))
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.Start)) {
+    if (selectedNewsletter) Text("Source: newsletter feed body", style = MaterialTheme.typography.bodyMedium)
+    else LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.Start)) {
         item {
             RYSelectionChip(
                 modifier = Modifier,
@@ -187,7 +205,7 @@ private fun Preset(
             if (showUnsubscribe) {
                 RYSelectionChip(
                     modifier = Modifier,
-                    content = stringResource(R.string.unsubscribe),
+                    content = if (selectedNewsletter) "Remove feed" else stringResource(R.string.unsubscribe),
                     selected = false,
                 ) {
                     unsubscribeOnClick()

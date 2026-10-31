@@ -25,6 +25,8 @@ fun DeleteFeedDialog(
     val feedOptionUiState = feedOptionViewModel.feedOptionUiState.collectAsStateValue()
     val scope = rememberCoroutineScope()
     val toastString = stringResource(R.string.delete_toast, feedName)
+    val newsletter = feedOptionUiState.feed?.isNewsletter == true
+    val removeLabel = if (newsletter) "Remove feed" else stringResource(R.string.unsubscribe)
 
     RYDialog(
         visible = feedOptionUiState.deleteDialogVisible,
@@ -34,14 +36,15 @@ fun DeleteFeedDialog(
         icon = {
             Icon(
                 imageVector = Icons.Outlined.DeleteForever,
-                contentDescription = stringResource(R.string.unsubscribe),
+                contentDescription = removeLabel,
             )
         },
         title = {
-            Text(text = stringResource(R.string.unsubscribe))
+            Text(text = removeLabel)
         },
         text = {
-            Text(text = stringResource(R.string.unsubscribe_tips, feedName))
+            Text(text = if (newsletter) "Remove \"$feedName\" and its articles from this account? This does not unsubscribe your email address or stop email delivery."
+                else stringResource(R.string.unsubscribe_tips, feedName))
         },
         confirmButton = {
             TextButton(
@@ -54,7 +57,7 @@ fun DeleteFeedDialog(
                 }
             ) {
                 Text(
-                    text = stringResource(R.string.unsubscribe),
+                    text = removeLabel,
                 )
             }
         },

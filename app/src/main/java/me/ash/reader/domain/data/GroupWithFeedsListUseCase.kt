@@ -40,10 +40,15 @@ class GroupWithFeedsListUseCase @Inject constructor(
     private var currentJob: Job? = null
     private val accountFlow = accountService.currentAccountFlow.mapNotNull { it }
 
+    private val _feedsFlow = MutableStateFlow<List<GroupWithFeed>>(emptyList())
+    /** Unfiltered source preferences, including feeds hidden by the unread/starred filter. */
+    val feedsFlow: StateFlow<List<GroupWithFeed>> = _feedsFlow
+
     init {
         applicationScope.launch {
             accountFlow.collectLatest {
-                rssService.get(it.type.id).pullFeeds().collect { feeds -> feedsFlow.value = feeds }
+                _feedsFlow.value = emptyList()
+                rssService.get(it.type.id).pullFeeds().collect { feeds -> _feedsFlow.value = feeds }
             }
         }
         applicationScope.launch {
@@ -64,8 +69,6 @@ class GroupWithFeedsListUseCase @Inject constructor(
     private val _groupWithFeedsListFlow: MutableStateFlow<List<GroupWithFeed>> =
         MutableStateFlow<List<GroupWithFeed>>(emptyList())
     val groupWithFeedListFlow: StateFlow<List<GroupWithFeed>> = _groupWithFeedsListFlow
-
-    private val feedsFlow: MutableStateFlow<List<GroupWithFeed>> = MutableStateFlow(emptyList())
 
     private val defaultGroupId get() = accountService.getCurrentAccountId().getDefaultGroupId()
 

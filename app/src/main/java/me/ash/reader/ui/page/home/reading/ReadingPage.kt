@@ -33,9 +33,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -54,6 +56,8 @@ import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.unit.sp
 import kotlin.math.abs
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import me.ash.reader.domain.annotation.AnnotationSource
 import me.ash.reader.domain.annotation.AnnotationSourceKind
 import me.ash.reader.ui.page.annotation.AnnotationReaderViewModel
@@ -75,10 +79,11 @@ import me.ash.reader.ui.ext.openURL
 import me.ash.reader.ui.ext.showToast
 import me.ash.reader.ui.page.adaptive.ArticleListReaderViewModel
 import me.ash.reader.ui.page.adaptive.NavigationAction
-import me.ash.reader.ui.page.library.RssLibrarySnapshot
 import me.ash.reader.ui.page.library.SaveRssToLibraryViewModel
 import me.ash.reader.ui.page.adaptive.ReaderState
 import me.ash.reader.ui.page.adaptive.ReaderContentPresentationGate
+import me.ash.reader.ui.page.adaptive.newsletterReaderContent
+import me.ash.reader.ui.page.adaptive.savedLibrarySnapshot
 import me.ash.reader.ui.page.home.reading.tts.TtsButton
 import me.ash.reader.ui.theme.isEInkMode
 
@@ -108,13 +113,15 @@ fun ReadingPage(
     val isPullToSwitchArticleEnabled = requestedAnnotationId == null && LocalPullToSwitchArticle.current.value
     val readingUiState = viewModel.readingUiState.collectAsStateValue()
     val incomingReaderState = viewModel.readerStateStateFlow.collectAsStateValue()
+    var newsletterImagesAllowed by rememberNewsletterImageConsent(incomingReaderState)
+    val displayedContent = rememberNewsletterReaderContent(incomingReaderState, newsletterImagesAllowed)
     val contentPresentation = remember {
-        ReaderContentPresentationGate<Pair<Int?, String?>, ReaderState.ContentState> { it.documentBody }
+        ReaderContentPresentationGate<Triple<Int?, String?, Boolean>, ReaderState.ContentState> { it.documentBody }
     }
     // Derive both annotation and WebView state from the last presented body. A result may have
     // arrived before a native selection callback but not yet reached this composition.
     val readerState = incomingReaderState.copy(content = contentPresentation.present(
-        incomingReaderState.sourceAccountId to incomingReaderState.articleId, incomingReaderState.content))
+        Triple(incomingReaderState.sourceAccountId, incomingReaderState.articleId, incomingReaderState.isNewsletter), displayedContent))
     // Do not restore a dialog without its live WebView ownership guard after recreation.
     var showContentSource by remember(readerState.articleId, readerState.sourceAccountId) { mutableStateOf(false) }
     var showBrowserTextImport by remember(readerState.articleId, readerState.sourceAccountId) { mutableStateOf(false) }
@@ -146,7 +153,7 @@ fun ReadingPage(
     val showingBrowserText = (readerState.content as? ReaderState.FullContent)?.browserText == true
     val needsBrowser = (readerState.content as? ReaderState.FullContent)?.needsBrowser == true ||
         (readerState.content as? ReaderState.Description)?.needsBrowser == true
-    val postponedContentReady = incomingReaderState.content.documentBody?.let {
+    val postponedContentReady = displayedContent.documentBody?.let {
         it != readerState.content.documentBody
     } == true
     val fallbackMessage = stringResource(if (refreshFailed) R.string.reader_content_previous_kept else R.string.reader_content_feed_kept)
@@ -155,6 +162,9 @@ fun ReadingPage(
     }
     LaunchedEffect(readerState.articleId, readerState.sourceAccountId, readerState.browserTextError) {
         readerState.browserTextError?.let { context.showToast(it) }
+    }
+    LaunchedEffect(readerState.articleId, readerState.sourceAccountId, readerState.feedSourceMessage) {
+        readerState.feedSourceMessage?.let { context.showToast(it) }
     }
     if (showContentSource) {
         AlertDialog(
@@ -165,31 +175,51 @@ fun ReadingPage(
                     Text(stringResource(when {
                         showingBrowserText -> R.string.reader_browser_text_current
                         readerState.content is ReaderState.FullContent -> R.string.reader_content_extracted_current
+                        readerState.isNewsletter -> R.string.reader_newsletter_current
                         else -> R.string.reader_content_feed_current
                     }))
                     if ((readerState.content as? ReaderState.FullContent)?.previousVersion == true) {
                         Text(stringResource(R.string.reader_browser_text_previous_current))
                     }
+                    if ((readerState.content as? ReaderState.Description)?.previousVersion == true) {
+                        Text(stringResource(R.string.reader_feed_previous_current))
+                    }
                     if (feedFallback || refreshFailed) Text(fallbackMessage)
                     if (needsBrowser) Text(stringResource(R.string.reader_browser_text_access_limited))
                     if (postponedContentReady) Text(stringResource(R.string.reader_content_update_ready))
                     readerState.browserTextError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                    Text(stringResource(R.string.reader_content_cache_preserved))
+                    readerState.feedSourceMessage?.let { Text(it) }
+                    if (!readerState.isNewsletter) Text(stringResource(R.string.reader_content_cache_preserved))
                     TextButton(onClick = { chooseContentSource { viewModel.renderDescriptionContent() } }) {
-                        Text(stringResource(R.string.reader_content_use_feed))
+                        Text(stringResource(if (readerState.isNewsletter) R.string.reader_newsletter_use_body else R.string.reader_content_use_feed))
                     }
-                    TextButton(onClick = { chooseContentSource { viewModel.renderFullContent() } }) {
-                        Text(stringResource(R.string.reader_content_try_full))
+                    if (readerState.canRefreshFeed) {
+                        TextButton(enabled = !readerState.isRefreshingFeed,
+                            onClick = { chooseContentSource { viewModel.refreshFeedContent() } }) {
+                            Text(stringResource(if (readerState.isRefreshingFeed) R.string.reader_feed_refreshing else R.string.reader_feed_refresh))
+                        }
                     }
-                    TextButton(onClick = { chooseContentSource { viewModel.renderFullContent(forceRefresh = true) } }) {
-                        Text(stringResource(R.string.reader_content_refresh))
+                    if (readerState.hasPreviousFeedContent) {
+                        TextButton(onClick = { chooseContentSource { viewModel.renderPreviousFeedContent() } }) {
+                            Text(stringResource(R.string.reader_feed_previous))
+                        }
+                    }
+                    if (!readerState.isNewsletter) {
+                        TextButton(onClick = { chooseContentSource { viewModel.renderFullContent() } }) {
+                            Text(stringResource(R.string.reader_content_try_full))
+                        }
+                        TextButton(onClick = { chooseContentSource { viewModel.renderFullContent(forceRefresh = true) } }) {
+                            Text(stringResource(R.string.reader_content_refresh))
+                        }
+                    } else if (readerState.content.documentBody != null && !newsletterImagesAllowed) {
+                        NewsletterImageControls(onLoadImages = { chooseContentSource { newsletterImagesAllowed = true } })
                     }
                     if (readerState.hasBrowserText) {
                         TextButton(onClick = { chooseContentSource { viewModel.renderBrowserText() } }) {
                             Text(stringResource(R.string.reader_browser_text_use))
                         }
                     }
-                    if (readerState.hasPreviousFullContent) {
+                    if (readerState.hasPreviousFullContent && !readerState.isNewsletter) {
                         TextButton(onClick = { chooseContentSource { viewModel.renderPreviousFullContent() } }) {
                             Text(stringResource(R.string.reader_browser_text_previous_full))
                         }
@@ -254,22 +284,13 @@ fun ReadingPage(
             context.showToast(if (result.saved) savedSuccessMessage else savedFailureMessage)
         }
     }
-    val saveArticle: (() -> Unit)? = readerState.link?.takeIf(String::isNotBlank)?.let { url ->
+    val saveArticle: (() -> Unit)? = readerState.savedLibrarySnapshot()?.let { snapshot ->
         {
             // Error messages are never stored as article HTML. A loading/failed
             // article can still be captured as a URL for the durable download queue.
-            val html = when (val content = readerState.content) {
-                is ReaderState.FullContent -> content.content
-                is ReaderState.Description -> content.content
-                else -> null
-            }
-            saveToLibraryViewModel.save(RssLibrarySnapshot(
-                url = url,
-                title = readerState.title.orEmpty(),
-                author = readerState.author,
-                sourceName = readerState.feedName,
-                html = html,
-            ))
+            // Newsletters use only the displayed body (media blocked until explicitly loaded),
+            // and never fall back to fetching a publisher URL while loading or after failure.
+            saveToLibraryViewModel.save(snapshot)
         }
     }
     // Keep reader ownership during loading, so keys cannot turn or mark the list
@@ -656,6 +677,34 @@ fun ReadingPage(
         )
     }
     AnnotationReaderDialogs(annotations)
+}
+
+/** Shared production boundary for both reader renderers and Saved snapshots. */
+@Composable
+internal fun NewsletterImageControls(onLoadImages: () -> Unit) {
+    Text(stringResource(R.string.reader_newsletter_images_notice))
+    TextButton(onClick = onLoadImages) { Text(stringResource(R.string.reader_newsletter_load_images)) }
+}
+
+@Composable
+internal fun rememberNewsletterImageConsent(state: ReaderState): MutableState<Boolean> =
+    remember(state.sourceAccountId, state.articleId, state.isNewsletter) { mutableStateOf(false) }
+
+@Composable
+internal fun rememberNewsletterReaderContent(state: ReaderState, imagesAllowed: Boolean): ReaderState.ContentState {
+    val source = state.content
+    val prepareNewsletter = state.isNewsletter && source.documentBody != null
+    val sourceKey = source to imagesAllowed
+    val filtered by produceState<Pair<Pair<ReaderState.ContentState, Boolean>, ReaderState.ContentState>?>(
+        initialValue = null, state.sourceAccountId to state.articleId, sourceKey, prepareNewsletter,
+    ) {
+        value = if (prepareNewsletter) withContext(Dispatchers.Default) {
+            sourceKey to newsletterReaderContent(source, allowImages = imagesAllowed)
+        } else null
+    }
+    // Image consent never grants permission for embedded pages, style requests or redirects.
+    // Never mount the original body for a frame while preparing either display copy.
+    return if (prepareNewsletter) filtered?.takeIf { it.first == sourceKey }?.second ?: ReaderState.Loading else source
 }
 
 @Composable

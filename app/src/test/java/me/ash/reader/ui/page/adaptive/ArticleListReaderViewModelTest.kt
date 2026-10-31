@@ -41,20 +41,27 @@ import me.ash.reader.domain.model.group.GroupWithFeed
 import me.ash.reader.domain.model.general.MarkAsReadConditions
 import me.ash.reader.domain.service.AbstractRssRepository
 import me.ash.reader.domain.service.AccountService
+import me.ash.reader.domain.service.GoogleReaderRssService
 import me.ash.reader.domain.service.RssService
 import me.ash.reader.domain.service.SyncWorker
 import me.ash.reader.infrastructure.rss.ReaderCacheHelper
+import me.ash.reader.infrastructure.rss.FeedSourceHistory
+import me.ash.reader.infrastructure.rss.FeedArticleRefreshResult
+import me.ash.reader.infrastructure.rss.FeedArticleRefreshStatus
 import me.ash.reader.ui.page.home.flow.MeasuredNewspaperRow
 import me.ash.reader.ui.page.home.flow.NewspaperRow
 import me.ash.reader.ui.page.home.flow.NewspaperViewportPage
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Test
 import org.mockito.invocation.InvocationOnMock
 import org.mockito.kotlin.any
 import org.mockito.kotlin.doAnswer
+import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.verify
@@ -209,7 +216,7 @@ class ArticleListReaderViewModelTest {
         val a = article("A")
         val fixture = fixture(a)
         val fetched = CompletableDeferred<Result<String>>()
-        whenever(fixture.cache.readOrFetchFullContent(a.article)).thenSuspend {
+        whenever(fixture.cache.readOrFetchFullContent(eq(a.article), any())).thenSuspend {
             withContext(NonCancellable) { fetched.await() }
         }
         fixture.viewModel.initData(a.article.id)
@@ -233,7 +240,7 @@ class ArticleListReaderViewModelTest {
         val first = CompletableDeferred<Result<String>>()
         val latest = CompletableDeferred<Result<String>>()
         var fetchCount = 0
-        whenever(fixture.cache.readOrFetchFullContent(a.article)).thenSuspend {
+        whenever(fixture.cache.readOrFetchFullContent(eq(a.article), any())).thenSuspend {
             val request = if (++fetchCount == 1) first else latest
             withContext(NonCancellable) { request.await() }
         }
@@ -257,7 +264,7 @@ class ArticleListReaderViewModelTest {
     @Test fun `failed extraction keeps usable feed and original article identity`() = runTest(dispatcher) {
         val a = article("A", fullContent = true)
         val fixture = fixture(a)
-        whenever(fixture.cache.readOrFetchFullContent(a.article)).thenReturn(Result.failure(java.io.IOException("offline")))
+        whenever(fixture.cache.readOrFetchFullContent(eq(a.article), any())).thenReturn(Result.failure(java.io.IOException("offline")))
         fixture.viewModel.initData(a.article.id)
         runCurrent()
         assertEquals(ReaderState.Description("description A", fallback = true), fixture.viewModel.readerStateStateFlow.value.content)
@@ -272,14 +279,14 @@ class ArticleListReaderViewModelTest {
         fixture.viewModel.initData(a.article.id)
         runCurrent()
         assertEquals(ReaderState.Description("description A", fallback = true), fixture.viewModel.readerStateStateFlow.value.content)
-        verify(fixture.cache, never()).readOrFetchFullContent(any<Article>())
+        verify(fixture.cache, never()).readOrFetchFullContent(any<Article>(), any())
     }
 
     @Test fun `explicit retry leaves existing readable content mounted while network waits`() = runTest(dispatcher) {
         val a = article("A")
         val fixture = fixture(a)
         val fetched = CompletableDeferred<Result<String>>()
-        whenever(fixture.cache.readOrFetchFullContent(a.article)).thenSuspend { fetched.await() }
+        whenever(fixture.cache.readOrFetchFullContent(eq(a.article), any())).thenSuspend { fetched.await() }
         fixture.viewModel.initData(a.article.id)
         runCurrent()
         fixture.viewModel.renderFullContent()
@@ -296,7 +303,7 @@ class ArticleListReaderViewModelTest {
         val fixture = fixture(a)
         val body = "description A with the complete offline article"
         whenever(fixture.cache.readFullContent(a.article.id, 1)).thenReturn(Result.success(body))
-        whenever(fixture.cache.refreshFullContent(a.article)).thenReturn(Result.failure(java.io.IOException("offline")))
+        whenever(fixture.cache.refreshFullContent(eq(a.article), any())).thenReturn(Result.failure(java.io.IOException("offline")))
         fixture.viewModel.initData(a.article.id)
         runCurrent()
         fixture.viewModel.renderFullContent(forceRefresh = true)
@@ -338,7 +345,7 @@ class ArticleListReaderViewModelTest {
         Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
         val a = article("A", fullContent = true)
         val fixture = fixture(a)
-        whenever(fixture.cache.readOrFetchFullContent(a.article)).thenReturn(Result.success("description A with immediately ready complete article"))
+        whenever(fixture.cache.readOrFetchFullContent(eq(a.article), any())).thenReturn(Result.success("description A with immediately ready complete article"))
 
         fixture.viewModel.initData(a.article.id)
         runCurrent()
@@ -467,12 +474,288 @@ class ArticleListReaderViewModelTest {
         org.junit.Assert.assertTrue(fixture.viewModel.readerStateStateFlow.value.content is ReaderState.Error)
     }
 
+    @Test fun `feed refresh updates body but preserves live read star and article identity`() = runTest(dispatcher) {
+        val a = article("A")
+        val fixture = fixture(a, googleReader = true)
+        val refresh = CompletableDeferred<FeedArticleRefreshResult>()
+        whenever(fixture.googleReader.refreshArticleFeedBody(a.article)).thenSuspend { refresh.await() }
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        assertTrue(fixture.viewModel.readerStateStateFlow.value.canRefreshFeed)
+        fixture.viewModel.refreshFeedContent(); runCurrent()
+        assertTrue(fixture.viewModel.readerStateStateFlow.value.isRefreshingFeed)
+        assertEquals(ReaderState.Description(a.article.rawDescription), fixture.viewModel.readerStateStateFlow.value.content)
+        fixture.viewModel.updateStarredStatus(true)
+        whenever(fixture.diffs.checkIfUnread(a)).thenReturn(true)
+        fixture.viewModel.updateReadStatus(true)
+        whenever(fixture.history.readEarlier(a.article.id, 1)).thenReturn(Result.success(a.article.rawDescription))
+        refresh.complete(FeedArticleRefreshResult(a.article.copy(rawDescription = "Updated feed body", link = "https://example.com/changed"),
+            FeedArticleRefreshStatus.UPDATED)); runCurrent()
+        val reading = fixture.viewModel.readingUiState.value
+        assertTrue(reading.isUnread)
+        assertTrue(reading.isStarred)
+        assertTrue(reading.articleWithFeed!!.article.isUnread)
+        assertTrue(reading.articleWithFeed!!.article.isStarred)
+        assertEquals(a.article.link, reading.articleWithFeed!!.article.link)
+        assertEquals(a.article.link, fixture.viewModel.readerStateStateFlow.value.link)
+        assertEquals(ReaderState.Description("Updated feed body"), fixture.viewModel.readerStateStateFlow.value.content)
+        assertTrue(fixture.viewModel.readerStateStateFlow.value.hasPreviousFeedContent)
+        assertFalse(fixture.viewModel.readerStateStateFlow.value.isRefreshingFeed)
+    }
+
+    @Test fun `reopening refreshed article ignores stale retained list body without changing edition order`() = runTest(dispatcher) {
+        val a = article("A"); val b = article("B")
+        val fixture = fixture(a, b, googleReader = true)
+        val updated = a.copy(article = a.article.copy(rawDescription = "Durable updated feed body"))
+        whenever(fixture.googleReader.refreshArticleFeedBody(a.article)).thenReturn(
+            FeedArticleRefreshResult(updated.article, FeedArticleRefreshStatus.UPDATED))
+        whenever(fixture.repository.findArticleById(a.article.id)).thenReturn(updated)
+        fixture.viewModel.initData(a.article.id, 0); runCurrent()
+        fixture.viewModel.refreshFeedContent(); runCurrent()
+        fixture.viewModel.initData(b.article.id, 1); runCurrent()
+        fixture.viewModel.initData(a.article.id, 0); runCurrent()
+        assertEquals(ReaderState.Description(updated.article.rawDescription), fixture.viewModel.readerStateStateFlow.value.content)
+        assertEquals(b.article.id, fixture.viewModel.readerStateStateFlow.value.nextArticle?.articleId)
+        assertEquals(a.article.rawDescription, fixture.paging.itemSnapshotList.items
+            .filterIsInstance<ArticleFlowItem.Article>().first().articleWithFeed.article.rawDescription)
+        verify(fixture.repository).findArticleById(a.article.id)
+    }
+
+    @Test fun `kept or unchanged feed refresh displays the retained feed with an accurate notice`() = runTest(dispatcher) {
+        for (status in listOf(FeedArticleRefreshStatus.KEPT_CURRENT, FeedArticleRefreshStatus.UNCHANGED)) {
+            val a = article(status.name)
+            val fixture = fixture(a, googleReader = true)
+            whenever(fixture.googleReader.refreshArticleFeedBody(a.article)).thenReturn(FeedArticleRefreshResult(a.article, status))
+            fixture.viewModel.initData(a.article.id); runCurrent()
+            fixture.viewModel.refreshFeedContent(); runCurrent()
+            assertEquals(ReaderState.Description(a.article.rawDescription), fixture.viewModel.readerStateStateFlow.value.content)
+            assertFalse(fixture.viewModel.readerStateStateFlow.value.isRefreshingFeed)
+            assertTrue(fixture.viewModel.readerStateStateFlow.value.feedSourceMessage!!.contains(
+                if (status == FeedArticleRefreshStatus.KEPT_CURRENT) "Kept" else "same"))
+        }
+    }
+
+    @Test fun `concurrent feed update cannot replace a chosen imported source`() = runTest(dispatcher) {
+        val a = article("A")
+        val fixture = fixture(a, googleReader = true)
+        whenever(fixture.cache.readBrowserText(a.article.id, 1)).thenReturn(Result.success("Imported text"))
+        whenever(fixture.googleReader.refreshArticleFeedBody(a.article)).thenReturn(
+            FeedArticleRefreshResult(a.article.copy(rawDescription = "Competing update"), FeedArticleRefreshStatus.CONCURRENT_CHANGE))
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        fixture.viewModel.renderBrowserText(); runCurrent()
+        fixture.viewModel.refreshFeedContent(); runCurrent()
+        assertEquals(ReaderState.FullContent("Imported text", browserText = true), fixture.viewModel.readerStateStateFlow.value.content)
+        assertTrue(fixture.viewModel.readerStateStateFlow.value.feedSourceMessage!!.contains("Another update"))
+    }
+
+    @Test fun `late feed refresh cannot replace newer article and cancelled committed id reloads from database`() = runTest(dispatcher) {
+        val a = article("A"); val b = article("B")
+        val fixture = fixture(a, b, googleReader = true)
+        val refresh = CompletableDeferred<FeedArticleRefreshResult>()
+        val updated = a.copy(article = a.article.copy(rawDescription = "Committed late body"))
+        whenever(fixture.googleReader.refreshArticleFeedBody(a.article)).thenSuspend {
+            withContext(NonCancellable) { refresh.await() }
+        }
+        whenever(fixture.repository.findArticleById(a.article.id)).thenReturn(updated)
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        fixture.viewModel.refreshFeedContent(); runCurrent()
+        fixture.viewModel.initData(b.article.id); runCurrent()
+        refresh.complete(FeedArticleRefreshResult(updated.article, FeedArticleRefreshStatus.UPDATED)); runCurrent()
+        assertEquals(b.article.id, fixture.viewModel.readerStateStateFlow.value.articleId)
+        assertEquals(ReaderState.Description(b.article.rawDescription), fixture.viewModel.readerStateStateFlow.value.content)
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        assertEquals(ReaderState.Description(updated.article.rawDescription), fixture.viewModel.readerStateStateFlow.value.content)
+    }
+
+    @Test fun `account switch cancels pending feed refresh and clears the former account reader`() = runTest(dispatcher) {
+        val a = article("A")
+        val fixture = fixture(a, googleReader = true)
+        val refresh = CompletableDeferred<FeedArticleRefreshResult>()
+        whenever(fixture.googleReader.refreshArticleFeedBody(a.article)).thenSuspend {
+            withContext(NonCancellable) { refresh.await() }
+        }
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        fixture.viewModel.refreshFeedContent(); runCurrent()
+        fixture.accountId.value = 2; runCurrent()
+        refresh.complete(FeedArticleRefreshResult(a.article.copy(rawDescription = "Wrong account result"), FeedArticleRefreshStatus.UPDATED)); runCurrent()
+        assertNull(fixture.viewModel.readerStateStateFlow.value.articleId)
+        assertNull(fixture.viewModel.readingUiState.value.articleWithFeed)
+    }
+
+    @Test fun `feed source history is distinct and its failure preserves mounted body`() = runTest(dispatcher) {
+        val a = article("A")
+        val fixture = fixture(a, googleReader = true)
+        whenever(fixture.history.readEarlier(a.article.id, 1)).thenReturn(Result.success("Earlier feed"))
+        whenever(fixture.history.readEarlier(a.article.id, 1, a.article.rawDescription)).thenReturn(Result.success("Earlier feed"))
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        assertTrue(fixture.viewModel.readerStateStateFlow.value.hasPreviousFeedContent)
+        fixture.viewModel.renderPreviousFeedContent(); runCurrent()
+        assertEquals(ReaderState.Description("Earlier feed", previousVersion = true), fixture.viewModel.readerStateStateFlow.value.content)
+        whenever(fixture.history.readEarlier(a.article.id, 1, "Earlier feed")).thenReturn(Result.failure(FileNotFoundException()))
+        fixture.viewModel.renderPreviousFeedContent(); runCurrent()
+        assertEquals(ReaderState.Description("Earlier feed", previousVersion = true), fixture.viewModel.readerStateStateFlow.value.content)
+        assertTrue(fixture.viewModel.readerStateStateFlow.value.feedSourceMessage!!.contains("unavailable"))
+        fixture.viewModel.renderDescriptionContent()
+        assertEquals(ReaderState.Description(a.article.rawDescription), fixture.viewModel.readerStateStateFlow.value.content)
+    }
+
+    @Test fun `feed refresh failure does not expose server errors or replace the open source`() = runTest(dispatcher) {
+        val a = article("A")
+        val fixture = fixture(a, googleReader = true)
+        whenever(fixture.googleReader.refreshArticleFeedBody(a.article)).thenThrow(IllegalStateException("https://private.example/token"))
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        fixture.viewModel.refreshFeedContent(); runCurrent()
+        assertEquals(ReaderState.Description(a.article.rawDescription), fixture.viewModel.readerStateStateFlow.value.content)
+        assertEquals("Feed content could not be refreshed. Current content is unchanged.", fixture.viewModel.readerStateStateFlow.value.feedSourceMessage)
+    }
+
+    @Test fun `newsletter always uses feed body and never fetches a publisher even with legacy full content flag`() = runTest(dispatcher) {
+        val a = article("Newsletter", fullContent = true).let { it.copy(feed = it.feed.copy(isNewsletter = true)) }
+        val fixture = fixture(a)
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        assertTrue(fixture.viewModel.readerStateStateFlow.value.isNewsletter)
+        assertFalse(fixture.viewModel.readerStateStateFlow.value.canRefreshFeed)
+        assertEquals(ReaderState.Description(a.article.rawDescription), fixture.viewModel.readerStateStateFlow.value.content)
+        fixture.viewModel.renderFullContent(); runCurrent()
+        fixture.viewModel.renderFullContent(forceRefresh = true); runCurrent()
+        verify(fixture.cache, never()).readFullContent(any(), any())
+        verify(fixture.cache, never()).readOrFetchFullContent(any<Article>(), any())
+        verify(fixture.cache, never()).refreshFullContent(any(), any())
+        assertEquals(ReaderState.Description(a.article.rawDescription), fixture.viewModel.readerStateStateFlow.value.content)
+    }
+
+    @Test fun `current newsletter setting wins over a retained full content feed snapshot`() = runTest(dispatcher) {
+        val stale = article("Newsletter", fullContent = true)
+        val fixture = fixture(stale)
+        whenever(fixture.repository.findFeedById(stale.feed.id)).thenReturn(stale.feed.copy(isNewsletter = true))
+        fixture.viewModel.captureReaderSequence(fixture.paging.pagerFlow.value.pager,
+            listOf(ArticleFlowItem.Article(stale)))
+        fixture.viewModel.initData(stale.article.id, 0); runCurrent()
+        assertTrue(fixture.viewModel.readerStateStateFlow.value.isNewsletter)
+        assertTrue(fixture.viewModel.readingUiState.value.articleWithFeed!!.feed.isNewsletter)
+        assertEquals(ReaderState.Description(stale.article.rawDescription), fixture.viewModel.readerStateStateFlow.value.content)
+        verify(fixture.cache, never()).readFullContent(any(), any())
+        verify(fixture.cache, never()).readOrFetchFullContent(any<Article>(), any())
+    }
+
+    @Test fun `extract action rechecks newsletter setting after reader was opened`() = runTest(dispatcher) {
+        val a = article("Newsletter")
+        val fixture = fixture(a)
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        whenever(fixture.repository.findFeedById(a.feed.id)).thenReturn(a.feed.copy(isNewsletter = true))
+        fixture.viewModel.renderFullContent(forceRefresh = true); runCurrent()
+        assertTrue(fixture.viewModel.readerStateStateFlow.value.isNewsletter)
+        assertEquals(ReaderState.Description(a.article.rawDescription), fixture.viewModel.readerStateStateFlow.value.content)
+        verify(fixture.cache, never()).refreshFullContent(any(), any())
+    }
+
+    @Test fun `missing current feed policy never starts automatic extraction`() = runTest(dispatcher) {
+        val a = article("Unknown", fullContent = true)
+        val fixture = fixture(a)
+        whenever(fixture.repository.findFeedById(a.feed.id)).thenReturn(null)
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        assertTrue(fixture.viewModel.readerStateStateFlow.value.content is ReaderState.Error)
+        assertNull(fixture.viewModel.readingUiState.value.articleWithFeed)
+        verify(fixture.cache, never()).readOrFetchFullContent(any<Article>(), any())
+    }
+
+    @Test fun `queued reader extraction rechecks newsletter policy at the network boundary`() = runTest(dispatcher) {
+        val a = article("Queued", fullContent = true)
+        val fixture = fixture(a)
+        val releaseQueue = CompletableDeferred<Unit>()
+        var allowed: Boolean? = null
+        whenever(fixture.cache.readOrFetchFullContent(eq(a.article), any())).thenSuspend { invocation ->
+            releaseQueue.await()
+            allowed = invocation.getArgument<suspend () -> Boolean>(1).invoke()
+            Result.failure(IllegalStateException("Request blocked"))
+        }
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        whenever(fixture.repository.findFeedById(a.feed.id)).thenReturn(a.feed.copy(isNewsletter = true))
+        releaseQueue.complete(Unit); runCurrent()
+        assertEquals(false, allowed)
+        assertTrue(fixture.viewModel.readerStateStateFlow.value.isNewsletter)
+        assertEquals(a.article.rawDescription, fixture.viewModel.readerStateStateFlow.value.content.documentBody)
+    }
+
+    @Test fun `account switch during initial feed lookup cannot mount or extract the old article`() = runTest(dispatcher) {
+        val a = article("Newsletter", fullContent = true)
+        val fixture = fixture(a)
+        val lookup = CompletableDeferred<Feed?>()
+        whenever(fixture.repository.findFeedById(a.feed.id)).thenSuspend { withContext(NonCancellable) { lookup.await() } }
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        fixture.accountId.value = 2; runCurrent()
+        lookup.complete(a.feed); runCurrent()
+        assertNull(fixture.viewModel.readerStateStateFlow.value.articleId)
+        assertNull(fixture.viewModel.readingUiState.value.articleWithFeed)
+        verify(fixture.cache, never()).readOrFetchFullContent(any<Article>(), any())
+    }
+
+    @Test fun `explicit source choice wins over a late feed refresh`() = runTest(dispatcher) {
+        val a = article("A")
+        val fixture = fixture(a, googleReader = true)
+        val response = CompletableDeferred<FeedArticleRefreshResult>()
+        whenever(fixture.googleReader.refreshArticleFeedBody(a.article)).thenSuspend { withContext(NonCancellable) { response.await() } }
+        whenever(fixture.cache.readBrowserText(a.article.id, 1)).thenReturn(Result.success("User chosen text"))
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        fixture.viewModel.refreshFeedContent(); runCurrent()
+        fixture.viewModel.renderBrowserText(); runCurrent()
+        response.complete(FeedArticleRefreshResult(a.article.copy(rawDescription = "Late feed body"), FeedArticleRefreshStatus.UPDATED))
+        runCurrent()
+        assertEquals(ReaderState.FullContent("User chosen text", browserText = true), fixture.viewModel.readerStateStateFlow.value.content)
+        assertFalse(fixture.viewModel.readerStateStateFlow.value.isRefreshingFeed)
+    }
+
+    @Test fun `newsletter media filtering covers all body sources without losing provenance`() {
+        val body = "<p>Authoritative body</p><img src='https://mail.example.invalid/pixel' alt='Photo'>"
+        val sources = listOf(
+            ReaderState.Description(body, previousVersion = true),
+            ReaderState.FullContent(body, browserText = true, previousVersion = true),
+            ReaderState.FullContent(body, refreshFailed = true),
+        )
+        sources.forEach { source ->
+            val filtered = newsletterReaderContent(source)
+            assertTrue(filtered.documentBody!!.contains("Authoritative body"))
+            assertFalse(filtered.documentBody!!.contains("<img"))
+            assertFalse(filtered.documentBody!!.contains("mail.example.invalid"))
+            assertEquals(source, when (filtered) {
+                is ReaderState.Description -> filtered.copy(content = body)
+                is ReaderState.FullContent -> filtered.copy(content = body)
+                else -> error("Expected a body")
+            })
+            val snapshot = ReaderState(link = "https://example.com/article", isNewsletter = true, content = filtered).savedLibrarySnapshot()!!
+            assertEquals(filtered.documentBody, snapshot.html)
+        }
+    }
+
+    @Test fun `newsletter load failure or empty body never supplies a save URL fallback`() {
+        val failed = newsletterReaderContent(ReaderState.Description("x".repeat(4 * 1024 * 1024 + 1)))
+        assertTrue(failed is ReaderState.Error)
+        assertNull(failed.documentBody)
+        listOf(ReaderState.Loading, ReaderState.Error("Unavailable"), ReaderState.Description("  "), failed).forEach { source ->
+            assertNull(ReaderState(link = "https://example.com/article", isNewsletter = true, content = source).savedLibrarySnapshot())
+        }
+        assertNull(ReaderState(link = "https://example.com/article", content = ReaderState.Loading).savedLibrarySnapshot()!!.html)
+    }
+
+    @Test fun `image consent still rejects active newsletter surfaces and oversized bodies`() {
+        val content = ReaderState.Description("<p>Newsletter</p><img src='https://example.com/photo.png'>" +
+            "<iframe src='https://example.com/confirm'></iframe><meta http-equiv='refresh' content='0;url=https://example.com/unsubscribe'>")
+        val allowed = newsletterReaderContent(content, allowImages = true)
+        assertTrue(allowed.documentBody!!.contains("photo.png"))
+        assertFalse(allowed.documentBody!!.contains("/confirm"))
+        assertFalse(allowed.documentBody!!.contains("/unsubscribe"))
+        val failed = newsletterReaderContent(ReaderState.Description("x".repeat(4 * 1024 * 1024 + 1)), allowImages = true)
+        assertTrue(failed is ReaderState.Error)
+        assertNull(ReaderState(link = "https://example.com/article", isNewsletter = true, content = failed).savedLibrarySnapshot())
+    }
+
     private fun fixture(
         vararg articles: ArticleWithFeed,
         applicationScheduler: TestCoroutineScheduler = dispatcher.scheduler,
+        googleReader: Boolean = false,
     ): Fixture {
         val cache: ReaderCacheHelper = mock()
-        val repository: AbstractRssRepository = mock()
+        val history: FeedSourceHistory = mock()
+        val repository: AbstractRssRepository = if (googleReader) mock<GoogleReaderRssService>() else mock()
         val rssService: RssService = mock()
         val accountService: AccountService = mock()
         val accountId = MutableStateFlow<Int?>(1)
@@ -491,14 +774,20 @@ class ArticleListReaderViewModelTest {
             items = articles.map { ArticleFlowItem.Article(it) },
         ))
         whenever(groups.groupWithFeedListFlow).thenReturn(MutableStateFlow<List<GroupWithFeed>>(emptyList()))
+        whenever(groups.feedsFlow).thenReturn(MutableStateFlow<List<GroupWithFeed>>(emptyList()))
         whenever(filters.filterStateFlow).thenReturn(MutableStateFlow(FilterState()))
         whenever(workManager.getWorkInfosByTagFlow(SyncWorker.SYNC_TAG))
             .thenReturn(MutableStateFlow<List<WorkInfo>>(emptyList()))
         // Stubbing suspend APIs requires a coroutine context; these defaults do not suspend.
         kotlinx.coroutines.runBlocking {
+            whenever(repository.findFeedById(any())).thenAnswer { invocation ->
+                val id = invocation.getArgument<String>(0)
+                articles.firstOrNull { it.feed.id == id }?.feed ?: article("Stub").feed.copy(id = id)
+            }
             whenever(cache.readFullContent(any(), any())).thenReturn(Result.failure(FileNotFoundException()))
             whenever(cache.readBrowserText(any(), any())).thenReturn(Result.failure(FileNotFoundException()))
             whenever(cache.readPreviousContent(any(), any(), any())).thenReturn(Result.failure(FileNotFoundException()))
+            whenever(history.readEarlier(any(), any(), org.mockito.kotlin.anyOrNull())).thenReturn(Result.failure(FileNotFoundException()))
         }
         val applicationDispatcher = StandardTestDispatcher(applicationScheduler)
         val applicationScope = CoroutineScope(SupervisorJob() + applicationDispatcher)
@@ -513,22 +802,23 @@ class ArticleListReaderViewModelTest {
             groupWithFeedsListUseCase = groups,
             settingsProvider = mock(),
             readerCacheHelper = cache,
+            feedSourceHistory = history,
             textToSpeechManager = mock(),
             imageDownloader = mock(),
             articleListUseCase = paging,
             workManager = workManager,
         )
         stores += ViewModelStore().apply { put("reader", viewModel) }
-        return Fixture(viewModel, cache, repository, paging, diffs, accountId)
+        return Fixture(viewModel, cache, repository, paging, diffs, accountId, history)
     }
 
     private fun article(name: String, fullContent: Boolean = false): ArticleWithFeed = ArticleWithFeed(
         article = Article(
             id = "1\u0024$name", date = Date(0), title = name, rawDescription = "description $name",
-            shortDescription = name, link = "https://example.com/$name", feedId = "1\u0024feed", accountId = 1,
+            shortDescription = name, link = "https://example.com/$name", feedId = "1\u0024feed$name", accountId = 1,
         ),
         feed = Feed(
-            id = "1\u0024feed", name = "Feed", url = "https://example.com/feed", groupId = "1\u0024group",
+            id = "1\u0024feed$name", name = "Feed", url = "https://example.com/feed", groupId = "1\u0024group",
             accountId = 1, isFullContent = fullContent,
         ),
     )
@@ -540,7 +830,10 @@ class ArticleListReaderViewModelTest {
         val paging: ArticlePagingListUseCase,
         val diffs: DiffMapHolder,
         val accountId: MutableStateFlow<Int?>,
-    )
+        val history: FeedSourceHistory,
+    ) {
+        val googleReader get() = repository as GoogleReaderRssService
+    }
 
     // Mockito strips the final continuation from ordinary arguments. Resume the raw
     // continuation directly to allow deterministic suspension without real IO/threads.

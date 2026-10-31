@@ -87,7 +87,8 @@ class OpmlService @Inject constructor(
                                 put("isDefault", (it.group.id == defaultGroup?.id).toString())
                             }
                         },
-                        it.feeds.map { feed ->
+                        // Newsletter feed URLs can grant mailbox access; never silently export them.
+                        it.feeds.filterNot { feed -> feed.isNewsletter }.map { feed ->
                             Outline(
                                 mutableMapOf(
                                     "text" to feed.name,

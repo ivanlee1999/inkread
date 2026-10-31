@@ -9,6 +9,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlin.coroutines.cancellation.CancellationException
 import me.ash.reader.domain.model.article.Article
+import me.ash.reader.domain.model.article.ArticleFullContentRequest
 import me.ash.reader.domain.service.AccountService
 import org.junit.Assert.*
 import org.junit.Rule
@@ -25,6 +26,46 @@ class ReaderCacheHelperTest {
     private fun helper(rss: RssHelper, accounts: AccountService = mock()) = ReaderCacheHelper(
         mock<Context> { on { cacheDir } doReturn temporary.root; on { filesDir } doReturn temporary.root }, Dispatchers.IO, rss, accounts,
     )
+
+    @Test fun `queued automatic request cannot fetch after its feed policy changes`() = runBlocking<Unit> {
+        val rss: RssHelper = mock()
+        val cache = helper(rss)
+        val queued = ArticleFullContentRequest(1, "1:article", "Title", "https://example.com/article")
+        var eligible = true
+        // The worker captured the request while its feed was ordinary; the user then changed it.
+        eligible = false
+
+        assertFalse(cache.checkOrFetchFullContent(queued) { eligible })
+        assertTrue(cache.readFullContent(queued.id, queued.accountId).isFailure)
+        verifyNoInteractions(rss)
+    }
+
+    @Test fun `reader policy callback prevents both initial network and explicit refresh`() = runBlocking<Unit> {
+        val rss: RssHelper = mock()
+        val cache = helper(rss)
+        assertTrue(cache.readOrFetchFullContent(article()) { false }.isFailure)
+        assertTrue(cache.refreshFullContent(article()) { false }.isFailure)
+        verifyNoInteractions(rss)
+
+        whenever(rss.parseFullContent(any(), any())).thenReturn("<p>Permitted article</p>")
+        assertTrue(cache.readOrFetchFullContent(article()) { true }.isSuccess)
+        assertTrue(cache.readOrFetchFullContent(article()) { false }.isFailure)
+        assertTrue(cache.refreshFullContent(article()) { false }.isFailure)
+        assertEquals("<p>Permitted article</p>", cache.readFullContent("1:article", 1).getOrThrow())
+        verify(rss, times(1)).parseFullContent(any(), any())
+    }
+
+    @Test fun `fetch policy cancellation propagates before publisher access`() = runBlocking<Unit> {
+        val rss: RssHelper = mock()
+        val cancellation = CancellationException("Reader navigation")
+        try {
+            helper(rss).readOrFetchFullContent(article()) { throw cancellation }
+            fail("Cancellation must propagate")
+        } catch (actual: CancellationException) {
+            assertSame(cancellation, actual)
+        }
+        verifyNoInteractions(rss)
+    }
 
     @Test fun `browser text is a separate account scoped source and preserves extraction`() = runBlocking<Unit> {
         val rss: RssHelper = mock()

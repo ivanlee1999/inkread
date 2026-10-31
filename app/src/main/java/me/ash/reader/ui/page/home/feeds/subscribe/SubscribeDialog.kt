@@ -10,6 +10,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CreateNewFolder
@@ -79,7 +80,7 @@ fun SubscribeDialog(
             },
             icon = {
                 val iconUrl = when (subscribeState) {
-                    is SubscribeState.Configure -> subscribeState.searchedFeed.icon.url
+                    is SubscribeState.Configure -> if (subscribeState.newsletter) null else subscribeState.searchedFeed.icon?.url
                     else -> null
                 }
                 FeedIcon(
@@ -120,17 +121,24 @@ fun SubscribeDialog(
                                 is SubscribeState.Idle -> state.errorMessage ?: ""
                             }
 
+                            Column {
+                            TextButton(enabled = state is SubscribeState.Idle,
+                                onClick = subscribeViewModel::toggleNewsletter) {
+                                Text(if (state.newsletter) "Newsletter feed · On" else "Newsletter feed · Off")
+                            }
+                            if (state.newsletter) Text("Add an existing RSS or Atom feed for a newsletter. This does not sign up an email address or connect a mailbox.")
                             ClipboardTextField(
                                 state = state.linkState,
                                 modifier = Modifier.fillMaxWidth(),
                                 readOnly = state is SubscribeState.Fetching,
-                                placeholder = stringResource(R.string.feed_or_site_url),
+                                placeholder = if (state.newsletter) "Newsletter RSS or Atom URL" else stringResource(R.string.feed_or_site_url),
                                 errorText = errorText,
                                 imeAction = ImeAction.Search,
                                 onConfirm = {
                                     subscribeViewModel.searchFeed()
                                 },
                             )
+                            }
                         }
 
                         is SubscribeState.Configure -> {
@@ -140,6 +148,9 @@ fun SubscribeDialog(
                                 selectedAllowNotificationPreset = state.notification,
                                 selectedParseFullContentPreset = state.fullContent,
                                 selectedOpenInBrowserPreset = state.browser,
+                                selectedNewsletter = state.newsletter,
+                                newsletterOnClick = subscribeViewModel::toggleNewsletter,
+                                errorMessage = state.errorMessage,
                                 selectedGroupId = state.selectedGroupId,
                                 allowNotificationPresetOnClick = {
                                     subscribeViewModel.toggleAllowNotificationPreset()

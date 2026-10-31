@@ -1,6 +1,7 @@
 package me.ash.reader.ui.page.home.feeds.subscribe
 
 import androidx.lifecycle.ViewModelStore
+import java.io.IOException
 import com.rometools.rome.feed.synd.SyndFeedImpl
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -141,6 +142,48 @@ class SubscribeViewModelTest {
         verifyNoSubscription(fixture.repository)
     }
 
+    @Test fun `newsletter uses direct feed lookup and cannot enable automatic publisher reading`() = runTest(dispatcher) {
+        val url = "https://feeds.example.com/private-token"
+        val result = searchResult(url)
+        val fixture = fixture()
+        whenever(fixture.helper.searchFeed(url, newsletter = true)).thenReturn(result)
+        fixture.viewModel.showDrawer()
+        runCurrent()
+        fixture.viewModel.toggleNewsletter()
+        input(fixture.viewModel, url)
+        fixture.viewModel.searchFeed()
+        runCurrent()
+        fixture.viewModel.toggleParseFullContentPreset()
+        fixture.viewModel.toggleOpenInBrowserPreset()
+        val configured = fixture.viewModel.subscribeState.value as SubscribeState.Configure
+        assertTrue(configured.newsletter)
+        assertEquals(false, configured.fullContent)
+        assertEquals(false, configured.browser)
+        verify(fixture.helper).searchFeed(url, newsletter = true)
+
+        fixture.viewModel.subscribe()
+        runCurrent()
+        verify(fixture.repository).subscribe(feedLink = url, searchedFeed = result.feed,
+            groupId = "1\u0024group", isNotification = false, isFullContent = false, isBrowser = false,
+            isNewsletter = true)
+    }
+
+    @Test fun `newsletter search errors do not echo private URL tokens`() = runTest(dispatcher) {
+        val url = "https://feeds.example.com/private-token?key=secret"
+        val fixture = fixture()
+        whenever(fixture.helper.searchFeed(url, newsletter = true)).thenThrow(IOException("Request failed $url"))
+        fixture.viewModel.showDrawer()
+        runCurrent()
+        fixture.viewModel.toggleNewsletter()
+        input(fixture.viewModel, url)
+        fixture.viewModel.searchFeed()
+        runCurrent()
+        val state = fixture.viewModel.subscribeState.value as SubscribeState.Idle
+        assertTrue(state.newsletter)
+        assertEquals("Could not read this newsletter feed. Enter a direct RSS or Atom feed URL.", state.errorMessage)
+        verifyNoSubscription(fixture.repository)
+    }
+
     private fun input(viewModel: SubscribeViewModel, url: String) {
         val state = viewModel.subscribeState.value as SubscribeState.Idle
         state.linkState.edit { replace(0, length, url) }
@@ -159,6 +202,7 @@ class SubscribeViewModelTest {
         verify(repository, never()).subscribe(
             feedLink = any(), searchedFeed = any(), groupId = any(),
             isNotification = any(), isFullContent = any(), isBrowser = any(),
+            isNewsletter = any(),
         )
     }
 

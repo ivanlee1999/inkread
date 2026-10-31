@@ -50,6 +50,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.derivedStateOf
@@ -168,6 +169,8 @@ fun FlowPage(
         einkViewport.items.count { it is ArticleFlowItem.Article }
     }
 
+    val sourceFeeds = viewModel.sourceFeedsFlow.collectAsStateValue()
+    val sourcePolicies = remember(sourceFeeds) { articleFeedPolicies(sourceFeeds) }
     val flowUiState = viewModel.flowUiState.collectAsStateValue()
     if (flowUiState == null) return
 
@@ -341,6 +344,7 @@ fun FlowPage(
         wasSyncing = isSyncing
     }
 
+    CompositionLocalProvider(LocalArticleFeedPolicies provides sourcePolicies) {
     Box(modifier = Modifier.fillMaxSize()) {
         RYScaffold(
             reserveBottomBarSpace = true,
@@ -816,7 +820,7 @@ fun FlowPage(
                             articleListTonalElevation = articleListTonalElevation.value,
                             onTurn = turnEinkPage,
                             onClick = { articleWithFeed, editionIndex ->
-                                if (articleWithFeed.feed.isBrowser) {
+                                if (articleFeedPolicy(articleWithFeed.feed, sourcePolicies).openInBrowser) {
                                     viewModel.diffMapHolder.updateDiff(articleWithFeed, isUnread = false)
                                     context.openURL(articleWithFeed.article.link, openLink, openLinkSpecificBrowser)
                                 } else {
@@ -898,7 +902,7 @@ fun FlowPage(
                                 articleListTonalElevation = articleListTonalElevation.value,
                                 isSwipeEnabled = { !listState.isScrollInProgress },
                                 onClick = { articleWithFeed, index ->
-                                    if (articleWithFeed.feed.isBrowser) {
+                                    if (articleFeedPolicy(articleWithFeed.feed, sourcePolicies).openInBrowser) {
                                         viewModel.diffMapHolder.updateDiff(
                                             articleWithFeed,
                                             isUnread = false,
@@ -977,5 +981,6 @@ fun FlowPage(
                         ),
             )
         }
+    }
     }
 }

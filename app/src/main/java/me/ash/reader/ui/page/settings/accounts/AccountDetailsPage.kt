@@ -420,6 +420,8 @@ fun AccountDetailsPage(
             LazyColumn {
                 item {
                     Text(text = stringResource(R.string.additional_info_desc))
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Newsletter feeds are excluded because their private URLs may give access to delivered messages.")
                     Spacer(modifier = Modifier.height(16.dp))
                 }
                 items(

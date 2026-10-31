@@ -41,6 +41,7 @@ android {
     // Opt-in exact minified-release parser runtime smoke; ordinary instrumentation stays debug.
     testBuildType = if (parserSmoke) "release" else "debug"
     sourceSets.getByName("androidTest") {
+        assets.srcDir("$projectDir/schemas")
         // Platform-only smoke avoids test-library APIs optimized out of the release APK.
         if (parserSmoke) java.setSrcDirs(listOf("src/parserSmoke/java"))
     }
@@ -49,8 +50,8 @@ android {
         applicationId = "me.ash.reader"
         minSdk = 26
         targetSdk = 34
-        versionCode = 66
-        versionName = "0.16.21"
+        versionCode = 67
+        versionName = "0.16.22"
 
         buildConfigField(
             "String",

@@ -105,6 +105,7 @@ jobs:
             classes=me.ash.reader.ui.page.home.reading.BrowserTextImportDialogTest,me.ash.reader.ui.page.home.reading.EInkReaderAnnotationUiTest,me.ash.reader.ui.page.annotation.AnnotationReaderUiTest,me.ash.reader.ui.page.annotation.AnnotationNotebookUiTest,me.ash.reader.ui.page.settings.readwise.ReadwiseSettingsUiTest
             if [ "${{ matrix.name }}" = phone ] && [ "$scale" = 1.0 ]; then
               classes="$classes,me.ash.reader.infrastructure.html.ModernReadabilitySmokeTest,me.ash.reader.infrastructure.annotation.AnnotationRoomPersistenceTest,me.ash.reader.infrastructure.readwise.ReadwiseCredentialStoreTest"
+              classes="$classes,me.ash.reader.infrastructure.rss.FeedArticleBodyRefreshRoomTest,me.ash.reader.infrastructure.rss.NewsletterMigrationRoomTest,me.ash.reader.ui.page.home.reading.NewsletterReaderPrivacyUiTest"
             fi
             phase="article-annotations-evidence/font-$scale"
             mkdir -p "$phase"
@@ -115,7 +116,7 @@ jobs:
               if [ -d "$output" ]; then cp -R "$output" "$phase/"; fi
             done
             python3 - <<'PYTHON' || result=1
-          import os, pathlib, struct, xml.etree.ElementTree as ET
+          import os, pathlib, re, struct, xml.etree.ElementTree as ET
           root = pathlib.Path("article-annotations-evidence") / ("font-" + os.environ["ANNOTATION_FONT_SCALE"])
           reports = list((root / "androidTest-results").rglob("TEST-*.xml"))
           assert reports, "No annotation instrumentation results"
@@ -124,6 +125,15 @@ jobs:
               suite = ET.parse(path).getroot()
               for key in totals: totals[key] += int(suite.get(key, 0))
           expected = 64 if "${{ matrix.name }}" == "phone" and os.environ["ANNOTATION_FONT_SCALE"] == "1.0" else 56
+          if "${{ matrix.name }}" == "phone" and os.environ["ANNOTATION_FONT_SCALE"] == "1.0":
+              cases = [case for path in reports for case in ET.parse(path).getroot().iter("testcase")]
+              for qualified in ("me.ash.reader.infrastructure.rss.FeedArticleBodyRefreshRoomTest", "me.ash.reader.infrastructure.rss.NewsletterMigrationRoomTest", "me.ash.reader.ui.page.home.reading.NewsletterReaderPrivacyUiTest"):
+                  name = qualified.rsplit(".", 1)[-1]
+                  source = pathlib.Path("app/src/androidTest/java") / (qualified.replace(".", "/") + ".kt")
+                  methods = set(re.findall(r"@Test\s+fun\s+([A-Za-z0-9_]+)", source.read_text()))
+                  actual = [case.get("name") for case in cases if case.get("classname") == qualified]
+                  assert methods and len(actual) == len(methods) and set(actual) == methods, (name, methods, actual)
+                  expected += len(methods)
           assert totals == dict(tests=expected, failures=0, errors=0, skipped=0), totals
           for name in ("native-selection", "native-adjusted-selection", "rendered-highlight", "note-editor", "readwise-settings", "notebook", "resize-selection", "auto-highlight-undo"):
               images = list(root.rglob(f"newspaper-annotation-{name}-*.png"))
@@ -155,6 +165,7 @@ jobs:
           path: |
             article-annotations-evidence/**
             app/schemas/me.ash.reader.infrastructure.annotation.AnnotationsDatabase/**
+            app/schemas/me.ash.reader.infrastructure.db.AndroidDatabase/**
           if-no-files-found: error
 
   minified-parser:
@@ -255,4 +266,5 @@ jobs:
             minified-parser-evidence/**
             app/build/outputs/androidTest-results/**
             app/build/outputs/mapping/githubRelease/**
+            app/build/outputs/apk/github/release/*.apk
           if-no-files-found: error

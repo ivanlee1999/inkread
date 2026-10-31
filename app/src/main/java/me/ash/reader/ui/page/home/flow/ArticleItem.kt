@@ -115,15 +115,16 @@ fun ArticleItem(
 ) {
     val feed = articleWithFeed.feed
     val article = articleWithFeed.article
-    val imagesEnabled = LocalFlowArticleListImage.current.value
+    val sourcePolicy = articleFeedPolicy(feed, LocalArticleFeedPolicies.current)
+    val imagesEnabled = LocalFlowArticleListImage.current.value && sourcePolicy.allowRemoteMedia
     // Saved feed HTML/JSON can be substantial. Parse it away from the UI thread, and scope the
     // work to this exact visible article and image preference. A changed key cancels the old
     // producer, so disabling images cannot publish stale candidates or start a late lookup.
-    val image = if (measurementOnly) null else key(imagesEnabled, article.img, article.rawDescription, article.link) {
+    val image = if (measurementOnly) null else key(imagesEnabled, article.img, article.rawDescription, article.link, sourcePolicy.allowRemoteMedia) {
         val request by produceState<Any?>(initialValue = null) {
             if (imagesEnabled) {
                 value = withContext(Dispatchers.Default) {
-                    articleImageRequest(article.img, article.rawDescription, article.link)
+                    articleImageRequest(article.img, article.rawDescription, article.link, allowMetadataLookup = sourcePolicy.allowRemoteMedia)
                 }
             }
         }
@@ -134,7 +135,7 @@ fun ArticleItem(
         modifier = modifier,
         feedName = feed.name,
         author = article.author,
-        feedIconUrl = feed.icon,
+        feedIconUrl = sourcePolicy.iconUrl,
         feedUnreadCount = feedUnreadCount,
         isLead = isLead,
         storyStyle = storyStyle,

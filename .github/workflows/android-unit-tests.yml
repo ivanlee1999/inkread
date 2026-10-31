@@ -63,4 +63,5 @@ jobs:
           path: |
             **/build/reports/tests/**
             **/build/test-results/**
+            app/schemas/me.ash.reader.infrastructure.db.AndroidDatabase/**
           if-no-files-found: warn
