@@ -5,6 +5,7 @@ import androidx.annotation.CheckResult
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.io.FileNotFoundException
+import java.net.URI
 import java.security.MessageDigest
 import javax.inject.Inject
 import kotlin.coroutines.cancellation.CancellationException
@@ -35,6 +36,28 @@ constructor(
 
     private fun cacheFile(articleId: String, accountId: Int): File =
         cacheDir.resolve(accountId.toString()).resolve(readerCacheFileName(articleId))
+
+    /** Only this publisher's extraction changed; existing saved/imported bodies stay independent. */
+    suspend fun requiresNewYorkerCacheUpgrade(article: Article, content: String): Boolean = withContext(ioDispatcher) {
+        val request = ArticleFullContentRequest(article.accountId, article.id, article.title, article.link)
+        usesNewYorkerExtractionCache(request.link) && !hasCurrentNewYorkerProof(request, content)
+    }
+
+    private fun newYorkerProofFile(article: ArticleFullContentRequest): File =
+        File(cacheFile(article.id, article.accountId).path + ".newyorker-v1")
+
+    private fun newYorkerProof(article: ArticleFullContentRequest, body: String): String {
+        // Hash the complete identity and exact body, so interrupted/mismatched writes cannot
+        // make another account, URL or historical body look like a current extraction.
+        val identity = "newyorker-public-v1\u0000${article.accountId}\u0000${article.id}\u0000${article.link}\u0000${readerCacheFileName(body)}"
+        return "newyorker-public-v1\n${readerCacheFileName(identity).removeSuffix(".html")}\n"
+    }
+
+    private fun hasCurrentNewYorkerProof(article: ArticleFullContentRequest, body: String): Boolean =
+        readerCacheResult {
+            val proof = newYorkerProofFile(article)
+            proof.isFile && proof.length() <= 128 && proof.readText() == newYorkerProof(article, body)
+        }.getOrDefault(false)
 
     private fun preservePreviousVersion(content: String, file: File) {
         if (!file.isFile) return
@@ -89,6 +112,7 @@ constructor(
         article: ArticleFullContentRequest,
         forceRefresh: Boolean = false,
         canFetch: suspend () -> Boolean = { true },
+        upgradeLegacyNewYorker: Boolean = true,
     ): Result<String> =
         withContext(ioDispatcher) {
             val key = "${article.accountId}:${article.id}"
@@ -98,8 +122,12 @@ constructor(
                     // A queued prefetch may have waited while the user marked its feed as a newsletter.
                     // Recheck under the lock before exposing cached publisher content or fetching it.
                     check(canFetch()) { "Automatic article fetching is no longer enabled" }
-                    if (cached.isSuccess && !forceRefresh) return@readerCacheResult cached.getOrThrow()
+                    val staleNewYorker = upgradeLegacyNewYorker && usesNewYorkerExtractionCache(article.link) &&
+                        cached.getOrNull()?.let { !hasCurrentNewYorkerProof(article, it) } == true
+                    if (cached.isSuccess && !forceRefresh && !staleNewYorker) return@readerCacheResult cached.getOrThrow()
                     val fetched = rssHelper.parseFullContent(article.link, article.title)
+                    currentCoroutineContext().ensureActive()
+                    check(canFetch()) { "Automatic article fetching is no longer enabled" }
                     check(fetched.isNotBlank()) { "Empty article content" }
                     // Explicit refresh must not replace a useful offline extraction with a
                     // shorter/error-page result either. The original feed remains separate.
@@ -111,7 +139,14 @@ constructor(
                     // If that cannot be retained, keep the current version rather than orphan it.
                     preservePreviousVersion(fullContent, file)
                     // A failed cache write must not prevent reading fetched content.
-                    readerCacheResult { writeContentToCache(fullContent, file) }
+                    readerCacheResult {
+                        writeContentToCache(fullContent, file)
+                        // A quality-rejected candidate must not certify the retained old body as
+                        // an extraction from the updated parser. Failures leave the old source intact.
+                        if (usesNewYorkerExtractionCache(article.link) && fullContent == fetched) {
+                            writeContentToCache(newYorkerProof(article, fullContent), newYorkerProofFile(article))
+                        }
+                    }
                     fullContent
                 }
             }
@@ -205,7 +240,7 @@ constructor(
     suspend fun checkOrFetchFullContent(
         article: ArticleFullContentRequest,
         canFetch: suspend () -> Boolean,
-    ): Boolean = readOrFetchFullContent(article, canFetch = canFetch).isSuccess
+    ): Boolean = readOrFetchFullContent(article, canFetch = canFetch, upgradeLegacyNewYorker = false).isSuccess
 
     suspend fun deleteCacheFor(
         articleId: String,
@@ -225,6 +260,9 @@ constructor(
 internal fun readerCacheFileName(articleId: String): String =
     MessageDigest.getInstance("SHA-256").digest(articleId.toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it) } + ".html"
+
+internal fun usesNewYorkerExtractionCache(sourceUrl: String): Boolean =
+    runCatching { URI(sourceUrl).host?.lowercase() in setOf("newyorker.com", "www.newyorker.com") }.getOrDefault(false)
 
 internal inline fun <T> readerCacheResult(block: () -> T): Result<T> = try {
     Result.success(block())

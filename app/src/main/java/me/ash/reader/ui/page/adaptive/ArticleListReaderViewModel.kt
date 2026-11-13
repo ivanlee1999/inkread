@@ -55,6 +55,8 @@ import me.ash.reader.infrastructure.di.IODispatcher
 import me.ash.reader.infrastructure.preference.PullToLoadNextFeedPreference
 import me.ash.reader.infrastructure.preference.SettingsProvider
 import me.ash.reader.infrastructure.rss.ReaderCacheHelper
+import me.ash.reader.infrastructure.rss.readerCacheFileName
+import me.ash.reader.infrastructure.rss.usesNewYorkerExtractionCache
 import me.ash.reader.infrastructure.rss.FeedSourceHistory
 import me.ash.reader.infrastructure.rss.FeedArticleRefreshStatus
 import me.ash.reader.infrastructure.html.ArticleRequiresBrowserException
@@ -459,6 +461,9 @@ constructor(
     private var fullContentJob: Job? = null
     // IDs only, scoped to this reader VM; never duplicate bodies or reorder the retained edition.
     private val explicitlyRefreshedArticles = mutableSetOf<Pair<Int, String>>()
+    // One automatic upgrade attempt per exact cached body in this reader session. Offline or
+    // quality-retained content must not start another request on every reader re-entry/render.
+    private val newYorkerCacheUpgradeAttempts = linkedSetOf<String>()
 
     private val currentArticle: Article?
         get() = readingUiState.value.articleWithFeed?.article
@@ -590,7 +595,12 @@ constructor(
                 val resolved = base.renderContent(this@run)
                 ensureActive()
                 _readerState.value = resolved
-                if (resolved.content is ReaderState.Loading) renderFullContent(rememberPreference = false)
+                val upgradeKey = resolved.localCacheUpgradeKey
+                val upgrade = upgradeKey != null && newYorkerCacheUpgradeAttempts.add(upgradeKey)
+                if (newYorkerCacheUpgradeAttempts.size > 64) {
+                    newYorkerCacheUpgradeAttempts.remove(newYorkerCacheUpgradeAttempts.first())
+                }
+                if (resolved.content is ReaderState.Loading || upgrade) renderFullContent(rememberPreference = false)
                 else if (feed.selectedDisplayMode == SubscriptionDisplayMode.ORIGINAL && !feed.isNewsletter &&
                     rssService.get() !is LocalRssService) renderOriginalContent(rememberPreference = false)
 
@@ -607,11 +617,18 @@ constructor(
     }
 
     suspend fun ReaderState.renderContent(articleWithFeed: ArticleWithFeed): ReaderState {
+        var localCacheUpgradeKey: String? = null
         val contentState =
             if (articleWithFeed.feed.usesLocalFullContent) {
                 val fullContent =
                     readerCacheHelper.readFullContent(articleWithFeed.article.id, articleWithFeed.article.accountId).getOrNull()
                 if (fullContent != null) {
+                    if (usesNewYorkerExtractionCache(articleWithFeed.article.link) &&
+                        readerCacheHelper.requiresNewYorkerCacheUpgrade(articleWithFeed.article, fullContent)) {
+                        val article = articleWithFeed.article
+                        localCacheUpgradeKey = readerCacheFileName(
+                            "${article.accountId}\n${article.id}\n${article.link}\n${readerCacheFileName(fullContent)}")
+                    }
                     withContext(ioDispatcher) { selectReaderContent(articleWithFeed.article.rawDescription, fullContent) }
                 } else if (withContext(ioDispatcher) { ArticleContentSelection.isLikelyComplete(articleWithFeed.article.rawDescription) }) {
                     ReaderState.Description(articleWithFeed.article.rawDescription)
@@ -627,7 +644,7 @@ constructor(
                     originalFeed = rssService.get() is LocalRssService && articleWithFeed.feed.selectedDisplayMode == SubscriptionDisplayMode.ORIGINAL)
             }
 
-        return copy(content = contentState, hasBrowserText = readerCacheHelper.readBrowserText(
+        return copy(content = contentState, localCacheUpgradeKey = localCacheUpgradeKey, hasBrowserText = readerCacheHelper.readBrowserText(
             articleWithFeed.article.id, articleWithFeed.article.accountId).isSuccess,
             hasPreviousFullContent = readerCacheHelper.readPreviousContent(articleWithFeed.article.id, articleWithFeed.article.accountId, false).isSuccess,
             hasPreviousBrowserText = readerCacheHelper.readPreviousContent(articleWithFeed.article.id, articleWithFeed.article.accountId, true).isSuccess,
@@ -751,6 +768,7 @@ constructor(
 
     fun renderFullContent(forceRefresh: Boolean = false, rememberPreference: Boolean = true) {
         val article = currentArticle ?: return
+        _readerState.update { it.copy(localCacheUpgradeKey = null) }
         clearFeedRefreshNotice()
         articleLoadJob?.cancel()
         fullContentJob?.cancel()
@@ -941,6 +959,7 @@ data class ReaderState(
     val isNewsletter: Boolean = false,
     val supportsServerContent: Boolean = true,
     val preferredDisplayMode: SubscriptionDisplayMode? = null,
+    internal val localCacheUpgradeKey: String? = null,
 ) {
     data class PrefetchResult(val articleId: String, val index: Int)
 

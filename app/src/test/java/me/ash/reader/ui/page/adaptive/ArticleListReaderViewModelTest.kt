@@ -1,5 +1,6 @@
 package me.ash.reader.ui.page.adaptive
 
+import android.content.Context
 import androidx.lifecycle.ViewModelStore
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.paging.ItemSnapshotList
@@ -47,6 +48,8 @@ import me.ash.reader.domain.service.LocalRssService
 import me.ash.reader.domain.service.RssService
 import me.ash.reader.domain.service.SyncWorker
 import me.ash.reader.infrastructure.rss.ReaderCacheHelper
+import me.ash.reader.infrastructure.rss.RssHelper
+import me.ash.reader.infrastructure.rss.readerCacheFileName
 import me.ash.reader.infrastructure.rss.FeedSourceHistory
 import me.ash.reader.infrastructure.rss.FeedArticleRefreshResult
 import me.ash.reader.infrastructure.rss.FeedArticleRefreshStatus
@@ -60,18 +63,24 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Test
+import org.junit.Rule
+import org.junit.rules.TemporaryFolder
+import org.jsoup.Jsoup
 import org.mockito.invocation.InvocationOnMock
 import org.mockito.kotlin.any
 import org.mockito.kotlin.doAnswer
+import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
+import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 import org.mockito.stubbing.OngoingStubbing
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ArticleListReaderViewModelTest {
+    @get:Rule val temporary = TemporaryFolder()
     private val dispatcher = StandardTestDispatcher()
     private val stores = mutableListOf<ViewModelStore>()
     private val applicationScopes = mutableListOf<CoroutineScope>()
@@ -892,13 +901,133 @@ class ArticleListReaderViewModelTest {
         assertFalse(fixture.viewModel.readerStateStateFlow.value.feedSourceMessage!!.contains("sensitive"))
     }
 
+    private val visaRss = "After my memoir, “Huna,” was nominated, I made plans to attend the ceremony in New York—only to be found ineligible for a visitor visa."
+    private val visaUrl = "https://www.newyorker.com/books/page-turner/i-am-a-2026-national-book-award-finalist-the-us-denied-my-visa"
+    private fun visaBody(paragraphs: Int = 23) = (0 until paragraphs).joinToString("") {
+        if (it == 0) "<p>$visaRss</p>" else "<p>Public visible paragraph $it. ${"The article continues with its original editorial prose. ".repeat(4)}</p>"
+    }
+    private fun visaArticle(mode: String? = null, newsletter: Boolean = false) = article("Visa").let {
+        it.copy(article = it.article.copy(rawDescription = visaRss, link = visaUrl),
+            feed = it.feed.copy(displayMode = mode, isFullContent = mode == "local", isNewsletter = newsletter,
+                url = "https://www.newyorker.com/feed/everything/rss"))
+    }
+    private fun visaCache(rss: RssHelper) = ReaderCacheHelper(
+        mock<Context> { on { cacheDir } doReturn temporary.root; on { filesDir } doReturn temporary.root }, dispatcher, rss, mock(),
+    )
+    private fun seedVisaCache(a: ArticleWithFeed, body: String) {
+        temporary.root.resolve("readability/${a.article.accountId}/${readerCacheFileName(a.article.id)}")
+            .apply { parentFile.mkdirs(); writeText(body) }
+    }
+    private fun assertVisaFullBody(fixture: Fixture) {
+        val state = fixture.viewModel.readerStateStateFlow.value
+        assertEquals(SubscriptionDisplayMode.LOCAL, state.preferredDisplayMode)
+        assertTrue(state.content is ReaderState.FullContent)
+        assertEquals(visaBody(), state.content.documentBody)
+        assertEquals(23, Jsoup.parse(state.content.documentBody!!).select("p").size)
+    }
+
+    @Test fun `exact reported RSS changes to full article when Local is chosen from Server or Original`() = runTest(dispatcher) {
+        val a = visaArticle()
+        val rss: RssHelper = mock()
+        whenever(rss.parseFullContent(visaUrl, a.article.title)).thenReturn(visaBody())
+        whenever(rss.readOriginalFeedContent(a.feed.url, visaUrl)).thenReturn(visaRss)
+        val fixture = fixture(a, cacheOverride = visaCache(rss))
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        assertEquals(visaRss, fixture.viewModel.readerStateStateFlow.value.content.documentBody)
+        fixture.viewModel.renderServerContent(); runCurrent()
+        verify(rss, never()).parseFullContent(any(), any())
+        fixture.viewModel.renderFullContent(); runCurrent()
+        assertVisaFullBody(fixture)
+        fixture.viewModel.renderOriginalContent(); runCurrent()
+        assertEquals(ReaderState.Description(visaRss, originalFeed = true), fixture.viewModel.readerStateStateFlow.value.content)
+        fixture.viewModel.renderFullContent(); runCurrent()
+        assertVisaFullBody(fixture)
+        fixture.viewModel.renderServerContent(); runCurrent()
+        fixture.viewModel.renderFullContent(); runCurrent()
+        assertVisaFullBody(fixture)
+        assertEquals(visaRss, fixture.viewModel.readingUiState.value.articleWithFeed!!.article.rawDescription)
+        verify(rss, times(1)).parseFullContent(any(), any())
+        verify(rss, times(1)).readOriginalFeedContent(any(), any())
+    }
+
+    @Test fun `initData upgrades cached RSS-only local result while keeping the summary until full body is ready`() = runTest(dispatcher) {
+        val a = visaArticle("local")
+        seedVisaCache(a, visaRss)
+        val rss: RssHelper = mock()
+        val response = CompletableDeferred<String>()
+        whenever(rss.parseFullContent(any(), any())).thenSuspend { response.await() }
+        val cache = visaCache(rss)
+        val fixture = fixture(a, cacheOverride = cache)
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        assertEquals(visaRss, fixture.viewModel.readerStateStateFlow.value.content.documentBody)
+        response.complete(visaBody()); runCurrent()
+        assertVisaFullBody(fixture)
+        assertEquals(visaRss, cache.readPreviousContent(a.article.id, 1, false).getOrThrow())
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        assertVisaFullBody(fixture)
+        verify(rss, times(1)).parseFullContent(any(), any())
+    }
+
+    @Test fun `offline old local article remains displayed without an automatic retry loop and explicit Retry stays available`() = runTest(dispatcher) {
+        val a = visaArticle("local")
+        val old = visaBody(9)
+        seedVisaCache(a, old)
+        val rss: RssHelper = mock()
+        whenever(rss.parseFullContent(any(), any())).thenThrow(java.io.IOException("Offline"))
+        val fixture = fixture(a, cacheOverride = visaCache(rss))
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        assertEquals(ReaderState.FullContent(old, refreshFailed = true), fixture.viewModel.readerStateStateFlow.value.content)
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        assertEquals(old, fixture.viewModel.readerStateStateFlow.value.content.documentBody)
+        verify(rss, times(1)).parseFullContent(any(), any())
+        fixture.viewModel.renderFullContent(forceRefresh = true); runCurrent()
+        assertEquals(ReaderState.FullContent(old, refreshFailed = true), fixture.viewModel.readerStateStateFlow.value.content)
+        verify(rss, times(2)).parseFullContent(any(), any())
+    }
+
+    @Test fun `server original and newsletter openings never upgrade a cached publisher source`() = runTest(dispatcher) {
+        val rss: RssHelper = mock()
+        whenever(rss.readOriginalFeedContent(any(), any())).thenReturn(visaRss)
+        for (a in listOf(visaArticle("server"), visaArticle("original"), visaArticle("local", newsletter = true))) {
+            seedVisaCache(a, visaBody(9))
+            val fixture = fixture(a, cacheOverride = visaCache(rss))
+            fixture.viewModel.initData(a.article.id); runCurrent()
+            assertEquals(visaRss, fixture.viewModel.readerStateStateFlow.value.content.documentBody)
+            if (a.feed.isNewsletter) { fixture.viewModel.renderFullContent(); runCurrent() }
+        }
+        verify(rss, never()).parseFullContent(any(), any())
+    }
+
+    @Test fun `late automatic legacy upgrade cannot replace an explicit Server choice or certify its old cache`() = runTest(dispatcher) {
+        val a = visaArticle("local")
+        val old = visaBody(9)
+        seedVisaCache(a, old)
+        val rss: RssHelper = mock()
+        val response = CompletableDeferred<String>()
+        whenever(rss.parseFullContent(any(), any())).thenSuspend {
+            withContext(NonCancellable) { response.await() }
+        }
+        val cache = visaCache(rss)
+        val fixture = fixture(a, cacheOverride = cache)
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        assertEquals(old, fixture.viewModel.readerStateStateFlow.value.content.documentBody)
+        fixture.viewModel.renderServerContent(); runCurrent()
+        assertEquals(ReaderState.Description(visaRss), fixture.viewModel.readerStateStateFlow.value.content)
+        response.complete(visaBody()); runCurrent()
+        assertEquals(ReaderState.Description(visaRss), fixture.viewModel.readerStateStateFlow.value.content)
+        assertEquals(SubscriptionDisplayMode.SERVER, fixture.feeds[a.feed.id]!!.selectedDisplayMode)
+        assertEquals(old, cache.readFullContent(a.article.id, 1).getOrThrow())
+        assertTrue(cache.requiresNewYorkerCacheUpgrade(a.article, old))
+    }
+
     private fun fixture(
         vararg articles: ArticleWithFeed,
         applicationScheduler: TestCoroutineScheduler = dispatcher.scheduler,
         googleReader: Boolean = false,
         local: Boolean = false,
+        cacheOverride: ReaderCacheHelper? = null,
     ): Fixture {
-        val cache: ReaderCacheHelper = mock()
+        val cache: ReaderCacheHelper = cacheOverride ?: mock()
         val history: FeedSourceHistory = mock()
         val repository: AbstractRssRepository = when {
             googleReader -> mock<GoogleReaderRssService>()
@@ -940,11 +1069,14 @@ class ArticleListReaderViewModelTest {
                 feeds[feed.id] = feed.copy(displayMode = mode.value, isFullContent = mode == SubscriptionDisplayMode.LOCAL, isBrowser = false)
                 Unit
             }
-            whenever(cache.readOriginalFeedContent(any(), any())).thenReturn(Result.failure(FileNotFoundException()))
-            whenever(cache.readOrFetchOriginalFeedContent(any(), any(), any())).thenReturn(Result.failure(FileNotFoundException()))
-            whenever(cache.readFullContent(any(), any())).thenReturn(Result.failure(FileNotFoundException()))
-            whenever(cache.readBrowserText(any(), any())).thenReturn(Result.failure(FileNotFoundException()))
-            whenever(cache.readPreviousContent(any(), any(), any())).thenReturn(Result.failure(FileNotFoundException()))
+            if (cacheOverride == null) {
+                whenever(cache.requiresNewYorkerCacheUpgrade(any(), any())).thenReturn(false)
+                whenever(cache.readOriginalFeedContent(any(), any())).thenReturn(Result.failure(FileNotFoundException()))
+                whenever(cache.readOrFetchOriginalFeedContent(any(), any(), any())).thenReturn(Result.failure(FileNotFoundException()))
+                whenever(cache.readFullContent(any(), any())).thenReturn(Result.failure(FileNotFoundException()))
+                whenever(cache.readBrowserText(any(), any())).thenReturn(Result.failure(FileNotFoundException()))
+                whenever(cache.readPreviousContent(any(), any(), any())).thenReturn(Result.failure(FileNotFoundException()))
+            }
             whenever(history.readEarlier(any(), any(), org.mockito.kotlin.anyOrNull())).thenReturn(Result.failure(FileNotFoundException()))
         }
         val applicationDispatcher = StandardTestDispatcher(applicationScheduler)
