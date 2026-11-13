@@ -1,5 +1,6 @@
 package me.ash.reader.infrastructure.html
 
+import com.google.gson.JsonParser
 import com.google.gson.stream.JsonReader
 import com.google.gson.stream.JsonToken
 import java.io.IOException
@@ -41,13 +42,20 @@ object ArticleExtractionPreparation {
         return try {
             val document = Jsoup.parse(htmlContent, uri.orEmpty())
             checkDocumentBounds(document)
+            val restricted = hasRestrictedMetadata(document)
+            val publicNewYorker = !restricted && hasPublicNewYorkerArticle(document, uri)
             when {
-                hasRestrictedMetadata(document) -> Result.RequiresBrowser(AccessReason.PUBLISHER_RESTRICTED)
-                hasBrowserChallenge(document) -> Result.RequiresBrowser(AccessReason.BROWSER_CHALLENGE)
-                hasAccessGate(document) -> Result.RequiresBrowser(AccessReason.ACCESS_GATE)
+                restricted -> Result.RequiresBrowser(AccessReason.PUBLISHER_RESTRICTED)
+                hasBrowserChallenge(document, publicNewYorker) -> Result.RequiresBrowser(AccessReason.BROWSER_CHALLENGE)
+                hasAccessGate(document, publicNewYorker) -> Result.RequiresBrowser(AccessReason.ACCESS_GATE)
                 else -> {
                     if (isVerge(uri)) removePublicVergeInterface(document)
-                    Result.Ready(document.outerHtml(), if (isVerge(uri)) publicVergeArticleBody(document) else null)
+                    val articleBody = when {
+                        isVerge(uri) -> publicVergeArticleBody(document)
+                        publicNewYorker -> publicNewYorkerArticleBody(document)
+                        else -> null
+                    }
+                    Result.Ready(document.outerHtml(), articleBody)
                 }
             }
         } catch (_: PreparationLimitException) {
@@ -163,29 +171,34 @@ object ArticleExtractionPreparation {
     private class MetadataBudget(var tokens: Int = 0)
     private class PreparationLimitException : RuntimeException()
 
-    private fun hasAccessGate(document: Document): Boolean {
+    private fun hasAccessGate(document: Document, publicNewYorker: Boolean = false): Boolean {
         // Structural names are intentionally narrow. "subscribe" in a navigation link, article,
         // newsletter, or CSS class is not an access restriction.
         if (document.select("[id], [class], [data-testid], [data-paywall]").any { element ->
                 !isExplicitlyHidden(element) && element.text().isNotBlank() &&
                     (gateTokens.any { token ->
                         element.id().equals(token, ignoreCase = true) ||
-                            element.classNames().any { it.equals(token, ignoreCase = true) } ||
+                            element.classNames().any {
+                                it.equals(token, ignoreCase = true) &&
+                                    !(token == "paywall" && publicNewYorker && isNewYorkerEditorialMarker(element))
+                            } ||
                             element.attr("data-testid").equals(token, ignoreCase = true)
-                    } || element.attr("data-paywall").equals("true", ignoreCase = true))
+                    } || element.attr("data-paywall").trim().equals("true", ignoreCase = true))
             }) return true
-        return document.select("h1, h2, h3, p, div, section, aside, form").any { element ->
-            !isExplicitlyHidden(element) && element.text().length <= 350 &&
+        return document.select("h1, h2, h3, h4, h5, h6, p, ul, ol, li, blockquote, figure, figcaption, div, section, aside, form").any { element ->
+            !isExplicitlyHidden(element) &&
+                (element.text().length <= 350 || publicNewYorker && isNewYorkerEditorialMarker(element)) &&
                 accessNotice.containsMatchIn(element.text())
         }
     }
 
-    private fun hasBrowserChallenge(document: Document): Boolean {
+    private fun hasBrowserChallenge(document: Document, publicNewYorker: Boolean = false): Boolean {
         if (document.select("#challenge-form, #challenge-running, #cf-challenge-running, .cf-challenge, #px-captcha").any {
                 !isExplicitlyHidden(it)
             }) return true
-        return document.select("h1, h2, p, div, noscript").any { element ->
-            !isExplicitlyHidden(element) && element.text().length <= 250 &&
+        return document.select("h1, h2, h3, h4, h5, h6, p, ul, ol, li, blockquote, figure, figcaption, div, noscript").any { element ->
+            !isExplicitlyHidden(element) &&
+                (element.text().length <= 250 || publicNewYorker && isNewYorkerEditorialMarker(element)) &&
                 browserChallenge.containsMatchIn(element.text())
         }
     }
@@ -199,6 +212,57 @@ object ArticleExtractionPreparation {
     private fun isVerge(uri: String?): Boolean {
         val host = runCatching { URI(uri.orEmpty()).host?.lowercase() }.getOrNull()
         return host == "theverge.com" || host == "www.theverge.com"
+    }
+
+    /** Publisher-declared public main article only; related/schema examples cannot grant access. */
+    private fun hasPublicNewYorkerArticle(document: Document, uri: String?): Boolean {
+        val source = runCatching { URI(uri.orEmpty()) }.getOrNull() ?: return false
+        if (source.host?.lowercase() !in setOf("newyorker.com", "www.newyorker.com")) return false
+        // The streaming access scan above already enforces shared JSON byte/token/depth budgets.
+        // Only the observed top-level NewsArticle, its exact URL, and a boolean true are accepted.
+        return document.select("script[type]").count { script ->
+            if (!script.attr("type").substringBefore(';').trim().equals("application/ld+json", ignoreCase = true)) return@count false
+            runCatching {
+                val value = JsonParser.parseString(script.data())
+                if (!value.isJsonObject) return@runCatching false
+                val article = value.asJsonObject
+                val type = article.get("@type")
+                val accessible = article.get("isAccessibleForFree")
+                val url = article.get("url")
+                type?.isJsonPrimitive == true && type.asJsonPrimitive.isString && type.asString == "NewsArticle" &&
+                    accessible?.isJsonPrimitive == true && accessible.asJsonPrimitive.isBoolean && accessible.asBoolean &&
+                    url?.isJsonPrimitive == true && url.asJsonPrimitive.isString && URI(url.asString) == source
+            }.getOrDefault(false)
+        } == 1
+    }
+
+    private val newYorkerEditorialTags = setOf("p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "blockquote", "figure", "figcaption", "hr")
+
+    /** New Yorker's public prose uses a metering class named paywall; a barrier does not. */
+    private fun isNewYorkerEditorialMarker(element: Element): Boolean =
+        element.normalName() in newYorkerEditorialTags && element.classNames().any { it.equals("paywall", ignoreCase = true) } &&
+            element.parents().any { it.hasClass("body__inner-container") &&
+                it.parents().any { parent -> parent.attr("data-testid") == "BodyWrapper" } }
+
+    /** Keep visible prose, citations, and the feed's header summary before generic link pruning. */
+    private fun publicNewYorkerArticleBody(document: Document): String? {
+        val bodies = document.select("[data-testid=BodyWrapper] .body__inner-container").filter { body ->
+            !isExplicitlyHidden(body) && body.parents().none { it.hasClass("body__inner-container") }
+        }
+        if (bodies.none { body -> body.getAllElements().any {
+                isNewYorkerEditorialMarker(it) && !isExplicitlyHidden(it) && it.text().isNotBlank()
+            } }) return null
+        val output = Element("article")
+        val bodyText = bodies.joinToString(" ") { it.text() }
+        document.select("[data-testid=ContentHeaderContainer] [class*=ContentHeaderDek-]")
+            .firstOrNull { !isExplicitlyHidden(it) && it.text().isNotBlank() && !bodyText.contains(it.text()) }
+            ?.let { output.appendChild(it.clone()) }
+        document.select("[data-testid=ContentHeaderLeadAsset] figure").firstOrNull { !isExplicitlyHidden(it) }
+            ?.let { output.appendChild(it.clone()) }
+        bodies.forEach { output.appendChild(it.clone()) }
+        output.getAllElements().filter { isExplicitlyHidden(it) }.forEach { it.remove() }
+        output.select("script,style,noscript,template,nav,form,button").remove()
+        return output.takeIf { it.text().isNotBlank() }?.outerHtml()
     }
 
     /** Only the observed, opt-in follow/newsletter widgets. Never removes access-control elements. */
