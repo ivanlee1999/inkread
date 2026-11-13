@@ -188,7 +188,7 @@ class NewspaperViewportStateTest {
         nextWithoutMarking(state)
         state.acceptSnapshot(pager, listOf(article("a", 3), article("b", 2), article("c", 1)))
         state.updatePages(pages(listOf(0), listOf(1), listOf(2)), "portrait")
-        assertEquals(listOf("b"), displayed(state), "A later paging batch must not undo the user's list turn")
+        assertEquals("A later paging batch must not undo the user's list turn", listOf("b"), displayed(state))
     }
 
     @Test fun rapidTurnCannotMarkAnIncomingPageBeforeItWasPresented() {
