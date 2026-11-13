@@ -15,9 +15,10 @@ class NewYorkerExtractionTest {
     private fun metadata(value: String = "true", articleUrl: String = url) =
         """<script type="application/ld+json">{"@type":"NewsArticle","url":"$articleUrl","isAccessibleForFree":$value,"articleBody":"METADATA_BODY_MUST_NOT_BE_USED"}</script>"""
     private fun page(body: String = "<p class='paywall'>FIRST $paragraph</p><p class='paywall'>LAST $paragraph</p>",
-        head: String = metadata()) = """<html><head><title>Public garden report</title>$head</head><body>
-        <nav>Site navigation</nav><div data-testid="ContentHeaderContainer"><div class="ContentHeaderDek-synthetic">$dek</div></div>
-        <div data-testid="ContentHeaderLeadAsset"><figure><img src="/garden.jpg"><figcaption>Editorial image credit.</figcaption></figure></div>
+        head: String = metadata(), lead: String = "<figure><img src='/garden.jpg'><figcaption>Editorial image credit.</figcaption></figure>",
+        caption: String = "") = """<html><head><title>Public garden report</title>$head</head><body>
+        <nav>Site navigation</nav><header data-testid="ContentHeaderContainer"><div class="ContentHeaderDek-synthetic">$dek</div>
+        <div data-testid="ContentHeaderLeadAsset">$lead</div>$caption</header>
         <div data-testid="BodyWrapper"><div class="body__inner-container">$body</div></div></body></html>"""
     private fun ready(html: String) = ArticleExtractionPreparation.prepare(html, url).let {
         assertTrue("Expected eligible public source, got ${it.javaClass.simpleName}", it is ArticleExtractionPreparation.Result.Ready)
@@ -119,5 +120,44 @@ class NewYorkerExtractionTest {
         assertNull(ready(unknown).articleHtml)
         val empty = page(body = "<hr class='paywall'>")
         assertNull(ready(empty).articleHtml)
+    }
+
+    @Test fun splitScreenPictureAndSiblingCreditRetainThePhotoRequiredByTheServerEnclosureComparison() {
+        val prepared = ready(page(lead = "<span class='responsive-asset'><picture>" +
+            "<source srcset='/garden-wide.jpg 2x'><img src='/garden.jpg'></picture></span>",
+            caption = "<div data-testid='caption-wrapper'><span class='caption__credit'>Visible editorial photo credit.</span></div>"))
+        val result = checkNotNull(ModernReadability().extract(prepared.html, url, preservedContent = prepared.articleHtml))
+        val body = Jsoup.parseBodyFragment(result.content)
+        assertEquals(1, body.select("img").size)
+        assertEquals("https://www.newyorker.com/garden.jpg", body.selectFirst("img")!!.attr("src"))
+        assertEquals("https://www.newyorker.com/garden-wide.jpg 2x", body.selectFirst("source")!!.attr("srcset"))
+        assertEquals("Visible editorial photo credit.", body.selectFirst("figcaption")!!.text())
+        val serverFeed = "<p>$dek</p><figure class='enclosure'><p class='enclosure-content'>" +
+            "<img class='enclosure-thumbnail' src='https://reader.example.org/article-img-proxy.php?url=garden.jpg'></p></figure>"
+        assertEquals(ArticleContentSelection.Source.EXTRACTED, ArticleContentSelection.select(serverFeed, result.content).source)
+        // Keep the image-loss policy: missing that photo must reproduce the old feed-only verdict.
+        body.select("figure").remove()
+        assertEquals(ArticleContentSelection.Source.FEED, ArticleContentSelection.select(serverFeed, body.body().html()).source)
+    }
+
+    @Test fun bareLazyHeaderImageUsesOnlyItsVisibleScopedCredit() {
+        val prepared = ready(page(lead = "<img data-original='/garden.jpg'>",
+            caption = "<div hidden data-testid='caption-wrapper'>HIDDEN CREDIT</div>" +
+                "<div data-testid='caption-wrapper'>Visible scoped credit.</div>") +
+            "<div data-testid='caption-wrapper'>OUTSIDE HEADER</div>")
+        val result = checkNotNull(ModernReadability().extract(prepared.html, url, preservedContent = prepared.articleHtml))
+        val body = Jsoup.parseBodyFragment(result.content)
+        assertEquals("https://www.newyorker.com/garden.jpg", body.selectFirst("img")!!.attr("src"))
+        assertEquals("Visible scoped credit.", body.selectFirst("figcaption")!!.text())
+        assertFalse(result.textContent.contains("HIDDEN CREDIT"))
+        assertFalse(result.textContent.contains("OUTSIDE HEADER"))
+    }
+
+    @Test fun hiddenLeadMediaAndCreditsNeverEnterThePreservedArticle() {
+        val prepared = ready(page(lead = "<picture hidden><img src='/hidden.jpg'></picture>",
+            caption = "<div data-testid='caption-wrapper'>Unused image credit.</div>"))
+        val result = checkNotNull(ModernReadability().extract(prepared.html, url, preservedContent = prepared.articleHtml))
+        assertTrue(Jsoup.parseBodyFragment(result.content).select("img,picture,figcaption").isEmpty())
+        assertFalse(result.textContent.contains("Unused image credit."))
     }
 }

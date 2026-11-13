@@ -257,8 +257,22 @@ object ArticleExtractionPreparation {
         document.select("[data-testid=ContentHeaderContainer] [class*=ContentHeaderDek-]")
             .firstOrNull { !isExplicitlyHidden(it) && it.text().isNotBlank() && !bodyText.contains(it.text()) }
             ?.let { output.appendChild(it.clone()) }
-        document.select("[data-testid=ContentHeaderLeadAsset] figure").firstOrNull { !isExplicitlyHidden(it) }
-            ?.let { output.appendChild(it.clone()) }
+        document.select("[data-testid=ContentHeaderLeadAsset]").firstOrNull { !isExplicitlyHidden(it) }?.let { asset ->
+            val media = asset.select("figure,picture,img").firstOrNull { !isExplicitlyHidden(it) }
+            if (media != null) {
+                if (media.normalName() == "figure") output.appendChild(media.clone()) else {
+                    // Split-screen article headers use picture/img without a figure. Losing this
+                    // visible photo makes a complete extraction look worse than an RSS enclosure.
+                    val figure = output.appendElement("figure").appendChild(media.clone())
+                    val header = asset.closest("[data-testid=ContentHeaderContainer]") ?: asset.closest("header")
+                    val caption = asset.select("figcaption,cite,[data-testid=caption-wrapper]")
+                        .firstOrNull { !isExplicitlyHidden(it) && it.text().isNotBlank() }
+                        ?: header?.select("[data-testid=caption-wrapper]")
+                            ?.firstOrNull { !isExplicitlyHidden(it) && it.text().isNotBlank() }
+                    caption?.let { figure.appendElement("figcaption").appendChild(it.clone()) }
+                }
+            }
+        }
         bodies.forEach { output.appendChild(it.clone()) }
         output.getAllElements().filter { isExplicitlyHidden(it) }.forEach { it.remove() }
         output.select("script,style,noscript,template,nav,form,button").remove()

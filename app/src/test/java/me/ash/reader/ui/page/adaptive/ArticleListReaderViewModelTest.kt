@@ -50,6 +50,8 @@ import me.ash.reader.domain.service.SyncWorker
 import me.ash.reader.infrastructure.rss.ReaderCacheHelper
 import me.ash.reader.infrastructure.rss.RssHelper
 import me.ash.reader.infrastructure.rss.readerCacheFileName
+import me.ash.reader.infrastructure.html.ArticleExtractionPreparation
+import me.ash.reader.infrastructure.html.ModernReadability
 import me.ash.reader.infrastructure.rss.FeedSourceHistory
 import me.ash.reader.infrastructure.rss.FeedArticleRefreshResult
 import me.ash.reader.infrastructure.rss.FeedArticleRefreshStatus
@@ -1018,6 +1020,45 @@ class ArticleListReaderViewModelTest {
         assertEquals(SubscriptionDisplayMode.SERVER, fixture.feeds[a.feed.id]!!.selectedDisplayMode)
         assertEquals(old, cache.readFullContent(a.article.id, 1).getOrThrow())
         assertTrue(cache.requiresNewYorkerCacheUpgrade(a.article, old))
+    }
+
+    @Test fun `forced Local refresh replaces a short server summary with enclosure only after retaining split header photo`() = runTest(dispatcher) {
+        // FreshRSS compatibility adds an enclosure photo to the actual short RSS description.
+        // This tests both cache-refresh and reader-display quality decisions, with the real parser.
+        val serverFeed = visaRss + "<figure class='enclosure'><p class='enclosure-content'>" +
+            "<img class='enclosure-thumbnail' src='https://reader.example.org/article-img-proxy.php?url=photo.jpg' " +
+            "data-original-proxied-src='https://media.example.org/photo.jpg'></p></figure>"
+        val base = visaArticle("server")
+        val a = base.copy(article = base.article.copy(rawDescription = serverFeed))
+        seedVisaCache(a, serverFeed)
+        val publisherPage = "<html><head><title>Public article</title>" +
+            "<script type='application/ld+json'>{\"@type\":\"NewsArticle\",\"url\":\"$visaUrl\",\"isAccessibleForFree\":true}</script>" +
+            "</head><body><header data-testid='SplitScreenContentHeaderWrapper'>" +
+            "<div data-testid='ContentHeaderLeadAsset'><span class='responsive-asset'><picture>" +
+            "<img src='/photo.jpg'></picture></span></div><div data-testid='caption-wrapper'>Editorial photo credit.</div></header>" +
+            "<div data-testid='BodyWrapper'><div class='body__inner-container'>" +
+            visaBody().replace("<p>", "<p class='paywall'>") + "</div></div></body></html>"
+        val rss: RssHelper = mock()
+        whenever(rss.parseFullContent(any(), any())).thenAnswer {
+            val prepared = ArticleExtractionPreparation.prepareArticleOrThrow(publisherPage, visaUrl)
+            checkNotNull(ModernReadability().extract(prepared.html, visaUrl, preservedContent = prepared.articleHtml)).content
+        }
+        val cache = visaCache(rss)
+        val fixture = fixture(a, cacheOverride = cache)
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        assertEquals(serverFeed, fixture.viewModel.readerStateStateFlow.value.content.documentBody)
+        fixture.viewModel.renderFullContent(forceRefresh = true); runCurrent()
+        val state = fixture.viewModel.readerStateStateFlow.value
+        assertEquals(SubscriptionDisplayMode.LOCAL, state.preferredDisplayMode)
+        assertTrue(state.content is ReaderState.FullContent)
+        val rendered = Jsoup.parseBodyFragment(state.content.documentBody!!)
+        assertEquals(23, rendered.select("p").size)
+        assertEquals(1, rendered.select("img").size)
+        assertEquals("https://www.newyorker.com/photo.jpg", rendered.selectFirst("img")!!.attr("src"))
+        assertEquals("Editorial photo credit.", rendered.selectFirst("figcaption")!!.text())
+        assertEquals(serverFeed, fixture.viewModel.readingUiState.value.articleWithFeed!!.article.rawDescription)
+        assertEquals(serverFeed, cache.readPreviousContent(a.article.id, 1, false).getOrThrow())
+        verify(rss, times(1)).parseFullContent(any(), any())
     }
 
     private fun fixture(
