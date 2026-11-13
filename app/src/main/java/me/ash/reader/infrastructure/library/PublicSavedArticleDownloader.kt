@@ -58,8 +58,8 @@ internal fun extractSavedArticle(html: String, url: String, titleHint: String?, 
     }
     val title = (meta("og:title", "twitter:title") ?: document.title().takeIf { it.isNotBlank() }
         ?: titleHint?.takeIf { it.isNotBlank() } ?: publicArticleUrl(url)?.host ?: "Saved article").take(512)
-    val prepared = ArticleExtractionPreparation.prepareOrThrow(html, url)
-    val extracted = ModernReadability().extract(prepared, url, checkCancelled = cancellationCheck)
+    val prepared = ArticleExtractionPreparation.prepareArticleOrThrow(html, url)
+    val extracted = ModernReadability().extract(prepared.html, url, preservedContent = prepared.articleHtml, checkCancelled = cancellationCheck)
         ?: throw IOException("No readable article found")
     val article = Jsoup.parseBodyFragment(extracted.content, url).body()
     if (article.text().isBlank()) throw IOException("No readable article found")

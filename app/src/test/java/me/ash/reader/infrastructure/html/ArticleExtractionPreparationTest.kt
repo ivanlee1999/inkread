@@ -188,6 +188,49 @@ class ArticleExtractionPreparationTest {
             "\",\"isAccessibleForFree\":true}</script><article><p>A public report.</p></article>")
     }
 
+    @Test fun `only visible top level Verge body components are preserved after access checks`() {
+        val html = structuredVergeFixture()
+        val body = Jsoup.parse(checkNotNull(ready(html).articleHtml))
+        assertEquals(listOf("First editorial paragraph.", "Last editorial paragraph."), body.select("p").map { it.text() })
+        assertEquals(1, body.select("#nested").size)
+        assertEquals("Read the review.", body.selectFirst("h5")!!.text())
+        assertEquals("$249 at Shop", body.selectFirst(".duet--article--product-card")!!.text())
+        assertEquals("/hero.jpg", body.selectFirst("figure img")!!.attr("src"))
+        assertEquals("Lead credit", body.selectFirst("figcaption")!!.text())
+        assertFalse(body.text().contains("Related story"))
+        assertFalse(body.text().contains("Hidden paragraph"))
+        assertTrue(body.select("form,button,script").isEmpty())
+        assertNull((ArticleExtractionPreparation.prepare(html, "https://example.com/story") as
+            ArticleExtractionPreparation.Result.Ready).articleHtml)
+        assertNull((ArticleExtractionPreparation.prepare(html, "https://theverge.com.example.com/story") as
+            ArticleExtractionPreparation.Result.Ready).articleHtml)
+        assertRestricted("<script type='application/ld+json'>{\"isAccessibleForFree\":false}</script>" + html)
+        assertReason(html + "<div class='paywall'>Subscription required.</div>", ArticleExtractionPreparation.AccessReason.ACCESS_GATE)
+    }
+
+    @Test fun `unknown Verge markup retains generic parser fallback`() {
+        assertNull(ready("<article><p>A public report with no body components.</p></article>").articleHtml)
+        assertNull(ready("""<article><div class="duet--article--lede"><img src="/hero.jpg"><cite>Lead credit</cite></div>
+            <div class="duet--article--article-body-component"><form>Signup</form></div></article>""").articleHtml)
+    }
+
+    private fun structuredVergeFixture() = """
+        <nav>Navigation chrome</nav><article>
+        <div class="duet--article--lede"><p>Duplicate summary</p><p>Duplicate summary</p>
+          <img src="/hero.jpg"><img src="/hero-mobile.jpg"><cite>Lead credit</cite></div>
+        <div id="zephr-anchor">
+          <div class="duet--article--article-body-component"><p>First editorial paragraph.</p></div>
+          <div class="duet--article--article-body-component"><div class="duet--article--article-body-component" id="nested">
+            <p>Last editorial paragraph.</p></div></div>
+          <div class="duet--article--article-body-component"><div class="duet--article--product-card">
+            <a href="https://shop.example/item">${'$'}249 at Shop</a><button>Read More</button></div></div>
+          <div class="duet--article--article-body-component"><h5><a href="/review">Read the review</a>.</h5></div>
+          <div class="duet--article--article-body-component"><div class="duet--article--related"><a href="/other">Related story</a></div></div>
+          <div class="duet--article--article-body-component"><div style="display:none"><p>Hidden paragraph</p></div>
+            <form><input type="email"><button>Sign Up</button></form><script>neverExecute()</script></div>
+        </div></article>
+    """.trimIndent()
+
     private fun ready(html: String) = ArticleExtractionPreparation.prepare(html, publicUrl).let {
         assertTrue("Expected eligible public source, got $it", it is ArticleExtractionPreparation.Result.Ready)
         it as ArticleExtractionPreparation.Result.Ready

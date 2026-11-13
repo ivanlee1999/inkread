@@ -135,8 +135,8 @@ constructor(
                 val finalUrl = response.request.url.toString()
                 val jobContext = currentCoroutineContext()
                 val extracted = ArticleExtractionConcurrency.permit.withPermit {
-                    val prepared = ArticleExtractionPreparation.prepareOrThrow(content, finalUrl)
-                    ModernReadability().extract(prepared, finalUrl, checkCancelled = { jobContext.ensureActive() })
+                    val prepared = ArticleExtractionPreparation.prepareArticleOrThrow(content, finalUrl)
+                    ModernReadability().extract(prepared.html, finalUrl, preservedContent = prepared.articleHtml, checkCancelled = { jobContext.ensureActive() })
                         ?: throw IOException("No readable article found")
                 }
                 val articleContent = Jsoup.parseBodyFragment(extracted.content, finalUrl).body()

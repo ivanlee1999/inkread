@@ -64,7 +64,10 @@ class ModernReadability(private val limits: Limits = Limits()) {
     class ExtractionException(val reason: Failure, cause: Throwable? = null) :
         RuntimeException("Article extraction failed: $reason", cause)
 
-    fun extract(html: String, finalUrl: String, checkCancelled: () -> Unit = {}): Article? {
+    fun extract(html: String, finalUrl: String, checkCancelled: () -> Unit = {}): Article? =
+        extract(html, finalUrl, preservedContent = null, checkCancelled = checkCancelled)
+
+    fun extract(html: String, finalUrl: String, preservedContent: String?, checkCancelled: () -> Unit = {}): Article? {
         val budget = Budget(limits, checkCancelled)
         budget.check()
         // UTF-8 byte counting avoids allocating another potentially oversized byte array.
@@ -118,17 +121,26 @@ class ModernReadability(private val limits: Limits = Limits()) {
                     Article(content, field("title"), field("byline"), field("excerpt"), field("siteName"),
                         field("lang"), field("dir"), field("publishedTime"), field("textContent") ?: "", baseUri)
                 }
-            } ?: return null
+            } ?: if (preservedContent != null) {
+                Article("", document.title().takeIf { it.isNotBlank() }, null, null, null, null, null, null, "", baseUri)
+            } else return null
             budget.check()
             // Mozilla may promote data-src/data-srcset during extraction. Resolve again after promotion.
-            val output = Jsoup.parseBodyFragment(result.content, baseUri)
+            // Only the access-checked preparation layer supplies a publisher body. Keep the
+            // same DOM/output limits, lazy-image normalization and URL resolution on that body.
+            if (preservedContent != null &&
+                (preservedContent.length > limits.maxInputBytes || utf8Length(preservedContent, budget) > limits.maxInputBytes)) {
+                throw ExtractionException(Failure.INPUT_LIMIT)
+            }
+            val output = Jsoup.parseBodyFragment(preservedContent ?: result.content, baseUri)
             checkTree(output, budget)
+            if (preservedContent != null) normalizeLazyImages(output, budget)
             resolveUrls(output, baseUri, finalUrl, budget)
             output.outputSettings().prettyPrint(false)
             val content = output.body().html()
             if (content.length > limits.maxOutputChars) throw ExtractionException(Failure.OUTPUT_LIMIT)
             budget.check()
-            return result.copy(content = content)
+            return result.copy(content = content, textContent = if (preservedContent != null) output.body().text() else result.textContent)
         } catch (e: Abort) {
             throw e.failure
         } catch (e: CancellationException) {

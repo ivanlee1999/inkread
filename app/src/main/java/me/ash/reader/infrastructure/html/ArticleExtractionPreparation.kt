@@ -29,7 +29,7 @@ object ArticleExtractionPreparation {
     internal const val MAX_METADATA_DEPTH = 64
 
     sealed class Result {
-        data class Ready(val html: String) : Result()
+        data class Ready(val html: String, val articleHtml: String? = null) : Result()
         // Deliberately carries no source HTML, especially not a hidden subscription-only body.
         data class RequiresBrowser(val reason: AccessReason) : Result()
     }
@@ -47,7 +47,7 @@ object ArticleExtractionPreparation {
                 hasAccessGate(document) -> Result.RequiresBrowser(AccessReason.ACCESS_GATE)
                 else -> {
                     if (isVerge(uri)) removePublicVergeInterface(document)
-                    Result.Ready(document.outerHtml())
+                    Result.Ready(document.outerHtml(), if (isVerge(uri)) publicVergeArticleBody(document) else null)
                 }
             }
         } catch (_: PreparationLimitException) {
@@ -58,9 +58,11 @@ object ArticleExtractionPreparation {
         }
     }
 
-    fun prepareOrThrow(htmlContent: String, uri: String?): String =
+    fun prepareOrThrow(htmlContent: String, uri: String?): String = prepareArticleOrThrow(htmlContent, uri).html
+
+    fun prepareArticleOrThrow(htmlContent: String, uri: String?): Result.Ready =
         when (val result = prepare(htmlContent, uri)) {
-            is Result.Ready -> result.html
+            is Result.Ready -> result
             is Result.RequiresBrowser -> throw ArticleRequiresBrowserException(result.reason)
         }
 
@@ -216,6 +218,42 @@ object ArticleExtractionPreparation {
                 form.select("input[type=email]").isNotEmpty() &&
                 form.select("button[type=submit]").any { it.text().equals("Sign Up", ignoreCase = true) }
         }.forEach { it.remove() }
+    }
+
+    /** Preserve publisher-labelled visible body blocks that Readability prunes as link-heavy UI.
+     * Called only after the whole source passed the access checks above. Never reads hydration data.
+     */
+    private fun publicVergeArticleBody(document: Document): String? {
+        val article = document.selectFirst("article") ?: return null
+        val componentClass = "duet--article--article-body-component"
+        val components = article.getElementsByClass(componentClass).filter { component ->
+            !isExplicitlyHidden(component) &&
+                generateSequence(component.parent()) { it.parent() }.none { it.hasClass(componentClass) }
+        }
+        if (components.isEmpty()) return null
+        val output = Element("article")
+        // The lead image/caption precede the body components. The first responsive variant is
+        // sufficient; copying the entire lede would bring duplicated mobile/desktop summaries.
+        article.selectFirst(".duet--article--lede")?.let { lead ->
+            val image = lead.select("img").firstOrNull { !isExplicitlyHidden(it) }
+            if (image != null) {
+                val figure = output.appendElement("figure").appendChild(image.clone())
+                lead.select("cite, figcaption").firstOrNull { !isExplicitlyHidden(it) }?.let {
+                    figure.appendElement("figcaption").text(it.text())
+                }
+            }
+        }
+        var hasBody = false
+        for (component in components) {
+            val copy = component.clone()
+            copy.getAllElements().filter { isExplicitlyHidden(it) }.forEach { it.remove() }
+            copy.select("script,style,noscript,template,nav,form,button,.duet--article--related").remove()
+            if (copy.text().isNotBlank() || copy.select("img, picture, video, audio").isNotEmpty()) {
+                output.appendChild(copy)
+                hasBody = true
+            }
+        }
+        return output.takeIf { hasBody && it.text().isNotBlank() }?.outerHtml()
     }
 
     private val followNotices = setOf(

@@ -2,6 +2,7 @@ package me.ash.reader.infrastructure.html
 
 import java.util.concurrent.CancellationException
 import org.jsoup.Jsoup
+import me.ash.reader.infrastructure.rss.ArticleContentSelection
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -236,4 +237,42 @@ class ModernReadabilityTest {
         try { block(); fail("Expected $reason") }
         catch (actual: ModernReadability.ExtractionException) { assertEquals(reason, actual.reason) }
     }
+    @Test fun accessCheckedVergeComponentsRetainLinkHeavyEndingAndImages() {
+        val url = "https://www.theverge.com/gadgets/synthetic-public-deal"
+        val html = """<html><head><title>Public deal</title></head><body><nav>Site navigation</nav><article>
+            <div class="duet--article--lede"><img src="/lead.jpg"><cite>Editorial credit</cite></div>
+            <div class="duet--article--article-body-component"><p>FIRST $paragraph</p></div>
+            <div class="duet--article--article-body-component"><div class="duet--article--product-card">
+              <img data-src="/product?id=4"><a href="https://shop.example/item">Shop offer</a></div></div>
+            <div class="duet--article--article-body-component"><h5><a href="/review">Read our review</a>.</h5></div>
+            <div class="duet--article--article-body-component"><p>LAST $paragraph</p></div>
+            </article></body></html>"""
+        val prepared = ArticleExtractionPreparation.prepareArticleOrThrow(html, url)
+        val result = checkNotNull(engine.extract(prepared.html, url, preservedContent = prepared.articleHtml))
+        val body = Jsoup.parseBodyFragment(result.content)
+        assertEquals("https://www.theverge.com/review", body.selectFirst("h5 a")!!.attr("href"))
+        assertEquals("Shop offer", body.selectFirst(".duet--article--product-card a")!!.text())
+        assertEquals(listOf("https://www.theverge.com/lead.jpg", "https://www.theverge.com/product?id=4"),
+            body.select("img").map { it.attr("src") })
+        assertEquals("Editorial credit", body.selectFirst("figcaption")!!.text())
+        assertTrue(result.textContent.indexOf("FIRST") < result.textContent.indexOf("Shop offer"))
+        assertTrue(result.textContent.indexOf("Shop offer") < result.textContent.indexOf("Read our review"))
+        assertTrue(result.textContent.indexOf("Read our review") < result.textContent.indexOf("LAST"))
+        assertFalse(result.textContent.contains("Site navigation"))
+        // Exercise the actual keep-feed policy: a partial feed can now be extended with the
+        // complete labelled body without relaxing checks for lost paragraphs, links or images.
+        assertEquals(ArticleContentSelection.Source.EXTRACTED,
+            ArticleContentSelection.select("<p>FIRST $paragraph</p>", result.content).source)
+    }
+
+    @Test fun preservedPublisherBodyStillObeysParserLimits() {
+        val limited = ModernReadability(ModernReadability.Limits(maxNodes = 50))
+        try {
+            limited.extract(page("<p>$paragraph</p>"), "https://example.org", preservedContent = "<br>".repeat(100))
+            fail("Expected node limit")
+        } catch (error: ModernReadability.ExtractionException) {
+            assertEquals(ModernReadability.Failure.NODE_LIMIT, error.reason)
+        }
+    }
+
 }
