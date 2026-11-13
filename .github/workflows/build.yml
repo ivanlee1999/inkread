@@ -83,17 +83,8 @@ jobs:
           VERSION=$(awk -F '"' '/versionName =/ {print $2; exit}' app/build.gradle.kts)
           test -n "$VERSION"
           TAG="v$(date -u +%Y%m%d-%H%M)-${COMMIT}"
-          cat > release-notes.md <<EOF_NOTES
-          Built by GitHub Actions from commit ${{ github.sha }}.
-
-          InkRead $VERSION improves article extraction, newsletter feeds and explicit feed-source refresh. It keeps pinned Mozilla Readability 0.6.0 and the existing access/quality checks. Known lazy-image attributes now retain extensionless CDN URLs, older Latin-1/ASCII HTML labels preserve punctuation, and declared non-HTML responses cannot become saved articles.
-
-          Newsletter mode accepts an existing direct RSS/Atom feed. It keeps the delivered body, disables automatic publisher extraction/browser opening and blocks remote media until an explicit image choice. Private newsletter feed URLs are omitted from OPML export and request diagnostics omit sensitive payloads. Removing a feed does not unsubscribe from email delivery. No mailbox, forwarding rule, signup or email service is created.
-
-          FreshRSS/Google Reader articles have an explicit Refresh feed content action. It requests that existing server item without relying on new-item cursors, retains an exact earlier feed body before updating, and preserves article identity, read/star/later flags and annotations. Empty or less complete bodies are kept out; earlier feed, extracted and imported sources remain separate.
-
-          Saved Library explains supported publisher restrictions, browser challenges and preparation limits and offers Open original page. Existing offline text and reading anchors survive failed retries. Publisher scripts are never executed, and subscription restrictions are not bypassed. A New Yorker-specific parsing fix is not claimed without a reproducible article example.
-
-          Uses the existing application ID and signing identity, with an additive database migration for newsletter preferences. Synthetic unit, native parser, migration, source-history and reader checks gate publication. No production FreshRSS changes or third-party extraction service. Physical BOOX behavior remains unverified.
-          EOF_NOTES
+          NOTES="docs/releases/${VERSION}.md"
+          test -s "$NOTES"
+          printf 'Built by GitHub Actions from commit %s.\n\n' '${{ github.sha }}' > release-notes.md
+          cat "$NOTES" >> release-notes.md
           gh release create "$TAG" --target "${{ github.sha }}" --title "InkRead $VERSION ($COMMIT)" --notes-file release-notes.md ./apk/*.apk ./apk/*.sha256
