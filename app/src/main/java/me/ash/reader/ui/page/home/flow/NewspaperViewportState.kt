@@ -28,6 +28,7 @@ internal class NewspaperViewportState {
     private val starredStatus = mutableStateMapOf<String, Boolean>()
     // A logical reading position, not the first article exposed by an automatic wider reflow.
     private var logicalAnchorId: String? = null
+    private var pendingReaderAnchorId: String? = null
     private var presentedPage = -1
     private var presentedIndices: List<Int> = emptyList()
     var items: List<ArticleFlowItem> by mutableStateOf(emptyList())
@@ -81,6 +82,7 @@ internal class NewspaperViewportState {
         currentPage = 0
         layoutKey = null
         logicalAnchorId = null
+        pendingReaderAnchorId = null
         presentedPage = -1
         presentedIndices = emptyList()
         revision++
@@ -135,6 +137,31 @@ internal class NewspaperViewportState {
     fun isCurrentSnapshot(source: List<ArticleFlowItem>, sourceRevision: Int): Boolean =
         items === source && revision == sourceRevision
 
+    /** Reader navigation follows article identity without marking or rebuilding the edition.
+     * The list can be offscreen while the reader advances, so retain the latest target until
+     * its current edition has measured a page containing it.
+     */
+    fun followReaderArticle(pagerIdentity: Any, articleId: String): Boolean {
+        if (!ownsPager(pagerIdentity) || articleId.isEmpty()) return false
+        logicalAnchorId = articleId
+        pendingReaderAnchorId = articleId
+        applyReaderAnchor()
+        return true
+    }
+
+    private fun applyReaderAnchor() {
+        val articleId = pendingReaderAnchorId ?: return
+        val target = pages.indexOfFirst { page -> page.indices.any {
+            (items.getOrNull(it) as? ArticleFlowItem.Article)?.articleWithFeed?.article?.id == articleId
+        } }
+        if (target < 0) return
+        if (target != currentPage) {
+            currentPage = target
+            suspendPresentation()
+        }
+        pendingReaderAnchorId = null
+    }
+
     fun updatePages(
         measured: List<NewspaperViewportPage>,
         newLayoutKey: Any,
@@ -151,6 +178,7 @@ internal class NewspaperViewportState {
                 (items.getOrNull(it) as? ArticleFlowItem.Article)?.articleWithFeed?.article?.id == anchor
             } }.coerceAtLeast(0)
         } else currentPage = currentPage.coerceIn(0, (pages.size - 1).coerceAtLeast(0))
+        applyReaderAnchor()
         layoutKey = newLayoutKey
         return true
     }

@@ -131,6 +131,54 @@ class NewspaperViewportStateTest {
         assertFalse(state.displayedArticles.single().article.isUnread)
     }
 
+    @Test fun repeatedReaderNavigationFollowsTheLatestPageWithoutChangingReadState() {
+        val pager = Any()
+        val state = NewspaperViewportState()
+        state.acceptSnapshot(pager, listOf(article("a", 6), article("b", 5), article("c", 4),
+            article("d", 3), article("e", 2), article("f", 1)))
+        state.updatePages(pages(listOf(0, 1), listOf(2, 3), listOf(4, 5)), "portrait")
+        present(state)
+        assertTrue(state.followReaderArticle(pager, "b"))
+        assertEquals(0, state.currentPage)
+        for ((id, page) in listOf("c" to 1, "d" to 1, "e" to 2, "f" to 2)) {
+            assertTrue(state.followReaderArticle(pager, id))
+            assertEquals(page, state.currentPage)
+            assertTrue(id in displayed(state))
+        }
+        assertTrue(state.displayedArticles.all { it.article.isUnread })
+        // Programmatic progress must wait for a real frame before a key can mark a list page.
+        assertFalse(state.turn(false, true) { error("Reader navigation marked a page") })
+    }
+
+    @Test fun readerNavigationBeforeMeasurementUsesOnlyTheLatestTargetAndSurvivesReflow() {
+        val pager = Any()
+        val state = NewspaperViewportState()
+        state.acceptSnapshot(pager, listOf(article("a", 4), article("b", 3), article("c", 2), article("d", 1)))
+        assertTrue(state.followReaderArticle(pager, "b"))
+        assertTrue(state.followReaderArticle(pager, "d"))
+        state.updatePages(pages(listOf(0, 1), listOf(2, 3)), "wide")
+        assertEquals(1, state.currentPage)
+        state.updatePages(pages(listOf(0), listOf(1), listOf(2), listOf(3)), "narrow")
+        assertEquals(listOf("d"), displayed(state))
+    }
+
+    @Test fun readerProgressWaitsForAnAppendedBatchAndCannotCrossPagerScopes() {
+        val pager = Any()
+        val state = NewspaperViewportState()
+        state.acceptSnapshot(pager, listOf(article("a", 2)))
+        state.updatePages(pages(listOf(0)), "portrait")
+        state.followReaderArticle(pager, "b")
+        state.acceptSnapshot(pager, listOf(article("a", 2), article("b", 1)))
+        state.updatePages(pages(listOf(0), listOf(1)), "portrait")
+        assertEquals(listOf("b"), displayed(state))
+
+        val replacement = Any()
+        state.acceptSnapshot(replacement, listOf(article("new", 3), article("b", 1)))
+        assertFalse(state.followReaderArticle(pager, "b"))
+        state.updatePages(pages(listOf(0), listOf(1)), "portrait")
+        assertEquals(listOf("new"), displayed(state))
+    }
+
     @Test fun rapidTurnCannotMarkAnIncomingPageBeforeItWasPresented() {
         val state = NewspaperViewportState()
         state.acceptSnapshot(Any(), listOf(article("a"), article("b"), article("c")))
