@@ -10,6 +10,7 @@ import kotlinx.coroutines.runBlocking
 import kotlin.coroutines.cancellation.CancellationException
 import me.ash.reader.domain.model.article.Article
 import me.ash.reader.domain.model.article.ArticleFullContentRequest
+import me.ash.reader.domain.model.feed.Feed
 import me.ash.reader.domain.service.AccountService
 import org.junit.Assert.*
 import org.junit.Rule
@@ -194,4 +195,33 @@ class ReaderCacheHelperTest {
         } catch (_: CancellationException) { }
         assertTrue(cache.readFullContent("1:article", 1).isFailure)
     }
+    private fun originalFeed(accountId: Int = 1) = Feed("feed", "RSS", url = "https://example.com/rss",
+        groupId = "group", accountId = accountId, displayMode = "original")
+
+    @Test fun `original RSS remains separate from local extraction and survives cache helper restart`() = runBlocking<Unit> {
+        val rss: RssHelper = mock()
+        whenever(rss.readOriginalFeedContent(any(), any())).thenReturn("<p>Original RSS</p>")
+        whenever(rss.parseFullContent(any(), any())).thenReturn("<p>Local publisher article</p>")
+        val cache = helper(rss)
+        cache.readOrFetchFullContent(article()).getOrThrow()
+        assertEquals("<p>Original RSS</p>", cache.readOrFetchOriginalFeedContent(article(), originalFeed()) { true }.getOrThrow())
+        val restarted = helper(rss)
+        assertEquals("<p>Original RSS</p>", restarted.readOriginalFeedContent(article(), originalFeed()).getOrThrow())
+        assertEquals("<p>Local publisher article</p>", restarted.readFullContent(article().id, 1).getOrThrow())
+        assertTrue(restarted.readOriginalFeedContent(article(accountId = 2), originalFeed(2)).isFailure)
+        assertTrue(restarted.readOriginalFeedContent(article(), originalFeed().copy(url = "https://example.com/new-rss")).isFailure)
+        assertTrue(restarted.readOriginalFeedContent(article().copy(link = "https://example.com/other"), originalFeed()).isFailure)
+        verify(rss, times(1)).readOriginalFeedContent(any(), any())
+    }
+
+    @Test fun `original cache never commits response after account or subscription policy changes`() = runBlocking<Unit> {
+        val rss: RssHelper = mock()
+        var allowed = true
+        whenever(rss.readOriginalFeedContent(any(), any())).thenAnswer { allowed = false; "<p>Late original</p>" }
+        val cache = helper(rss)
+        assertTrue(cache.readOrFetchOriginalFeedContent(article(), originalFeed()) { allowed }.isFailure)
+        assertTrue(cache.readOriginalFeedContent(article(), originalFeed()).isFailure)
+        assertTrue(cache.readFullContent(article().id, 1).isFailure)
+    }
+
 }

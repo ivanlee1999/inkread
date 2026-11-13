@@ -84,11 +84,12 @@ class NewsletterMigrationRoomTest {
                 val savedAnnotation = repository.observeDocument(source).first().single()
 
                 rss = Room.databaseBuilder(context, AndroidDatabase::class.java, name).addMigrations(*allMigrations).build()
-                assertEquals(8, rss.openHelper.readableDatabase.version)
+                assertEquals(9, rss.openHelper.readableDatabase.version)
                 for ((table, query) in queries) {
                     assertEquals("Upgrade changed existing $table columns", before[table], rss.openHelper.readableDatabase.query(query).use(::rows))
                 }
                 val feed = rss.feedDao().queryById("71\$feed")!!
+                assertNull(feed.displayMode)
                 assertFalse(feed.isNewsletter)
                 assertTrue(feed.isFullContent)
                 assertTrue(feed.isNotification)
@@ -115,6 +116,35 @@ class NewsletterMigrationRoomTest {
                 context.deleteDatabase(annotationsName)
             }
         }
+    }
+
+    @Test fun displayModePersistsAcrossReopenSyncAndOtherSubscriptions() = runBlocking<Unit> {
+        val name = "display-mode-${UUID.randomUUID()}.db"
+        var database = Room.databaseBuilder(context, AndroidDatabase::class.java, name).build()
+        try {
+            database.accountDao().insertList(listOf(Account(id = 71, name = "First", type = AccountType.Local),
+                Account(id = 72, name = "Second", type = AccountType.Local)))
+            database.groupDao().insert(Group("71-group", "First", 71), Group("72-group", "Second", 72))
+            val selected = Feed("71-feed", "Selected", url = "https://example.test/rss", groupId = "71-group", accountId = 71,
+                isNotification = true, isBrowser = true)
+            val other = selected.copy(id = "72-feed", groupId = "72-group", accountId = 72)
+            database.feedDao().insert(selected, other)
+            assertEquals(1, database.feedDao().updateDisplayModeIfOrdinary(71, selected.id, "original", false))
+            assertEquals(0, database.feedDao().updateDisplayModeIfOrdinary(72, selected.id, "local", true))
+            database.feedDao().insertOrUpdate(listOf(selected.copy(name = "Renamed by sync")))
+            val before = database.feedDao().queryById(selected.id)!!
+            assertEquals("original", before.displayMode)
+            assertTrue(before.isNotification)
+            assertFalse(before.isBrowser)
+            assertNull(database.feedDao().queryById(other.id)!!.displayMode)
+            assertTrue(database.feedDao().queryById(other.id)!!.isBrowser)
+            database.close()
+            database = Room.databaseBuilder(context, AndroidDatabase::class.java, name).build()
+            assertEquals(before, database.feedDao().queryById(selected.id))
+            database.feedDao().updateNewsletter(71, selected.id, true)
+            assertEquals(0, database.feedDao().updateDisplayModeIfOrdinary(71, selected.id, "local", true))
+            assertNull(database.feedDao().queryById(selected.id)!!.displayMode)
+        } finally { database.close(); context.deleteDatabase(name) }
     }
 
     @Test fun newsletterMarkerSurvivesServerRefreshAndGroupPresetsCannotEnablePublisherAccess() = runBlocking<Unit> {

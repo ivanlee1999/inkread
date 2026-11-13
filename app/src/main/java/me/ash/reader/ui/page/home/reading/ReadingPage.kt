@@ -1,5 +1,6 @@
 package me.ash.reader.ui.page.home.reading
 
+import me.ash.reader.domain.model.feed.SubscriptionDisplayMode
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
@@ -176,7 +177,8 @@ fun ReadingPage(
                         showingBrowserText -> R.string.reader_browser_text_current
                         readerState.content is ReaderState.FullContent -> R.string.reader_content_extracted_current
                         readerState.isNewsletter -> R.string.reader_newsletter_current
-                        else -> R.string.reader_content_feed_current
+                        (readerState.content as? ReaderState.Description)?.originalFeed == true || !readerState.supportsServerContent -> R.string.reader_original_feed_current
+                        else -> R.string.reader_server_content_current
                     }))
                     if ((readerState.content as? ReaderState.FullContent)?.previousVersion == true) {
                         Text(stringResource(R.string.reader_browser_text_previous_current))
@@ -190,9 +192,23 @@ fun ReadingPage(
                     readerState.browserTextError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                     readerState.feedSourceMessage?.let { Text(it) }
                     if (!readerState.isNewsletter) Text(stringResource(R.string.reader_content_cache_preserved))
-                    TextButton(onClick = { chooseContentSource { viewModel.renderDescriptionContent() } }) {
-                        Text(stringResource(if (readerState.isNewsletter) R.string.reader_newsletter_use_body else R.string.reader_content_use_feed))
+                    readerState.preferredDisplayMode?.let { mode ->
+                        val name = stringResource(when (mode) {
+                            SubscriptionDisplayMode.LOCAL -> R.string.reader_display_mode_local
+                            SubscriptionDisplayMode.SERVER -> R.string.reader_display_mode_server
+                            SubscriptionDisplayMode.ORIGINAL -> R.string.reader_display_mode_original
+                        })
+                        Text(stringResource(R.string.reader_display_mode_remembered, name))
                     }
+                    if (!readerState.isNewsletter && readerState.supportsServerContent) {
+                        TextButton(onClick = { chooseContentSource { viewModel.renderServerContent() } }) {
+                            Text(stringResource(R.string.reader_use_server_content))
+                        }
+                    }
+                    TextButton(onClick = { chooseContentSource { viewModel.renderOriginalContent() } }) {
+                        Text(stringResource(if (readerState.isNewsletter) R.string.reader_newsletter_use_body else R.string.reader_use_original_feed))
+                    }
+                    if (!readerState.isNewsletter && readerState.supportsServerContent) Text(stringResource(R.string.reader_original_feed_explanation))
                     if (readerState.canRefreshFeed) {
                         TextButton(enabled = !readerState.isRefreshingFeed,
                             onClick = { chooseContentSource { viewModel.refreshFeedContent() } }) {
@@ -206,7 +222,7 @@ fun ReadingPage(
                     }
                     if (!readerState.isNewsletter) {
                         TextButton(onClick = { chooseContentSource { viewModel.renderFullContent() } }) {
-                            Text(stringResource(R.string.reader_content_try_full))
+                            Text(stringResource(R.string.reader_use_local_full_text))
                         }
                         TextButton(onClick = { chooseContentSource { viewModel.renderFullContent(forceRefresh = true) } }) {
                             Text(stringResource(R.string.reader_content_refresh))

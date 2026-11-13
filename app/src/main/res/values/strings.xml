@@ -437,4 +437,14 @@
     <string name="reader_newsletter_use_body">Use newsletter body</string>
     <string name="reader_newsletter_images_notice">Newsletter images are blocked. Loading them contacts the sender or image hosts and may enable tracking.</string>
     <string name="reader_newsletter_load_images">Load newsletter images</string>
+    <string name="reader_display_mode_local">Local full text</string>
+    <string name="reader_display_mode_server">Server content</string>
+    <string name="reader_display_mode_original">Original RSS</string>
+    <string name="reader_display_mode_remembered">Remembered for this subscription: %1$s</string>
+    <string name="reader_use_local_full_text">Use local full text (keep current if better)</string>
+    <string name="reader_use_server_content">Use server content</string>
+    <string name="reader_use_original_feed">Use original RSS content</string>
+    <string name="reader_original_feed_current">Showing original RSS content</string>
+    <string name="reader_server_content_current">Showing synced server content (may be partial)</string>
+    <string name="reader_original_feed_explanation">Original reads this subscription’s RSS directly on this device. Server content may be partial; refresh does not trigger server extraction.</string>
 </resources>

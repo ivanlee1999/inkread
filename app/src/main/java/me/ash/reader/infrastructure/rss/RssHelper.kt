@@ -56,6 +56,18 @@ constructor(
     @IODispatcher private val ioDispatcher: CoroutineDispatcher,
     private val okHttpClient: OkHttpClient,
 ) {
+    // Independent anonymous client: no account cookies, credentials, client identity, or trust-all TLS.
+    private val originalFeedClient by lazy { articleImageHttpClient(NEWSLETTER_MAX_FEED_BYTES) }
+
+    suspend fun readOriginalFeedContent(feedUrl: String, sourceUrl: String): String = withContext(ioDispatcher) {
+        val url = publicArticleUrl(feedUrl) ?: throw IOException("Original feed URL is not public")
+        response(originalFeedClient, url.toString()).use { response ->
+            if (!response.isSuccessful) throw IOException("Original feed content is unavailable")
+            val bytes = response.body.source().readByteArrayLimited(NEWSLETTER_MAX_FEED_BYTES)
+            originalFeedBody(parseFeed(bytes, toHttpContentType(response.header("Content-Type"))), sourceUrl)
+        }
+    }
+
     private val newsletterClient by lazy { okHttpClient.newBuilder()
         .callTimeout(minOf(okHttpClient.callTimeoutMillis.takeIf { it > 0 } ?: 30_000, 30_000).toLong(), TimeUnit.MILLISECONDS)
         .build() }

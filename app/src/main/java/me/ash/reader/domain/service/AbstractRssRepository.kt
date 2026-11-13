@@ -301,6 +301,15 @@ abstract class AbstractRssRepository(
 
     suspend fun findFeedById(id: String): Feed? = feedDao.queryById(id)
 
+    /** Field-scoped write keeps remote sync and other subscriptions' preferences intact. */
+    suspend fun rememberDisplayMode(feed: Feed, mode: me.ash.reader.domain.model.feed.SubscriptionDisplayMode) {
+        check(accountService.getCurrentAccountId() == feed.accountId) { "The subscription account changed" }
+        check(feedDao.updateDisplayModeIfOrdinary(feed.accountId, feed.id, mode.value,
+            mode == me.ash.reader.domain.model.feed.SubscriptionDisplayMode.LOCAL) == 1) {
+            "The subscription settings changed"
+        }
+    }
+
     suspend fun findGroupById(id: String): Group? = groupDao.queryById(id)
 
     suspend fun findArticleById(id: String): ArticleWithFeed? = articleDao.queryById(id)

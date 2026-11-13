@@ -25,13 +25,16 @@ interface FeedDao {
     @Query("UPDATE feed SET icon = :icon WHERE accountId = :accountId AND id = :id AND url = :expectedUrl AND isNewsletter = 0")
     suspend fun updateIconIfOrdinary(accountId: Int, id: String, expectedUrl: String, icon: String): Int
 
-    @Query("UPDATE feed SET isFullContent = :isFullContent, isBrowser = :isBrowser WHERE accountId = :accountId AND id = :id AND isNewsletter = 0")
+    @Query("UPDATE feed SET isFullContent = :isFullContent, isBrowser = :isBrowser, displayMode = NULL WHERE accountId = :accountId AND id = :id AND isNewsletter = 0")
     suspend fun updateReaderPreferencesIfOrdinary(accountId: Int, id: String, isFullContent: Boolean, isBrowser: Boolean)
+
+    @Query("UPDATE feed SET displayMode = :mode, isFullContent = :local, isBrowser = 0 WHERE accountId = :accountId AND id = :id AND isNewsletter = 0")
+    suspend fun updateDisplayModeIfOrdinary(accountId: Int, id: String, mode: String, local: Boolean): Int
 
     @Query("UPDATE feed SET isNotification = :enabled WHERE accountId = :accountId AND id = :id")
     suspend fun updateNotification(accountId: Int, id: String, enabled: Boolean)
 
-    @Query("UPDATE feed SET isNewsletter = :enabled, isFullContent = 0, isBrowser = 0, icon = CASE WHEN :enabled THEN NULL ELSE icon END WHERE accountId = :accountId AND id = :id")
+    @Query("UPDATE feed SET isNewsletter = :enabled, isFullContent = 0, isBrowser = 0, displayMode = NULL, icon = CASE WHEN :enabled THEN NULL ELSE icon END WHERE accountId = :accountId AND id = :id")
     suspend fun updateNewsletter(accountId: Int, id: String, enabled: Boolean)
 
     @Query(
@@ -45,7 +48,7 @@ interface FeedDao {
 
     @Query(
         """
-        UPDATE feed SET isFullContent = :isFullContent
+        UPDATE feed SET isFullContent = :isFullContent, displayMode = NULL
         WHERE accountId = :accountId
         AND groupId = :groupId
         AND isNewsletter = 0
@@ -75,7 +78,7 @@ interface FeedDao {
 
     @Query(
         """
-        UPDATE feed SET isBrowser = :isBrowser
+        UPDATE feed SET isBrowser = :isBrowser, displayMode = NULL
         WHERE accountId = :accountId
         AND groupId = :groupId
         AND isNewsletter = 0
@@ -219,6 +222,7 @@ interface FeedDao {
                         isFullContent = existing.isFullContent,
                         isBrowser = existing.isBrowser,
                         isNewsletter = existing.isNewsletter,
+                        displayMode = existing.displayMode,
                     )
                 if (updated == existing) {
                     null

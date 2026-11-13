@@ -16,6 +16,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import me.ash.reader.domain.model.article.Article
 import me.ash.reader.domain.model.article.ArticleFullContentRequest
+import me.ash.reader.domain.model.feed.Feed
 import me.ash.reader.domain.service.AccountService
 import me.ash.reader.infrastructure.di.IODispatcher
 
@@ -115,6 +116,41 @@ constructor(
                 }
             }
         }
+
+    // Source-kind/version and complete identity are separate from both server bodies and local
+    // publisher extraction. Each captured RSS body stays immutable until this disposable cache clears.
+    private fun originalFeedFile(article: Article, feed: Feed): File =
+        cacheDir.resolve(article.accountId.toString()).resolve("original-feed-v1")
+            .resolve(readerCacheFileName("${article.id}\n${feed.id}\n${feed.url}\n${article.link}"))
+
+    suspend fun readOriginalFeedContent(article: Article, feed: Feed): Result<String> = withContext(ioDispatcher) {
+        readerCacheResult {
+            check(article.accountId == feed.accountId && article.feedId == feed.id) { "Original feed identity changed" }
+            val file = originalFeedFile(article, feed)
+            if (!file.isFile || file.length() > MAX_FEED_BODY_BYTES) throw FileNotFoundException()
+            file.readText().also { check(it.isNotBlank()); boundedFeedBodyBytes(it) }
+        }
+    }
+
+    suspend fun readOrFetchOriginalFeedContent(article: Article, feed: Feed,
+        canFetch: suspend () -> Boolean): Result<String> = withContext(ioDispatcher) {
+        val key = "original:${article.accountId}:${article.id}"
+        fetchLocks[(key.hashCode() and Int.MAX_VALUE) % fetchLocks.size].withLock {
+            readerCacheResult {
+                check(article.accountId == feed.accountId && article.feedId == feed.id) { "Original feed identity changed" }
+                check(canFetch()) { "Original feed settings changed" }
+                readOriginalFeedContent(article, feed).getOrNull()?.let { return@readerCacheResult it }
+                check(canFetch()) { "Original feed fetching is no longer enabled" }
+                val html = rssHelper.readOriginalFeedContent(feed.url, article.link)
+                boundedFeedBodyBytes(html)
+                currentCoroutineContext().ensureActive()
+                check(canFetch()) { "Original feed settings changed" }
+                // Storage failure leaves every existing source intact; the fetched RSS remains readable.
+                readerCacheResult { writeContentToCache(html, originalFeedFile(article, feed)) }
+                html
+            }
+        }
+    }
 
     // Explicit user imports are an alternate source, not a replacement for publisher/feed HTML.
     // Keep them outside disposable extraction cache; no clipboard or browser is read here.

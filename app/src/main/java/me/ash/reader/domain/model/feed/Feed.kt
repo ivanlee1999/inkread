@@ -37,8 +37,17 @@ data class Feed(
     val isBrowser: Boolean = false,
     @ColumnInfo(defaultValue = "0")
     val isNewsletter: Boolean = false,
+    @ColumnInfo(defaultValue = "NULL")
+    val displayMode: String? = null,
     @Ignore val important: Int = 0
 ) {
+    @get:Ignore
+    val selectedDisplayMode: SubscriptionDisplayMode? get() = SubscriptionDisplayMode.fromStored(displayMode)
+
+    @get:Ignore
+    val usesLocalFullContent: Boolean get() = !isNewsletter &&
+        (selectedDisplayMode == SubscriptionDisplayMode.LOCAL || selectedDisplayMode == null && isFullContent)
+
     constructor(
         id: String,
         name: String,
@@ -50,6 +59,7 @@ data class Feed(
         isFullContent: Boolean,
         isBrowser: Boolean,
         isNewsletter: Boolean = false,
+        displayMode: String? = null,
     ) : this(
         id = id,
         name = name,
@@ -61,6 +71,7 @@ data class Feed(
         isFullContent = isFullContent,
         isBrowser = isBrowser,
         isNewsletter = isNewsletter,
+        displayMode = displayMode,
         important = 0
     )
 }

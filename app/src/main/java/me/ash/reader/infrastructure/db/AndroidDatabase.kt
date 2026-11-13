@@ -20,7 +20,7 @@ import java.util.*
 
 @Database(
     entities = [Account::class, Feed::class, Article::class, Group::class, ArchivedArticle::class],
-    version = 8,
+    version = 9,
     autoMigrations = [
         AutoMigration(from = 5, to = 6),
         AutoMigration(from = 5, to = 7),
@@ -81,7 +81,15 @@ val allMigrations = arrayOf(
     MIGRATION_3_4,
     MIGRATION_4_5,
     MIGRATION_7_8,
+    MIGRATION_8_9,
 )
+
+/** Nullable source mode deliberately preserves all legacy presets without a network request. */
+object MIGRATION_8_9 : Migration(8, 9) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL("ALTER TABLE feed ADD COLUMN displayMode TEXT DEFAULT NULL")
+    }
+}
 
 /** Additive local source preference; existing feeds and article identities are unchanged. */
 object MIGRATION_7_8 : Migration(7, 8) {
