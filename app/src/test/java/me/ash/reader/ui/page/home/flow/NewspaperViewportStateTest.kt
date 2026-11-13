@@ -179,6 +179,18 @@ class NewspaperViewportStateTest {
         assertEquals(listOf("new"), displayed(state))
     }
 
+    @Test fun manualListTurnSupersedesAPendingReaderTarget() {
+        val pager = Any()
+        val state = NewspaperViewportState()
+        state.acceptSnapshot(pager, listOf(article("a", 3), article("b", 2)))
+        state.updatePages(pages(listOf(0), listOf(1)), "portrait")
+        state.followReaderArticle(pager, "c")
+        nextWithoutMarking(state)
+        state.acceptSnapshot(pager, listOf(article("a", 3), article("b", 2), article("c", 1)))
+        state.updatePages(pages(listOf(0), listOf(1), listOf(2)), "portrait")
+        assertEquals(listOf("b"), displayed(state), "A later paging batch must not undo the user's list turn")
+    }
+
     @Test fun rapidTurnCannotMarkAnIncomingPageBeforeItWasPresented() {
         val state = NewspaperViewportState()
         state.acceptSnapshot(Any(), listOf(article("a"), article("b"), article("c")))

@@ -205,6 +205,7 @@ internal class NewspaperViewportState {
         if (presentedPage != currentPage || presentedIndices != displayedIndices) return false
         val target = currentPage + if (forward) 1 else -1
         if (target !in pages.indices) return false
+        pendingReaderAnchorId = null
         val outgoing = if (forward && markReadEnabled) displayedArticles.toList() else emptyList()
         currentPage = target
         logicalAnchorId = displayedArticles.firstOrNull()?.article?.id
