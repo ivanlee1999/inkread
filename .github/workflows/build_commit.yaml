@@ -4,7 +4,7 @@ on: push
 jobs:
     build:
         # Approved release/recovery tags already have a validated official APK.
-        if: github.ref != 'refs/tags/v0.16.23' && github.ref != 'refs/tags/v0.16.23-publish-once'
+        if: github.ref != 'refs/tags/v0.16.23' && github.ref != 'refs/tags/v0.16.23-publish-once' && github.ref != 'refs/tags/v0.16.24'
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v3.3.0

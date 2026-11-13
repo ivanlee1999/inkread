@@ -10,7 +10,7 @@ on:
   push:
     branches: [main]
     # One approved publication; other release versions still require manual dispatch.
-    tags: [v0.16.23]
+    tags: [v0.16.24]
     paths-ignore:
       - '*.md'
       - '.github/**'
@@ -67,7 +67,7 @@ jobs:
 
   release:
     needs: build
-    if: (github.event_name == 'workflow_dispatch' && inputs.publish-release) || (github.event_name == 'push' && github.ref == 'refs/tags/v0.16.23')
+    if: (github.event_name == 'workflow_dispatch' && inputs.publish-release) || (github.event_name == 'push' && github.ref == 'refs/tags/v0.16.24')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -84,9 +84,14 @@ jobs:
           COMMIT=$(git rev-parse --short HEAD)
           VERSION=$(awk -F '"' '/versionName =/ {print $2; exit}' app/build.gradle.kts)
           test -n "$VERSION"
-          if [ "${{ github.ref }}" = "refs/tags/v0.16.23" ]; then
-            test "$VERSION" = "0.16.23"
-            TAG="v0.16.23"
+          PUBLISH_TARGET=(--target "${{ github.sha }}")
+          if [ "${{ github.ref }}" = "refs/tags/v0.16.24" ]; then
+            test "$VERSION" = "0.16.24"
+            TAG="v0.16.24"
+            # The approved annotated tag already exists. Verify its remote target and avoid
+            # the redundant --target parameter that failed during the previous publication.
+            test "$(git ls-remote origin "refs/tags/${TAG}^{}" | cut -f1)" = "${{ github.sha }}"
+            PUBLISH_TARGET=(--verify-tag)
           else
             TAG="v$(date -u +%Y%m%d-%H%M)-${COMMIT}"
           fi
@@ -94,4 +99,4 @@ jobs:
           test -s "$NOTES"
           printf 'Built by GitHub Actions from commit %s.\n\n' '${{ github.sha }}' > release-notes.md
           cat "$NOTES" >> release-notes.md
-          gh release create "$TAG" --target "${{ github.sha }}" --title "InkRead $VERSION ($COMMIT)" --notes-file release-notes.md ./apk/*.apk ./apk/*.sha256
+          gh release create "$TAG" "${PUBLISH_TARGET[@]}" --title "InkRead $VERSION ($COMMIT)" --notes-file release-notes.md ./apk/*.apk ./apk/*.sha256
