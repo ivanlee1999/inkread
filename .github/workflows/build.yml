@@ -9,6 +9,8 @@ on:
         default: false
   push:
     branches: [main]
+    # One approved publication; other release versions still require manual dispatch.
+    tags: [v0.16.23]
     paths-ignore:
       - '*.md'
       - '.github/**'
@@ -65,7 +67,7 @@ jobs:
 
   release:
     needs: build
-    if: github.event_name == 'workflow_dispatch' && inputs.publish-release
+    if: (github.event_name == 'workflow_dispatch' && inputs.publish-release) || (github.event_name == 'push' && github.ref == 'refs/tags/v0.16.23')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -82,7 +84,12 @@ jobs:
           COMMIT=$(git rev-parse --short HEAD)
           VERSION=$(awk -F '"' '/versionName =/ {print $2; exit}' app/build.gradle.kts)
           test -n "$VERSION"
-          TAG="v$(date -u +%Y%m%d-%H%M)-${COMMIT}"
+          if [ "${{ github.ref }}" = "refs/tags/v0.16.23" ]; then
+            test "$VERSION" = "0.16.23"
+            TAG="v0.16.23"
+          else
+            TAG="v$(date -u +%Y%m%d-%H%M)-${COMMIT}"
+          fi
           NOTES="docs/releases/${VERSION}.md"
           test -s "$NOTES"
           printf 'Built by GitHub Actions from commit %s.\n\n' '${{ github.sha }}' > release-notes.md

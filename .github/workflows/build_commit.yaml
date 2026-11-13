@@ -3,6 +3,8 @@ on: push
 
 jobs:
     build:
+        # This one approved tag is gated by the stronger Build APK publication workflow.
+        if: github.ref != 'refs/tags/v0.16.23'
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v3.3.0
