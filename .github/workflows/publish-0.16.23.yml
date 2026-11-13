@@ -1,0 +1,95 @@
+name: Publish approved existing 0.16.23
+
+on:
+  push:
+    tags: [v0.16.23-publish-once]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.repository == 'ivanlee1999/inkread' && github.ref == 'refs/tags/v0.16.23-publish-once'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ivanlee1999/inkread
+      SOURCE: affb7590fb7937202fad9a1f69da09ea123a152d
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify approved tag and original build
+        shell: python
+        run: |
+          import json, os, urllib.error, urllib.request
+          def api(path):
+              request = urllib.request.Request(
+                  "https://api.github.com/repos/ivanlee1999/inkread/" + path,
+                  headers={"Accept": "application/vnd.github+json", "Authorization": "Bearer " + os.environ["GH_TOKEN"]})
+              with urllib.request.urlopen(request) as response:
+                  return json.load(response)
+          tag = api("git/ref/tags/v0.16.23")
+          assert tag["object"]["sha"] == "cf70ee82c4c98a95a246841f125668aef2e15bf9"
+          assert api("git/tags/" + tag["object"]["sha"])["object"]["sha"] == os.environ["SOURCE"]
+          run = api("actions/runs/43474132578")
+          assert run["head_sha"] == os.environ["SOURCE"] and run["event"] == "push"
+          jobs = api("actions/runs/43474132578/jobs")["jobs"]
+          assert any(job["id"] == 132053383837 and job["name"] == "build" and job["conclusion"] == "success" for job in jobs)
+          artifact = next(item for item in api("actions/runs/43474132578/artifacts")["artifacts"] if item["id"] == 14062932328)
+          assert not artifact["expired"]
+          assert artifact["name"] == "inkread-release-" + os.environ["SOURCE"]
+          assert artifact["workflow_run"]["id"] == 43474132578
+          assert artifact["digest"] == "sha256:5bcdc39feaf9048690043b00fa13aed87b4851ea08ab62818159461ad0073d08"
+          try:
+              api("releases/tags/v0.16.23")
+          except urllib.error.HTTPError as error:
+              if error.code != 404:
+                  raise
+          else:
+              raise RuntimeError("Release already exists; refusing another publication")
+          print("Existing tag, successful build and immutable artifact verified; release is absent.")
+      - uses: actions/download-artifact@v4
+        with:
+          name: inkread-release-affb7590fb7937202fad9a1f69da09ea123a152d
+          run-id: 43474132578
+          github-token: ${{ github.token }}
+          path: ./apk
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - name: Install signature verification tools
+        run: sdkmanager --install "build-tools;35.0.0"
+      - name: Verify exact approved APK
+        shell: python
+        run: |
+          import hashlib, os, pathlib, re, subprocess, zipfile
+          apk = pathlib.Path("apk/InkRead-0.16.23-affb759.apk")
+          assert sorted(path.name for path in pathlib.Path("apk").iterdir()) == [apk.name, apk.name + ".sha256"]
+          assert apk.stat().st_size == 12283945
+          expected = "94b1364d7904ab92c82b0d08f979750908f458dd6dcf23f9d9b84a811c1cf88c"
+          assert hashlib.sha256(apk.read_bytes()).hexdigest() == expected
+          assert apk.with_suffix(".apk.sha256").read_text().strip().split() == [expected, apk.name]
+          tools = pathlib.Path(os.environ["ANDROID_HOME"]) / "build-tools/35.0.0"
+          signer = subprocess.check_output([str(tools / "apksigner"), "verify", "--verbose", "--print-certs", str(apk)], text=True)
+          assert "Signer #1 certificate SHA-256 digest: 715696914a35366d98fa45312af96811f7e6de4085b5e4709f4c1e74f8bde4d0" in signer
+          badging = subprocess.check_output([str(tools / "aapt"), "dump", "badging", str(apk)], text=True)
+          assert "package: name='me.ash.reader' versionCode='68' versionName='0.16.23'" in badging
+          assert "application-debuggable" not in badging
+          with zipfile.ZipFile(apk) as archive:
+              info = archive.read("META-INF/version-control-info.textproto").decode()
+          assert re.search(r'revision:\s*"' + os.environ["SOURCE"] + r'"', info)
+          print("APK checksum, previous official signer, package, version, non-debuggable flag and embedded source verified.")
+      - name: Publish only the existing approved tag
+        run: |
+          printf 'Built by GitHub Actions from commit %s.\n\n' "$SOURCE" > release-notes.md
+          cat docs/releases/0.16.23.md >> release-notes.md
+          # The tag already exists and is verified above. No target/tag creation is needed.
+          gh release create v0.16.23 --verify-tag --title "InkRead 0.16.23 (affb759)" --notes-file release-notes.md ./apk/*.apk ./apk/*.sha256
