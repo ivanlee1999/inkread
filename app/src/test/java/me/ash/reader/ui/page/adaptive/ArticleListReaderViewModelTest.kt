@@ -1034,10 +1034,11 @@ class ArticleListReaderViewModelTest {
         val publisherPage = "<html><head><title>Public article</title>" +
             "<script type='application/ld+json'>{\"@type\":\"NewsArticle\",\"url\":\"$visaUrl\",\"isAccessibleForFree\":true}</script>" +
             "</head><body><header data-testid='SplitScreenContentHeaderWrapper'>" +
+            "<p class='SplitScreenContentHeaderDek-synthetic'>$visaRss</p>" +
             "<div data-testid='ContentHeaderLeadAsset'><span class='responsive-asset'><picture>" +
             "<img src='/photo.jpg'></picture></span></div><div data-testid='caption-wrapper'>Editorial photo credit.</div></header>" +
             "<div data-testid='BodyWrapper'><div class='body__inner-container'>" +
-            visaBody().replace("<p>", "<p class='paywall'>") + "</div></div></body></html>"
+            visaBody().removePrefix("<p>$visaRss</p>").replace("<p>", "<p class='paywall'>") + "</div></div></body></html>"
         val rss: RssHelper = mock()
         whenever(rss.parseFullContent(any(), any())).thenAnswer {
             val prepared = ArticleExtractionPreparation.prepareArticleOrThrow(publisherPage, visaUrl)
@@ -1056,6 +1057,7 @@ class ArticleListReaderViewModelTest {
         assertEquals(1, rendered.select("img").size)
         assertEquals("https://www.newyorker.com/photo.jpg", rendered.selectFirst("img")!!.attr("src"))
         assertEquals("Editorial photo credit.", rendered.selectFirst("figcaption")!!.text())
+        assertTrue(rendered.text().contains(visaRss))
         assertEquals(serverFeed, fixture.viewModel.readingUiState.value.articleWithFeed!!.article.rawDescription)
         assertEquals(serverFeed, cache.readPreviousContent(a.article.id, 1, false).getOrThrow())
         verify(rss, times(1)).parseFullContent(any(), any())

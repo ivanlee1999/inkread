@@ -125,13 +125,15 @@ class NewYorkerExtractionTest {
     @Test fun splitScreenPictureAndSiblingCreditRetainThePhotoRequiredByTheServerEnclosureComparison() {
         val prepared = ready(page(lead = "<span class='responsive-asset'><picture>" +
             "<source srcset='/garden-wide.jpg 2x'><img src='/garden.jpg'></picture></span>",
-            caption = "<div data-testid='caption-wrapper'><span class='caption__credit'>Visible editorial photo credit.</span></div>"))
+            caption = "<div data-testid='caption-wrapper'><span class='caption__credit'>Visible editorial photo credit.</span></div>")
+            .replace("data-testid=\"ContentHeaderContainer\"", "data-testid=\"SplitScreenContentHeaderWrapper\""))
         val result = checkNotNull(ModernReadability().extract(prepared.html, url, preservedContent = prepared.articleHtml))
         val body = Jsoup.parseBodyFragment(result.content)
         assertEquals(1, body.select("img").size)
         assertEquals("https://www.newyorker.com/garden.jpg", body.selectFirst("img")!!.attr("src"))
         assertEquals("https://www.newyorker.com/garden-wide.jpg 2x", body.selectFirst("source")!!.attr("srcset"))
         assertEquals("Visible editorial photo credit.", body.selectFirst("figcaption")!!.text())
+        assertTrue("Split-screen header without ContentHeaderContainer retains its visible RSS dek", result.textContent.contains(dek))
         val serverFeed = "<p>$dek</p><figure class='enclosure'><p class='enclosure-content'>" +
             "<img class='enclosure-thumbnail' src='https://reader.example.org/article-img-proxy.php?url=garden.jpg'></p></figure>"
         assertEquals(ArticleContentSelection.Source.EXTRACTED, ArticleContentSelection.select(serverFeed, result.content).source)

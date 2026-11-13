@@ -254,17 +254,20 @@ object ArticleExtractionPreparation {
             } }) return null
         val output = Element("article")
         val bodyText = bodies.joinToString(" ") { it.text() }
-        document.select("[data-testid=ContentHeaderContainer] [class*=ContentHeaderDek-]")
-            .firstOrNull { !isExplicitlyHidden(it) && it.text().isNotBlank() && !bodyText.contains(it.text()) }
+        val leadAsset = document.select("[data-testid=ContentHeaderLeadAsset]").firstOrNull { !isExplicitlyHidden(it) }
+        val header = leadAsset?.closest("[data-testid=ContentHeaderContainer]") ?: leadAsset?.closest("header")
+        val headerDek = header?.select("[class*=ContentHeaderDek-]")?.firstOrNull { !isExplicitlyHidden(it) && it.text().isNotBlank() }
+        (headerDek ?: document.select("[data-testid=ContentHeaderContainer] [class*=ContentHeaderDek-]")
+            .firstOrNull { !isExplicitlyHidden(it) && it.text().isNotBlank() })
+            ?.takeUnless { bodyText.contains(it.text()) }
             ?.let { output.appendChild(it.clone()) }
-        document.select("[data-testid=ContentHeaderLeadAsset]").firstOrNull { !isExplicitlyHidden(it) }?.let { asset ->
+        leadAsset?.let { asset ->
             val media = asset.select("figure,picture,img").firstOrNull { !isExplicitlyHidden(it) }
             if (media != null) {
                 if (media.normalName() == "figure") output.appendChild(media.clone()) else {
                     // Split-screen article headers use picture/img without a figure. Losing this
                     // visible photo makes a complete extraction look worse than an RSS enclosure.
                     val figure = output.appendElement("figure").appendChild(media.clone())
-                    val header = asset.closest("[data-testid=ContentHeaderContainer]") ?: asset.closest("header")
                     val caption = asset.select("figcaption,cite,[data-testid=caption-wrapper]")
                         .firstOrNull { !isExplicitlyHidden(it) && it.text().isNotBlank() }
                         ?: header?.select("[data-testid=caption-wrapper]")
