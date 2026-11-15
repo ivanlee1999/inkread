@@ -447,4 +447,26 @@
     <string name="reader_original_feed_current">Showing original RSS content</string>
     <string name="reader_server_content_current">Showing synced server content (may be partial)</string>
     <string name="reader_original_feed_explanation">Original reads this subscription’s RSS directly on this device. Server content may be partial; refresh does not trigger server extraction.</string>
+    <string name="extraction_report_title">Report extraction problem</string>
+    <string name="extraction_report_description">Save this article with diagnostic details you can send to a developer or an AI tool. Review the report before copying or sharing.</string>
+    <string name="extraction_report_notes">What went wrong? (optional)</string>
+    <string name="extraction_report_notes_hint">For example: only a summary, missing paragraphs, or missing photos. Up to 2,000 characters.</string>
+    <string name="extraction_report_preview">Report preview</string>
+    <string name="extraction_report_save">Save for later</string>
+    <string name="extraction_report_copy">Copy report</string>
+    <string name="extraction_report_share">Share</string>
+    <string name="extraction_report_remove">Remove report</string>
+    <string name="extraction_report_saved">Report saved</string>
+    <string name="extraction_report_copied">Report copied and saved</string>
+    <string name="extraction_report_removed">Report removed</string>
+    <string name="extraction_report_failed">Could not save or share this report. Your article is unchanged.</string>
+    <string name="extraction_report_limit">Saved extraction reports are full. Remove an older report in Settings → Troubleshooting → Extraction reports, then try again.</string>
+    <string name="extraction_report_unavailable">This article changed. Reopen its report to continue.</string>
+    <string name="extraction_report_list_title">Extraction reports</string>
+    <string name="extraction_report_list_description">Articles you marked, with notes and reports to copy or share</string>
+    <string name="extraction_report_list_empty">No extraction problems marked for this account.</string>
+    <string name="extraction_report_loading">Loading extraction reports…</string>
+    <string name="extraction_report_load_failed">Could not load saved reports. Reopen troubleshooting to try again.</string>
+    <string name="extraction_report_private_label">Private article report</string>
+    <string name="extraction_report_reading_action">Report extraction problem</string>
 </resources>

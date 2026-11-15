@@ -2,6 +2,7 @@ package me.ash.reader.ui.page.settings.troubleshooting
 
 import android.content.ClipData
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.ManagedActivityResultLauncher
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -49,8 +50,15 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.work.WorkInfo
 import java.util.Date
+import java.text.DateFormat as JavaDateFormat
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import me.ash.reader.R
+import me.ash.reader.infrastructure.report.ExtractionProblemFormatter
+import me.ash.reader.infrastructure.report.SavedExtractionProblem
+import me.ash.reader.ui.component.report.ExtractionProblemReportDialog
+import me.ash.reader.ui.component.report.ExtractionReportAction
+import me.ash.reader.ui.component.report.extractionProblemShareIntent
 import me.ash.reader.domain.data.Log
 import me.ash.reader.domain.service.SyncWorker.Companion.ONETIME_WORK_TAG
 import me.ash.reader.domain.service.SyncWorker.Companion.PERIODIC_WORK_TAG
@@ -66,6 +74,7 @@ import me.ash.reader.ui.ext.MimeType
 import me.ash.reader.ui.ext.collectAsStateValue
 import me.ash.reader.ui.ext.getCurrentVersion
 import me.ash.reader.ui.ext.openURL
+import me.ash.reader.ui.ext.showToast
 import me.ash.reader.ui.ext.toString
 import me.ash.reader.ui.page.settings.SettingItem
 import me.ash.reader.ui.theme.palette.onLight
@@ -78,6 +87,21 @@ fun TroubleshootingPage(onBack: () -> Unit, viewModel: TroubleshootingViewModel 
     val hapticFeedback = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     val uiState = viewModel.troubleshootingUiState.collectAsStateValue()
+    val reportState = viewModel.extractionReportState.collectAsStateValue()
+    val reportAccountId = viewModel.extractionReportAccountId.collectAsStateValue()
+    val reports = if (reportState.accountId == reportAccountId) reportState.reports else emptyList()
+    val clipboard = LocalClipboard.current
+    val reportTitleText = stringResource(R.string.extraction_report_title)
+    val reportShareText = stringResource(R.string.extraction_report_share)
+    val reportSavedText = stringResource(R.string.extraction_report_saved)
+    val reportCopiedText = stringResource(R.string.extraction_report_copied)
+    val reportRemovedText = stringResource(R.string.extraction_report_removed)
+    val reportFailedText = stringResource(R.string.extraction_report_failed)
+    val reportUnavailableText = stringResource(R.string.extraction_report_unavailable)
+    var selectedReport by remember(reportAccountId) { mutableStateOf<SavedExtractionProblem?>(null) }
+    var reportNotes by remember(reportAccountId) { mutableStateOf("") }
+    var reportBusy by remember(reportAccountId) { mutableStateOf(false) }
+    var reportError by remember(reportAccountId) { mutableStateOf<String?>(null) }
     var byteArray by remember { mutableStateOf(ByteArray(0)) }
 
     val syncLogList = remember { mutableStateListOf<Log>() }
@@ -166,6 +190,44 @@ fun TroubleshootingPage(onBack: () -> Unit, viewModel: TroubleshootingViewModel 
                     Spacer(modifier = Modifier.height(24.dp))
                 }
                 item {
+                    Subtitle(modifier = Modifier.padding(horizontal = 24.dp), text = stringResource(R.string.extraction_report_list_title))
+                    Text(stringResource(R.string.extraction_report_list_description), style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
+                    if (reportState.loading || reportState.accountId != reportAccountId) {
+                        Text(stringResource(R.string.extraction_report_loading), modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
+                    } else if (reportState.failed) {
+                        Text(stringResource(R.string.extraction_report_load_failed), color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
+                    } else if (reports.isEmpty()) {
+                        Text(stringResource(R.string.extraction_report_list_empty), modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
+                    }
+                }
+                items(reports, key = { "extraction-${it.id}" }) { report ->
+                    Column(Modifier.fillMaxWidth().clickable(enabled = !reportBusy) reportOpen@ {
+                        if (reportBusy) return@reportOpen
+                        reportBusy = true
+                        scope.launch {
+                            try {
+                                val current = viewModel.currentExtractionReport(report)
+                                if (viewModel.extractionReportAccountId.value == current.accountId) {
+                                    selectedReport = current
+                                    reportNotes = current.notes
+                                    reportError = null
+                                }
+                            } catch (cancelled: CancellationException) { throw cancelled }
+                            catch (_: Exception) { context.showToast(reportUnavailableText) }
+                            finally { reportBusy = false }
+                        }
+                    }.padding(horizontal = 24.dp, vertical = 12.dp)) {
+                        Text(report.snapshot.publicArticleUrl ?: stringResource(R.string.extraction_report_private_label),
+                            style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(JavaDateFormat.getDateTimeInstance(JavaDateFormat.SHORT, JavaDateFormat.SHORT)
+                            .format(Date(report.updatedAtEpochMillis)), style = MaterialTheme.typography.bodySmall)
+                        if (report.notes.isNotBlank()) Text(report.notes, style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                item {
                     Subtitle(modifier = Modifier.padding(horizontal = 24.dp), text = "Worker infos")
                 }
                 items(onetimeWorkerInfos) {
@@ -215,6 +277,59 @@ fun TroubleshootingPage(onBack: () -> Unit, viewModel: TroubleshootingViewModel 
         },
     )
 
+    selectedReport?.let { report ->
+        fun stillCurrent() = selectedReport === report && viewModel.extractionReportAccountId.value == report.accountId
+        ExtractionProblemReportDialog(
+            notes = reportNotes,
+            preview = ExtractionProblemFormatter.markdown(report.snapshot, reportNotes),
+            busy = reportBusy,
+            error = reportError,
+            canRemove = true,
+            onNotesChange = { reportNotes = it },
+            onDismiss = { selectedReport = null },
+            onRemove = reportRemove@ {
+                if (reportBusy) return@reportRemove
+                reportBusy = true
+                scope.launch {
+                    try {
+                        viewModel.removeExtractionReport(report)
+                        if (stillCurrent()) {
+                            selectedReport = null
+                            context.showToast(reportRemovedText)
+                        }
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { if (stillCurrent()) reportError = reportFailedText }
+                    finally { reportBusy = false }
+                }
+            },
+            onAction = reportAction@ { action ->
+                if (reportBusy) return@reportAction
+                val notes = reportNotes
+                reportBusy = true
+                scope.launch {
+                    try {
+                        val saved = viewModel.saveExtractionReportNotes(report, notes)
+                        if (stillCurrent()) {
+                            val text = ExtractionProblemFormatter.markdown(saved)
+                            when (action) {
+                                ExtractionReportAction.COPY -> {
+                                    clipboard.setClipEntry(ClipEntry(ClipData.newPlainText(reportTitleText, text)))
+                                    context.showToast(reportCopiedText)
+                                }
+                                ExtractionReportAction.SHARE -> context.startActivity(Intent.createChooser(
+                                    extractionProblemShareIntent(text, reportTitleText),
+                                    reportShareText))
+                                ExtractionReportAction.SAVE -> context.showToast(reportSavedText)
+                            }
+                            selectedReport = null
+                        }
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { if (stillCurrent()) reportError = reportFailedText }
+                    finally { reportBusy = false }
+                }
+            },
+        )
+    }
     RYDialog(
         visible = uiState.warningDialogVisible,
         onDismissRequest = { viewModel.hideWarningDialog() },

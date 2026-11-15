@@ -1,5 +1,7 @@
 package me.ash.reader.ui.page.home.reading
 
+import android.content.ClipData
+import android.content.Intent
 import me.ash.reader.domain.model.feed.SubscriptionDisplayMode
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.FastOutLinearInEasing
@@ -49,6 +51,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.TextUnit
@@ -57,6 +61,7 @@ import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.unit.sp
 import kotlin.math.abs
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import me.ash.reader.domain.annotation.AnnotationSource
@@ -65,6 +70,12 @@ import me.ash.reader.ui.page.annotation.AnnotationReaderViewModel
 import me.ash.reader.ui.page.annotation.AnnotationReaderDialogs
 import me.ash.reader.ui.page.annotation.rememberAnnotationReaderUi
 import me.ash.reader.R
+import me.ash.reader.infrastructure.report.ExtractionProblemDraft
+import me.ash.reader.infrastructure.report.ExtractionProblemFormatter
+import me.ash.reader.infrastructure.report.ExtractionReportLimitException
+import me.ash.reader.ui.component.report.ExtractionProblemReportDialog
+import me.ash.reader.ui.component.report.ExtractionReportAction
+import me.ash.reader.ui.component.report.extractionProblemShareIntent
 import me.ash.reader.infrastructure.android.TextToSpeechManager
 import me.ash.reader.infrastructure.android.VolumeKeyEventBus
 import me.ash.reader.infrastructure.android.VolumeKeyPriority
@@ -129,10 +140,29 @@ fun ReadingPage(
     var contentSourceGuard by remember(readerState.articleId, readerState.sourceAccountId) {
         mutableStateOf<(() -> Boolean)?>(null)
     }
+    val reportScope = rememberCoroutineScope()
+    val clipboard = LocalClipboard.current
+    val reportTitleText = stringResource(R.string.extraction_report_title)
+    val reportShareText = stringResource(R.string.extraction_report_share)
+    val reportSavedText = stringResource(R.string.extraction_report_saved)
+    val reportCopiedText = stringResource(R.string.extraction_report_copied)
+    val reportRemovedText = stringResource(R.string.extraction_report_removed)
+    val reportFailedText = stringResource(R.string.extraction_report_failed)
+    val reportUnavailableText = stringResource(R.string.extraction_report_unavailable)
+    val reportLimitText = stringResource(R.string.extraction_report_limit)
+    var reportDraft by remember(readerState.articleId, readerState.sourceAccountId, readerState.isNewsletter) { mutableStateOf<ExtractionProblemDraft?>(null) }
+    var reportNotes by remember(readerState.articleId, readerState.sourceAccountId, readerState.isNewsletter) { mutableStateOf("") }
+    var reportBusy by remember(readerState.articleId, readerState.sourceAccountId, readerState.isNewsletter) { mutableStateOf(false) }
+    var reportError by remember(readerState.articleId, readerState.sourceAccountId, readerState.isNewsletter) { mutableStateOf<String?>(null) }
     fun closeContentSource() {
         showContentSource = false
         showBrowserTextImport = false
         contentSourceGuard = null
+    }
+    fun reportIsCurrent(draft: ExtractionProblemDraft): Boolean {
+        val live = viewModel.readerStateStateFlow.value
+        return reportDraft === draft && live.articleId == draft.articleId && live.sourceAccountId == draft.accountId &&
+            live.isNewsletter == draft.newsletter
     }
     fun chooseContentSource(action: () -> Unit): Boolean {
         // A pending dialog callback must not import into a newer article or account, including
@@ -191,6 +221,27 @@ fun ReadingPage(
                     if (postponedContentReady) Text(stringResource(R.string.reader_content_update_ready))
                     readerState.browserTextError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                     readerState.feedSourceMessage?.let { Text(it) }
+                    TextButton(enabled = !reportBusy, onClick = reportOpen@ {
+                        if (reportBusy) return@reportOpen
+                        val presented = readerState
+                        reportBusy = true
+                        reportScope.launch {
+                            try {
+                                val draft = viewModel.prepareExtractionProblemReport(presented)
+                                val live = viewModel.readerStateStateFlow.value
+                                if (draft != null && live.articleId == presented.articleId && live.sourceAccountId == presented.sourceAccountId &&
+                                    live.isNewsletter == presented.isNewsletter) {
+                                    // Reporting does not unpin the reader or change its chosen source.
+                                    closeContentSource()
+                                    reportNotes = draft.existingNotes
+                                    reportError = null
+                                    reportDraft = draft
+                                } else context.showToast(reportUnavailableText)
+                            } catch (cancelled: CancellationException) { throw cancelled }
+                            catch (_: Exception) { context.showToast(reportFailedText) }
+                            finally { reportBusy = false }
+                        }
+                    }) { Text(stringResource(R.string.extraction_report_reading_action)) }
                     if (!readerState.isNewsletter) Text(stringResource(R.string.reader_content_cache_preserved))
                     readerState.preferredDisplayMode?.let { mode ->
                         val name = stringResource(when (mode) {
@@ -265,6 +316,59 @@ fun ReadingPage(
                 }
             },
             confirmButton = { TextButton(onClick = ::closeContentSource) { Text(stringResource(R.string.close)) } },
+        )
+    }
+    reportDraft?.let { draft ->
+        ExtractionProblemReportDialog(
+            notes = reportNotes,
+            preview = ExtractionProblemFormatter.markdown(draft.snapshot, reportNotes),
+            busy = reportBusy,
+            error = reportError,
+            canRemove = draft.hasExistingReport,
+            onNotesChange = { reportNotes = it },
+            onDismiss = { reportDraft = null },
+            onRemove = reportRemove@ {
+                if (reportBusy) return@reportRemove
+                reportBusy = true
+                reportScope.launch {
+                    try {
+                        viewModel.removeExtractionProblemReport(draft)
+                        if (reportIsCurrent(draft)) {
+                            reportDraft = null
+                            context.showToast(reportRemovedText)
+                        }
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { if (reportIsCurrent(draft)) reportError = reportFailedText }
+                    finally { reportBusy = false }
+                }
+            },
+            onAction = reportAction@ { action ->
+                if (reportBusy) return@reportAction
+                val notes = reportNotes
+                reportBusy = true
+                reportScope.launch {
+                    try {
+                        val saved = viewModel.saveExtractionProblemReport(draft, notes)
+                        if (reportIsCurrent(draft) && viewModel.isExtractionProblemReportCurrent(draft) && reportIsCurrent(draft)) {
+                            val text = ExtractionProblemFormatter.markdown(saved)
+                            when (action) {
+                                ExtractionReportAction.COPY -> {
+                                    clipboard.setClipEntry(ClipEntry(ClipData.newPlainText(reportTitleText, text)))
+                                    context.showToast(reportCopiedText)
+                                }
+                                ExtractionReportAction.SHARE -> context.startActivity(Intent.createChooser(
+                                    extractionProblemShareIntent(text, reportTitleText),
+                                    reportShareText))
+                                ExtractionReportAction.SAVE -> context.showToast(reportSavedText)
+                            }
+                            reportDraft = null
+                        }
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: ExtractionReportLimitException) { if (reportIsCurrent(draft)) reportError = reportLimitText }
+                    catch (_: Exception) { if (reportIsCurrent(draft)) reportError = reportFailedText }
+                    finally { reportBusy = false }
+                }
+            },
         )
     }
     if (showBrowserTextImport) {
