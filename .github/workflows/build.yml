@@ -10,7 +10,7 @@ on:
   push:
     branches: [main]
     # One approved publication; other release versions still require manual dispatch.
-    tags: [v0.16.24]
+    tags: [v0.16.25]
     paths-ignore:
       - '*.md'
       - '.github/**'
@@ -67,7 +67,7 @@ jobs:
 
   release:
     needs: build
-    if: (github.event_name == 'workflow_dispatch' && inputs.publish-release) || (github.event_name == 'push' && github.ref == 'refs/tags/v0.16.24')
+    if: (github.event_name == 'workflow_dispatch' && inputs.publish-release) || (github.event_name == 'push' && github.ref == 'refs/tags/v0.16.25')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -85,9 +85,9 @@ jobs:
           VERSION=$(awk -F '"' '/versionName =/ {print $2; exit}' app/build.gradle.kts)
           test -n "$VERSION"
           PUBLISH_TARGET=(--target "${{ github.sha }}")
-          if [ "${{ github.ref }}" = "refs/tags/v0.16.24" ]; then
-            test "$VERSION" = "0.16.24"
-            TAG="v0.16.24"
+          if [ "${{ github.ref }}" = "refs/tags/v0.16.25" ]; then
+            test "$VERSION" = "0.16.25"
+            TAG="v0.16.25"
             # The approved annotated tag already exists. Verify its remote target and avoid
             # the redundant --target parameter that failed during the previous publication.
             test "$(git ls-remote origin "refs/tags/${TAG}^{}" | cut -f1)" = "${{ github.sha }}"
