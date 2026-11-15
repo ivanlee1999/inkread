@@ -62,6 +62,12 @@ import me.ash.reader.infrastructure.rss.FeedArticleRefreshStatus
 import me.ash.reader.infrastructure.html.ArticleRequiresBrowserException
 import me.ash.reader.infrastructure.rss.ArticleContentSelection
 import me.ash.reader.infrastructure.rss.NewsletterBodyPresentation
+import me.ash.reader.infrastructure.report.ExtractionAttemptCapture
+import me.ash.reader.infrastructure.report.ExtractionProblemDraft
+import me.ash.reader.infrastructure.report.ExtractionProblemReportStore
+import me.ash.reader.infrastructure.report.ExtractionProblemSnapshotFactory
+import me.ash.reader.infrastructure.report.ExtractionSourceMode
+import me.ash.reader.infrastructure.report.SavedExtractionProblem
 import me.ash.reader.ui.page.home.flow.NewspaperViewportState
 import me.ash.reader.ui.page.library.RssLibrarySnapshot
 import timber.log.Timber
@@ -87,6 +93,7 @@ constructor(
     private val imageDownloader: AndroidImageDownloader,
     private val articleListUseCase: ArticlePagingListUseCase,
     workManager: WorkManager,
+    private val extractionProblemReportStore: ExtractionProblemReportStore,
 ) : ViewModel() {
 
     val sourceFeedsFlow = groupWithFeedsListUseCase.feedsFlow
@@ -464,6 +471,114 @@ constructor(
     // One automatic upgrade attempt per exact cached body in this reader session. Offline or
     // quality-retained content must not start another request on every reader re-entry/render.
     private val newYorkerCacheUpgradeAttempts = linkedSetOf<String>()
+    private val extractionAttemptLock = Any()
+    private val extractionAttempts = java.util.LinkedHashMap<String, ExtractionAttemptCapture>(16, 0.75f, true)
+
+    private fun extractionAttemptKey(article: Article) = readerCacheFileName("${article.accountId}\u0000${article.id}\u0000${article.link}")
+    private fun beginExtractionAttempt(article: Article, refresh: Boolean): ExtractionAttemptCapture =
+        ExtractionAttemptCapture(refresh).also { capture -> synchronized(extractionAttemptLock) {
+            extractionAttempts[extractionAttemptKey(article)] = capture
+            if (extractionAttempts.size > 128) extractionAttempts.remove(extractionAttempts.keys.first())
+        } }
+
+    private fun reportSourceIdentity(article: Article, feed: Feed) =
+        readerCacheFileName("${article.link}\u0000${feed.id}\u0000${feed.url}\u0000${feed.isNewsletter}")
+
+    /** Snapshot only: never changes source, unpins a document, fetches, retries or sends data. */
+    suspend fun prepareExtractionProblemReport(presentedState: ReaderState? = null): ExtractionProblemDraft? {
+        val article = currentArticle ?: return null
+        val live = _readerState.value
+        val presented = presentedState ?: live
+        if (presented.articleId != article.id || presented.sourceAccountId != article.accountId || !isCurrentArticle(article)) return null
+        val feed = rssService.get().findFeedById(article.feedId)
+            ?.takeIf { it.id == article.feedId && it.accountId == article.accountId } ?: return null
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        if (!isCurrentArticle(article) || currentArticle?.link != article.link) return null
+        val previous = extractionProblemReportStore.find(article.accountId, article.id)
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        if (!isCurrentArticle(article) || currentArticle?.link != article.link) return null
+        val attempt = synchronized(extractionAttemptLock) { extractionAttempts[extractionAttemptKey(article)] }?.snapshot()
+        val requested = reportRequestedSourceMode(feed)
+        val displayed = when (val content = presented.content) {
+            is ReaderState.FullContent -> when {
+                content.browserText -> ExtractionSourceMode.BROWSER_TEXT
+                content.previousVersion -> ExtractionSourceMode.EARLIER_TEXT
+                else -> ExtractionSourceMode.LOCAL
+            }
+            is ReaderState.Description -> when {
+                feed.isNewsletter -> ExtractionSourceMode.NEWSLETTER
+                content.previousVersion -> ExtractionSourceMode.EARLIER_TEXT
+                content.originalFeed || rssService.get() is LocalRssService -> ExtractionSourceMode.ORIGINAL
+                else -> ExtractionSourceMode.SERVER
+            }
+            else -> ExtractionSourceMode.UNKNOWN
+        }
+        val snapshot = withContext(ioDispatcher) { ExtractionProblemSnapshotFactory.create(
+            article.link, feed.isNewsletter, isPrivateOriginalFeedUrl(feed.url), requested, displayed,
+            article.rawDescription, presented.content.documentBody, attempt,
+            presented.content.documentBody != live.content.documentBody,
+        ) }
+        if (!isCurrentArticle(article) || currentArticle?.link != article.link) return null
+        val latestFeed = rssService.get().findFeedById(article.feedId)
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        if (!isCurrentArticle(article) || currentArticle?.link != article.link || latestFeed == null ||
+            latestFeed.accountId != article.accountId || reportSourceIdentity(article, latestFeed) != reportSourceIdentity(article, feed)) return null
+        // A fetch may finish during either local read or metrics calculation. Compare with the
+        // latest live document immediately before returning, not the pre-suspension state.
+        val currentSnapshot = snapshot.copy(
+            requestedSourceMode = reportRequestedSourceMode(latestFeed),
+            presentationUpdatePending = presented.content.documentBody != _readerState.value.content.documentBody,
+        )
+        return ExtractionProblemDraft(currentSnapshot, previous?.notes.orEmpty(), previous != null, previous?.id,
+            article.accountId, article.id, reportSourceIdentity(article, feed), feed.isNewsletter)
+    }
+
+    private fun reportRequestedSourceMode(feed: Feed) = when {
+        feed.isNewsletter -> ExtractionSourceMode.NEWSLETTER
+        feed.usesLocalFullContent -> ExtractionSourceMode.LOCAL
+        feed.selectedDisplayMode == SubscriptionDisplayMode.SERVER -> ExtractionSourceMode.SERVER
+        feed.selectedDisplayMode == SubscriptionDisplayMode.ORIGINAL -> ExtractionSourceMode.ORIGINAL
+        else -> ExtractionSourceMode.LEGACY_FEED
+    }
+
+    private suspend fun validateExtractionProblemDraft(draft: ExtractionProblemDraft): Article {
+        val article = currentArticle ?: error("Reopen the article before saving its report.")
+        check(article.id == draft.articleId && article.accountId == draft.accountId && isCurrentArticle(article)) {
+            "The article or account changed. Open its report again."
+        }
+        val feed = rssService.get().findFeedById(article.feedId)
+            ?.takeIf { it.id == article.feedId && it.accountId == article.accountId }
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        check(feed != null && isCurrentArticle(article) && currentArticle?.link == article.link &&
+            reportSourceIdentity(article, feed) == draft.sourceIdentity && feed.isNewsletter == draft.newsletter) {
+            "The article's privacy settings changed. Open its report again."
+        }
+        return article
+    }
+
+    suspend fun saveExtractionProblemReport(draft: ExtractionProblemDraft, notes: String): SavedExtractionProblem {
+        validateExtractionProblemDraft(draft)
+        return extractionProblemReportStore.save(draft.accountId, draft.articleId, draft.snapshot, notes)
+    }
+
+    /** Recheck before a preview leaves the app; this performs local reads only. */
+    suspend fun isExtractionProblemReportCurrent(draft: ExtractionProblemDraft): Boolean = try {
+        validateExtractionProblemDraft(draft)
+        true
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        false
+    }
+
+    suspend fun removeExtractionProblemReport(draft: ExtractionProblemDraft): Boolean {
+        validateExtractionProblemDraft(draft)
+        val id = draft.localReportId ?: return false
+        val saved = extractionProblemReportStore.find(draft.accountId, draft.articleId) ?: return false
+        if (saved.id != id) return false
+        validateExtractionProblemDraft(draft)
+        return extractionProblemReportStore.remove(draft.accountId, id)
+    }
 
     private val currentArticle: Article?
         get() = readingUiState.value.articleWithFeed?.article
@@ -592,7 +707,12 @@ constructor(
                     preferredDisplayMode = feed.selectedDisplayMode,
                 ).prefetchArticleId()
                 _readerState.value = base
-                val resolved = base.renderContent(this@run)
+                val initialDiagnostic = if (feed.usesLocalFullContent) beginExtractionAttempt(article, false) else null
+                val resolved = if (initialDiagnostic != null) {
+                    try { withContext(initialDiagnostic) { base.renderContent(this@run) } }
+                    catch (error: Exception) { initialDiagnostic.failed(error); throw error }
+                    finally { initialDiagnostic.finish() }
+                } else base.renderContent(this@run)
                 ensureActive()
                 _readerState.value = resolved
                 val upgradeKey = resolved.localCacheUpgradeKey
@@ -617,20 +737,23 @@ constructor(
     }
 
     suspend fun ReaderState.renderContent(articleWithFeed: ArticleWithFeed): ReaderState {
+        val diagnostic = kotlinx.coroutines.currentCoroutineContext()[ExtractionAttemptCapture]
         var localCacheUpgradeKey: String? = null
         val contentState =
             if (articleWithFeed.feed.usesLocalFullContent) {
                 val fullContent =
                     readerCacheHelper.readFullContent(articleWithFeed.article.id, articleWithFeed.article.accountId).getOrNull()
                 if (fullContent != null) {
+                    diagnostic?.cacheReturned()
                     if (usesNewYorkerExtractionCache(articleWithFeed.article.link) &&
                         readerCacheHelper.requiresNewYorkerCacheUpgrade(articleWithFeed.article, fullContent)) {
                         val article = articleWithFeed.article
                         localCacheUpgradeKey = readerCacheFileName(
                             "${article.accountId}\n${article.id}\n${article.link}\n${readerCacheFileName(fullContent)}")
                     }
-                    withContext(ioDispatcher) { selectReaderContent(articleWithFeed.article.rawDescription, fullContent) }
+                    withContext(ioDispatcher) { selectReaderContent(articleWithFeed.article.rawDescription, fullContent, diagnostic = diagnostic) }
                 } else if (withContext(ioDispatcher) { ArticleContentSelection.isLikelyComplete(articleWithFeed.article.rawDescription) }) {
+                    diagnostic?.feedAlreadyComplete()
                     ReaderState.Description(articleWithFeed.article.rawDescription)
                 } else {
                     ReaderState.Loading
@@ -803,7 +926,8 @@ constructor(
                     _readerState.value.content !is ReaderState.Description &&
                     _readerState.value.content !is ReaderState.FullContent) setLoading()
             }
-            try {
+            val diagnostic = beginExtractionAttempt(article, forceRefresh)
+            try { withContext(diagnostic) {
                 val canFetch: suspend () -> Boolean = {
                     // Cache requests can wait behind another fetch. Recheck after that wait,
                     // at the actual network boundary, rather than reuse the pre-queue policy.
@@ -822,10 +946,11 @@ constructor(
                 }
                 val result = if (forceRefresh) readerCacheHelper.refreshFullContent(article, canFetch)
                     else readerCacheHelper.readOrFetchFullContent(article, canFetch)
+                result.exceptionOrNull()?.let { diagnostic.failed(it) }
                 val selected = withContext(ioDispatcher) {
                     result.fold(
-                        onSuccess = { selectReaderContent(article.rawDescription, it) },
-                        onFailure = { selectReaderContent(article.rawDescription, null, it) },
+                        onSuccess = { selectReaderContent(article.rawDescription, it, diagnostic = diagnostic) },
+                        onFailure = { selectReaderContent(article.rawDescription, null, it, diagnostic) },
                     )
                 }
                 val hasPrevious = readerCacheHelper.readPreviousContent(article.id, article.accountId, false).isSuccess
@@ -834,12 +959,18 @@ constructor(
                     _readerState.update {
                         // A failed explicit refresh also keeps an already-open offline extraction.
                         val previous = it.content as? ReaderState.FullContent
-                        it.copy(content = if (result.isFailure && previous != null)
-                            previous.copy(refreshFailed = true, needsBrowser = result.exceptionOrNull() is ArticleRequiresBrowserException) else selected,
+                        it.copy(content = if (result.isFailure && previous != null) {
+                            diagnostic.retainedDisplayedContent()
+                            previous.copy(refreshFailed = true, needsBrowser = result.exceptionOrNull() is ArticleRequiresBrowserException)
+                        } else selected,
                             hasPreviousFullContent = hasPrevious)
                     }
                 }
+            } } catch (error: Exception) {
+                diagnostic.failed(error)
+                throw error
             } finally {
+                diagnostic.finish()
                 loadingJob.cancel()
             }
         }
@@ -995,8 +1126,10 @@ data class ReaderState(
 }
 
 /** Shared by warm-cache and network paths, so offline reads receive the same quality decision. */
-internal fun selectReaderContent(feed: String, extracted: String?, failure: Throwable? = null): ReaderState.ContentState {
+internal fun selectReaderContent(feed: String, extracted: String?, failure: Throwable? = null,
+    diagnostic: ExtractionAttemptCapture? = null): ReaderState.ContentState {
     val selected = ArticleContentSelection.select(feed, extracted, failed = failure != null)
+    diagnostic?.readerDecision(selected)
     return when (selected.source) {
         ArticleContentSelection.Source.FEED -> ReaderState.Description(selected.html.orEmpty(), fallback = true, needsBrowser = failure is ArticleRequiresBrowserException)
         ArticleContentSelection.Source.EXTRACTED -> ReaderState.FullContent(selected.html.orEmpty())

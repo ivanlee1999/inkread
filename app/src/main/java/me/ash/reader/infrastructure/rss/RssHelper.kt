@@ -31,6 +31,7 @@ import me.ash.reader.infrastructure.html.ArticleRequiresBrowserException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import me.ash.reader.infrastructure.html.readHtmlLimited
+import me.ash.reader.infrastructure.report.ExtractionAttemptCapture
 import me.ash.reader.ui.ext.currentAccountId
 import me.ash.reader.ui.ext.decodeHTML
 import me.ash.reader.ui.ext.extractDomain
@@ -139,17 +140,26 @@ constructor(
     @Throws(Exception::class)
     suspend fun parseFullContent(link: String, title: String): String {
         return withContext(ioDispatcher) {
+            val diagnostic = currentCoroutineContext()[ExtractionAttemptCapture]
+            diagnostic?.fetchStarted()
+            try {
             response(okHttpClient, link).use { response ->
+                diagnostic?.httpResponse(response.code, response.cacheResponse != null && response.networkResponse == null, response.networkResponse != null)
                 if (response.code == 401 || response.code == 403) throw ArticleRequiresBrowserException(ArticleExtractionPreparation.AccessReason.ACCESS_GATE)
-                if (!response.isSuccessful) throw IOException(response.message)
+                if (!response.isSuccessful) {
+                    diagnostic?.httpFailed(response.code)
+                    throw IOException(response.message)
+                }
 
-                val content = response.body.readHtmlLimited(FULL_CONTENT_MAX_BYTES)
+                val content = response.body.readHtmlLimited(FULL_CONTENT_MAX_BYTES, diagnostic?.let { capture -> { count: Long -> capture.readBytes(count) } })
+                diagnostic?.fetched()
                 val finalUrl = response.request.url.toString()
                 val jobContext = currentCoroutineContext()
                 val extracted = ArticleExtractionConcurrency.permit.withPermit {
+                    diagnostic?.parserStarted()
                     val prepared = ArticleExtractionPreparation.prepareArticleOrThrow(content, finalUrl)
                     ModernReadability().extract(prepared.html, finalUrl, preservedContent = prepared.articleHtml, checkCancelled = { jobContext.ensureActive() })
-                        ?: throw IOException("No readable article found")
+                        ?: run { diagnostic?.noReadableContent(); throw IOException("No readable article found") }
                 }
                 val articleContent = Jsoup.parseBodyFragment(extracted.content, finalUrl).body()
                 articleContent?.let {
@@ -157,8 +167,14 @@ constructor(
                     if (h1Element != null && h1Element.hasText() && h1Element.text() == title) {
                         h1Element.remove()
                     }
-                    articleContent.toString()
+                    articleContent.toString().also { diagnostic?.candidateReady(it) }
                 } ?: throw IOException("articleContent is null")
+            }
+            } catch (error: Exception) {
+                diagnostic?.failed(error)
+                throw error
+            } finally {
+                diagnostic?.parserFinished()
             }
         }
     }

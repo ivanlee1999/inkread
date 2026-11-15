@@ -12,27 +12,33 @@ private const val CHARSET_SNIFF_BYTES = 64 * 1024
 private const val READ_BUFFER_BYTES = 8L * 1024L
 private val contentCharset = Regex("(?:^|;)\\s*charset\\s*=\\s*[\"']?([^\\s;\"']+)", RegexOption.IGNORE_CASE)
 
+internal enum class HtmlReadFailure { NON_HTML, INPUT_LIMIT }
+internal class HtmlReadException(val reason: HtmlReadFailure) : IOException(
+    if (reason == HtmlReadFailure.NON_HTML) "Article is not an HTML page" else "Article HTML exceeds byte limit")
+
 /**
  * Decode bounded article HTML consistently for both RSS and Saved Library downloads.
  * A Unicode BOM wins over HTTP metadata, then a supported HTTP charset wins over HTML meta.
  * Invalid charset labels are ignored instead of dropping an otherwise readable article.
  */
-internal fun ResponseBody.readHtmlLimited(maxBytes: Long = DEFAULT_HTML_MAX_BYTES): String {
+internal fun ResponseBody.readHtmlLimited(maxBytes: Long = DEFAULT_HTML_MAX_BYTES, onBytesRead: ((Long) -> Unit)? = null): String {
     require(maxBytes in 0..Int.MAX_VALUE.toLong()) { "Invalid HTML byte limit" }
     return source().use { source ->
+        onBytesRead?.invoke(0)
         // A successful HTTP response can still be an API/error document. Keep those bytes
         // out of Readability and the offline article cache; unlabelled HTML remains supported.
         val mediaType = contentType()
         if (mediaType != null && !(mediaType.type == "text" && mediaType.subtype == "html" ||
                 mediaType.type == "application" && mediaType.subtype == "xhtml+xml")) {
-            throw IOException("Article is not an HTML page")
+            throw HtmlReadException(HtmlReadFailure.NON_HTML)
         }
-        if (contentLength() > maxBytes) throw IOException("Article HTML exceeds byte limit")
+        if (contentLength() > maxBytes) throw HtmlReadException(HtmlReadFailure.INPUT_LIMIT)
         val buffer = Buffer()
         while (true) {
             val read = source.read(buffer, minOf(READ_BUFFER_BYTES, maxBytes + 1L - buffer.size))
             if (read == -1L) break
-            if (buffer.size > maxBytes) throw IOException("Article HTML exceeds byte limit")
+            onBytesRead?.invoke(buffer.size)
+            if (buffer.size > maxBytes) throw HtmlReadException(HtmlReadFailure.INPUT_LIMIT)
         }
         val bytes = buffer.readByteArray()
         val bom = detectBom(bytes)

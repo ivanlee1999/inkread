@@ -20,6 +20,7 @@ import me.ash.reader.domain.model.article.ArticleFullContentRequest
 import me.ash.reader.domain.model.feed.Feed
 import me.ash.reader.domain.service.AccountService
 import me.ash.reader.infrastructure.di.IODispatcher
+import me.ash.reader.infrastructure.report.ExtractionAttemptCapture
 
 /** Disk cache retains the original account/id paths for existing offline articles. */
 class ReaderCacheHelper
@@ -87,11 +88,16 @@ constructor(
         articleId: String,
         accountId: Int = accountService.getCurrentAccountId(),
     ): Result<String> = withContext(ioDispatcher) {
-        readerCacheResult {
+        val result = readerCacheResult {
             val file = cacheFile(articleId, accountId)
             if (!file.isFile) throw FileNotFoundException()
             file.readText().also { check(it.isNotBlank()) { "Empty reader cache" } }
         }
+        currentCoroutineContext()[ExtractionAttemptCapture]?.let { diagnostic ->
+            diagnostic.cacheRead(result.isSuccess, result.getOrNull())
+            if (result.isFailure && result.exceptionOrNull() !is FileNotFoundException) diagnostic.cacheReadFailed()
+        }
+        result
     }
 
     @CheckResult
@@ -117,29 +123,43 @@ constructor(
         withContext(ioDispatcher) {
             val key = "${article.accountId}:${article.id}"
             fetchLocks[(key.hashCode() and Int.MAX_VALUE) % fetchLocks.size].withLock {
+                val diagnostic = currentCoroutineContext()[ExtractionAttemptCapture]
                 val cached = readFullContent(article.id, article.accountId)
                 readerCacheResult {
                     // A queued prefetch may have waited while the user marked its feed as a newsletter.
                     // Recheck under the lock before exposing cached publisher content or fetching it.
-                    check(canFetch()) { "Automatic article fetching is no longer enabled" }
+                    val allowed = canFetch()
+                    if (!allowed) diagnostic?.policyBlocked()
+                    check(allowed) { "Automatic article fetching is no longer enabled" }
                     val staleNewYorker = upgradeLegacyNewYorker && usesNewYorkerExtractionCache(article.link) &&
                         cached.getOrNull()?.let { !hasCurrentNewYorkerProof(article, it) } == true
-                    if (cached.isSuccess && !forceRefresh && !staleNewYorker) return@readerCacheResult cached.getOrThrow()
+                    if (staleNewYorker) diagnostic?.staleCache()
+                    if (cached.isSuccess && !forceRefresh && !staleNewYorker) {
+                        diagnostic?.cacheReturned()
+                        return@readerCacheResult cached.getOrThrow()
+                    }
                     val fetched = rssHelper.parseFullContent(article.link, article.title)
                     currentCoroutineContext().ensureActive()
-                    check(canFetch()) { "Automatic article fetching is no longer enabled" }
+                    val stillAllowed = canFetch()
+                    if (!stillAllowed) diagnostic?.policyBlocked()
+                    check(stillAllowed) { "Automatic article fetching is no longer enabled" }
                     check(fetched.isNotBlank()) { "Empty article content" }
                     // Explicit refresh must not replace a useful offline extraction with a
                     // shorter/error-page result either. The original feed remains separate.
                     val fullContent = cached.getOrNull()?.let { previous ->
-                        ArticleContentSelection.select(previous, fetched).html
+                        ArticleContentSelection.select(previous, fetched).also { diagnostic?.cacheDecision(it) }.html
                     } ?: fetched
                     val file = cacheFile(article.id, article.accountId)
                     // Retain the previous exact body before a modern extraction replaces it.
                     // If that cannot be retained, keep the current version rather than orphan it.
-                    preservePreviousVersion(fullContent, file)
+                    try {
+                        preservePreviousVersion(fullContent, file)
+                    } catch (error: Exception) {
+                        diagnostic?.failed(error, cache = true)
+                        throw error
+                    }
                     // A failed cache write must not prevent reading fetched content.
-                    readerCacheResult {
+                    val write = readerCacheResult {
                         writeContentToCache(fullContent, file)
                         // A quality-rejected candidate must not certify the retained old body as
                         // an extraction from the updated parser. Failures leave the old source intact.
@@ -147,6 +167,7 @@ constructor(
                             writeContentToCache(newYorkerProof(article, fullContent), newYorkerProofFile(article))
                         }
                     }
+                    if (write.isFailure) diagnostic?.cacheWriteFailed()
                     fullContent
                 }
             }

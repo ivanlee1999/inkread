@@ -17,6 +17,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestCoroutineScheduler
@@ -49,6 +50,7 @@ import me.ash.reader.domain.service.RssService
 import me.ash.reader.domain.service.SyncWorker
 import me.ash.reader.infrastructure.rss.ReaderCacheHelper
 import me.ash.reader.infrastructure.rss.RssHelper
+import me.ash.reader.infrastructure.report.*
 import me.ash.reader.infrastructure.rss.readerCacheFileName
 import me.ash.reader.infrastructure.html.ArticleExtractionPreparation
 import me.ash.reader.infrastructure.html.ModernReadability
@@ -1063,12 +1065,76 @@ class ArticleListReaderViewModelTest {
         verify(rss, times(1)).parseFullContent(any(), any())
     }
 
+    @Test fun `marking and saving a report does not fetch change mode or claim an unobserved failure`() = runTest(dispatcher) {
+        val original = article("A")
+        val a = original.copy(article = original.article.copy(link = "https://example.com/article?campaign=private#position"))
+        val fixture = fixture(a)
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        val before = fixture.viewModel.readerStateStateFlow.value
+        val draft = checkNotNull(fixture.viewModel.prepareExtractionProblemReport(before))
+        assertNull(draft.snapshot.lastLocalAttempt)
+        assertEquals("https://example.com/article", draft.snapshot.publicArticleUrl)
+        assertTrue(draft.snapshot.urlRedacted)
+        assertEquals(ExtractionSourceMode.LEGACY_FEED, draft.snapshot.requestedSourceMode)
+        assertEquals(before, fixture.viewModel.readerStateStateFlow.value)
+        assertEquals(a.feed, fixture.feeds[a.feed.id])
+        val saved = SavedExtractionProblem("opaque", 1, 1, draft.snapshot, "Missing final paragraph", 1, a.article.id)
+        whenever(fixture.reports.save(1, a.article.id, draft.snapshot, "Missing final paragraph")).thenReturn(saved)
+        assertEquals(saved, fixture.viewModel.saveExtractionProblemReport(draft, "Missing final paragraph"))
+        verify(fixture.cache, never()).readOrFetchFullContent(any(), any())
+        verify(fixture.cache, never()).refreshFullContent(any(), any())
+        verify(fixture.cache, never()).readOrFetchOriginalFeedContent(any(), any(), any())
+        verify(fixture.repository, never()).rememberDisplayMode(any(), any())
+    }
+
+    @Test fun `frozen report cannot be saved or exported after identity or newsletter privacy changes`() = runTest(dispatcher) {
+        val a = article("A")
+        val fixture = fixture(a)
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        val draft = checkNotNull(fixture.viewModel.prepareExtractionProblemReport())
+        fixture.accountId.value = 2
+        assertFalse(fixture.viewModel.isExtractionProblemReportCurrent(draft))
+        assertTrue(runCatching { fixture.viewModel.saveExtractionProblemReport(draft, "note") }.isFailure)
+        fixture.accountId.value = 1
+        fixture.feeds[a.feed.id] = a.feed.copy(isNewsletter = true)
+        assertFalse(fixture.viewModel.isExtractionProblemReportCurrent(draft))
+        assertTrue(runCatching { fixture.viewModel.saveExtractionProblemReport(draft, "note") }.isFailure)
+        assertTrue(runCatching { fixture.viewModel.removeExtractionProblemReport(draft) }.isFailure)
+        verify(fixture.reports, never()).save(any(), any(), any(), any())
+        verify(fixture.reports, never()).remove(any(), any())
+    }
+
+    @Test fun `report compares frozen presented body with latest live document after a suspended local read`() = runTest(dispatcher) {
+        val a = article("A")
+        val fixture = fixture(a)
+        fixture.viewModel.initData(a.article.id); runCurrent()
+        val presented = fixture.viewModel.readerStateStateFlow.value
+        val existing = CompletableDeferred<SavedExtractionProblem?>()
+        whenever(fixture.reports.find(1, a.article.id)).thenSuspend { existing.await() }
+        val pending = async { fixture.viewModel.prepareExtractionProblemReport(presented) }
+        runCurrent()
+        val body = (1..23).joinToString("") { "<p>Long editorial paragraph $it ${"complete article text ".repeat(12)}</p>" }
+        whenever(fixture.cache.readOrFetchFullContent(eq(a.article), any())).thenReturn(Result.success(body))
+        fixture.viewModel.renderFullContent(); runCurrent()
+        assertEquals(body, fixture.viewModel.readerStateStateFlow.value.content.documentBody)
+        existing.complete(null); runCurrent()
+        val report = checkNotNull(pending.await()).snapshot
+        assertTrue(report.presentationUpdatePending)
+        assertEquals(ExtractionSourceMode.LOCAL, report.requestedSourceMode)
+        assertEquals(ExtractionSourceMode.SERVER, report.displayedSourceMode)
+        assertTrue(report.displayedMetrics!!.textCharacters < body.length)
+        assertEquals(23, report.lastLocalAttempt!!.readerComparison!!.candidate!!.paragraphs)
+        assertEquals(ExtractionAttemptOutcome.SUCCEEDED, report.lastLocalAttempt.outcome)
+        assertEquals(body, fixture.viewModel.readerStateStateFlow.value.content.documentBody)
+    }
+
     private fun fixture(
         vararg articles: ArticleWithFeed,
         applicationScheduler: TestCoroutineScheduler = dispatcher.scheduler,
         googleReader: Boolean = false,
         local: Boolean = false,
         cacheOverride: ReaderCacheHelper? = null,
+        reports: ExtractionProblemReportStore = mock(),
     ): Fixture {
         val cache: ReaderCacheHelper = cacheOverride ?: mock()
         val history: FeedSourceHistory = mock()
@@ -1140,9 +1206,10 @@ class ArticleListReaderViewModelTest {
             imageDownloader = mock(),
             articleListUseCase = paging,
             workManager = workManager,
+            extractionProblemReportStore = reports,
         )
         stores += ViewModelStore().apply { put("reader", viewModel) }
-        return Fixture(viewModel, cache, repository, paging, diffs, accountId, history, feeds)
+        return Fixture(viewModel, cache, repository, paging, diffs, accountId, history, feeds, reports)
     }
 
     private fun article(name: String, fullContent: Boolean = false): ArticleWithFeed = ArticleWithFeed(
@@ -1165,6 +1232,7 @@ class ArticleListReaderViewModelTest {
         val accountId: MutableStateFlow<Int?>,
         val history: FeedSourceHistory,
         val feeds: MutableMap<String, Feed>,
+        val reports: ExtractionProblemReportStore,
     ) {
         val googleReader get() = repository as GoogleReaderRssService
     }

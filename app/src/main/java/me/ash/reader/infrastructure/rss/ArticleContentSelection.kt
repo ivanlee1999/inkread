@@ -7,7 +7,14 @@ import org.jsoup.nodes.Element
 internal object ArticleContentSelection {
     enum class Source { FEED, EXTRACTED, UNAVAILABLE }
     enum class Reason { EXTRACTED, FEED_ONLY, EXTRACTION_FAILED, FEED_IS_BETTER, EMPTY }
-    data class Selection(val source: Source, val html: String?, val reason: Reason)
+    enum class Detail {
+        IMAGE_LOSS, PARAGRAPH_OR_LINK_LOSS, SHORTER_TEXT, DUPLICATES, LINK_HEAVY,
+        INCONCLUSIVE_LIMIT, NO_IMPROVEMENT, EMPTY_CANDIDATE, EXTRACTION_FAILED, EMPTY,
+    }
+    data class ContentMetrics(val textCharacters: Int, val paragraphs: Int, val images: Int)
+    data class Statistics(val before: ContentMetrics?, val candidate: ContentMetrics?, val selected: ContentMetrics?)
+    data class Selection(val source: Source, val html: String?, val reason: Reason,
+        val detail: Detail? = null, val statistics: Statistics? = null)
 
     // A comparison exceeding these budgets is inconclusive, not permission to replace saved content.
     private const val MAX_HTML_CHARS = 2 * 1024 * 1024
@@ -35,22 +42,28 @@ internal object ArticleContentSelection {
 
     fun select(feedHtml: String, extractedHtml: String?, failed: Boolean = false): Selection {
         val feed = measure(feedHtml)
+        var candidate: Measure? = null
+        fun decision(source: Source, html: String?, reason: Reason, detail: Detail? = null) =
+            Selection(source, html, reason, detail, Statistics(feed?.metrics, candidate?.metrics,
+                when (source) { Source.FEED -> feed?.metrics; Source.EXTRACTED -> candidate?.metrics; Source.UNAVAILABLE -> null }))
         // A failed or unmeasurable extraction must not replace existing bytes, even if it has text.
         val feedUsable = feed?.usable ?: feedHtml.isNotBlank()
-        fun keepFeed(reason: Reason) = if (feedUsable) Selection(Source.FEED, feedHtml, reason)
-            else Selection(Source.UNAVAILABLE, null, Reason.EMPTY)
-        if (failed) return keepFeed(Reason.EXTRACTION_FAILED)
-        val extracted = measure(extractedHtml.orEmpty()) ?: return keepFeed(Reason.FEED_IS_BETTER)
-        if (!extracted.usable) return keepFeed(Reason.FEED_ONLY)
-        if (feed == null) return keepFeed(Reason.FEED_IS_BETTER)
-        if (!feedUsable) return Selection(Source.EXTRACTED, extractedHtml, Reason.EXTRACTED)
+        fun keepFeed(reason: Reason, detail: Detail) = if (feedUsable) decision(Source.FEED, feedHtml, reason, detail)
+            else decision(Source.UNAVAILABLE, null, Reason.EMPTY, detail)
+        if (failed) return keepFeed(Reason.EXTRACTION_FAILED, Detail.EXTRACTION_FAILED)
+        val extracted = measure(extractedHtml.orEmpty()).also { candidate = it }
+            ?: return keepFeed(Reason.FEED_IS_BETTER, Detail.INCONCLUSIVE_LIMIT)
+        if (!extracted.usable) return keepFeed(Reason.FEED_ONLY, Detail.EMPTY_CANDIDATE)
+        if (feed == null) return keepFeed(Reason.FEED_IS_BETTER, Detail.INCONCLUSIVE_LIMIT)
+        if (!feedUsable) return decision(Source.EXTRACTED, extractedHtml, Reason.EXTRACTED)
 
         // Duplicate avatars, responsive sources, hidden popovers and navigation are not article photos.
-        if (extracted.images < feed.images) return keepFeed(Reason.FEED_IS_BETTER)
+        if (extracted.images < feed.images) return keepFeed(Reason.FEED_IS_BETTER, Detail.IMAGE_LOSS)
         val mostlyLinks = extracted.linkDensity > 0.65 && extracted.text.length > 80
         val addsDuplicates = extracted.duplicateChars > maxOf(160, extracted.paragraphChars / 3) &&
             extracted.duplicateChars > feed.duplicateChars
-        if (mostlyLinks || addsDuplicates) return keepFeed(Reason.FEED_IS_BETTER)
+        if (mostlyLinks || addsDuplicates) return keepFeed(Reason.FEED_IS_BETTER,
+            if (mostlyLinks) Detail.LINK_HEAVY else Detail.DUPLICATES)
 
         val comparable = feed.core.size >= 3 && feed.core.sumOf { it.text.length } >= 400 ||
             feed.core.any { indexOf(extracted.text, it.text, 0) >= 0 }
@@ -58,24 +71,27 @@ internal object ArticleContentSelection {
             // Match complete paragraphs in order, including small paragraphs inside/after the body.
             // This also catches lost retailer labels, a missing ending, and reordered body text.
             if (!retainsInOrder(feed.core, extracted.text) || !extracted.links.containsAll(feed.coreLinks)) {
-                return keepFeed(Reason.FEED_IS_BETTER)
+                return keepFeed(Reason.FEED_IS_BETTER, Detail.PARAGRAPH_OR_LINK_LOSS)
             }
         } else if (extracted.text.length < feed.text.length) {
             // A differently worded summary is not comparable to the full story. Only here use size
             // as a fallback, rather than requiring a cleaner article to retain 85% of page chrome.
-            return keepFeed(Reason.FEED_IS_BETTER)
+            return keepFeed(Reason.FEED_IS_BETTER, Detail.SHORTER_TEXT)
         }
 
         val sameText = feed.text == extracted.text
-        if (sameText && !extracted.links.containsAll(feed.links)) return keepFeed(Reason.FEED_IS_BETTER)
+        if (sameText && !extracted.links.containsAll(feed.links)) return keepFeed(Reason.FEED_IS_BETTER, Detail.PARAGRAPH_OR_LINK_LOSS)
         val sameParagraphs = feed.core.isNotEmpty() && feed.core.map { it.text } == extracted.core.map { it.text }
         val removesUi = extracted.ignoredChars < feed.ignoredChars
         // Preserve proxy URLs, original markup and annotation anchors unless there is an improvement.
         if ((sameText || sameParagraphs) && extracted.images <= feed.images && !removesUi) {
-            return keepFeed(Reason.FEED_IS_BETTER)
+            return keepFeed(Reason.FEED_IS_BETTER, Detail.NO_IMPROVEMENT)
         }
-        return Selection(Source.EXTRACTED, extractedHtml, Reason.EXTRACTED)
+        return decision(Source.EXTRACTED, extractedHtml, Reason.EXTRACTED)
     }
+
+    /** Numeric scoring metadata only, under the same input/DOM/text budgets as selection. */
+    fun diagnosticMetrics(html: String): ContentMetrics? = measure(html)?.metrics
 
     /** A conservative network-avoidance hint, not proof of completeness. Explicit fetch stays available. */
     fun isLikelyComplete(html: String): Boolean {
@@ -103,9 +119,11 @@ internal object ArticleContentSelection {
         val meaningfulParagraphs: Int,
         val linkDensity: Double,
         val hasContinuationCue: Boolean,
+        val paragraphs: Int,
     ) {
         val usable get() = text.isNotEmpty() || visibleImages > 0
         val coreLinks get() = core.flatMap { it.links }.toSet()
+        val metrics get() = ContentMetrics(text.length, paragraphs, images)
     }
 
     private fun measure(html: String): Measure? {
@@ -182,6 +200,7 @@ internal object ArticleContentSelection {
                 anchorChars.toDouble() / text.length.coerceAtLeast(1),
                 cueLinks || continuationCue.containsMatchIn(visibleText) ||
                     visibleText.trimEnd().let { it.endsWith("…") || it.endsWith("...") },
+                bodyParagraphs.size,
             )
         } catch (_: RuntimeException) {
             null
